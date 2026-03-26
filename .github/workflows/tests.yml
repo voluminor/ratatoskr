@@ -1,0 +1,83 @@
+name: "Tests & Benchmarks"
+
+concurrency:
+  group: tests-${{ github.ref_name }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    paths-ignore:
+      - '*.txt'
+      - '*.md'
+  push:
+    tags-ignore:
+      - '*'
+
+env:
+  GO_VERSION: "1.24"
+  PUSH_BRANCH: ${{ github.repository.default_branch }}
+
+jobs:
+  prepare:
+    name: "🔧 Prepare"
+    runs-on: ubuntu-latest
+    if: "!contains(github.event_name, 'release')"
+    steps:
+      - name: 🛎️ Checkout ${{ env.PUSH_BRANCH }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PUSH_BRANCH }}
+          fetch-depth: 1
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: ./.github/actions/tidy-all-and-generate
+
+      - name: 📦 Upload source for tests
+        uses: actions/upload-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+  test:
+    name: "🧪 Test & Benchmark [${{ matrix.os }}]"
+    needs: [ prepare ]
+    runs-on: ${{ matrix.os }}
+    if: "!contains(github.event_name, 'release')"
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    permissions:
+      contents: write
+
+    steps:
+      - name: 🛎️ Checkout ${{ env.PUSH_BRANCH }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PUSH_BRANCH }}
+          fetch-depth: 1
+
+      - name: 📥 Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 🧪 Run tests
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go test -race -v ./... || exit 1
+
+      - name: 📊 Run benchmarks
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          go test -bench . -run=NONE -v ./... || exit 1

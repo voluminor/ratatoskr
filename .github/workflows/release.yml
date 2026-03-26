@@ -1,0 +1,120 @@
+name: "Release"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch from which we make a release"
+        default: "main"
+        required: false
+
+env:
+  GO_VERSION: "1.24"
+  RELEASE_COMMAND: "git add -f target"
+  PUSH_BRANCH: ${{ github.repository.default_branch }}
+
+jobs:
+  prepare:
+    name: "🔧 Prepare"
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout ${{ env.PUSH_BRANCH }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PUSH_BRANCH }}
+          fetch-depth: 1
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: ./.github/actions/generate-build-env
+
+      - uses: ./.github/actions/tidy-all-and-generate
+
+      - name: 📦 Save the repository as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+  release:
+    name: "🚀 Publication of release"
+    needs: [ prepare ]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 🛎️ Checkout ${{ env.PUSH_BRANCH }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.PUSH_BRANCH }}
+          fetch-depth: 1
+
+      - name: 📥 Download src-gen
+        uses: actions/download-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+      - name: 🗒️ Source env
+        shell: bash
+        run: cat build_env.txt >> $GITHUB_ENV
+
+      - uses: ./.github/actions/github-setup-user
+
+      - name: 🏷️ Create Commit without “heavy” and tag ${BUILD_VER}
+        id: tag
+        shell: bash
+        env:
+          GOFLAGS: -mod=mod
+        run: |
+          set -Eeuo pipefail
+          ORIG_SHA=$(git rev-parse HEAD)
+          
+          ${{ env.RELEASE_COMMAND }}
+
+          git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli gen.go .gitignore
+          #git rm -f --cached --ignore-unmatch $(git ls-files '*.bin' '*.md')
+          
+          git commit -m "release(${BUILD_VER}): strip heavy assets"
+          git tag -a "${BUILD_VER}" -m "Release ${BUILD_VER}"
+          git push origin "${BUILD_VER}"
+
+          git reset --hard "$ORIG_SHA"
+
+      - name: 🚀 Create a release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.BUILD_VER }}
+          name: ${{ env.BUILD_VER }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: ✔️ Finish
+        run: |
+          new_version=$(./_run/scripts/sys.sh --increment --minor)
+          
+          git add ./_run/values/ver.txt
+          git commit -m "actions [$new_version] "$'\n'"Build: [${BUILD_VER}] >> [$new_version]"
+          git push origin HEAD:main
+          
+          echo "🎉 Release $BUILD_VER successfully published!"
+
+      - name: 🧹 Remove temporary artifacts
+        if: success()
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: |
+            build-env
+            src-gen
+            ${{ env.BUILD_NAME }}.*
+          failOnError: false
