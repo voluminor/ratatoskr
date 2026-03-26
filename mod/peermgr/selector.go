@@ -64,6 +64,17 @@ func selectBest(results []peerResultObj, maxPerProto int) []string {
 	return selected
 }
 
+// countUp возвращает количество пиров с Up == true
+func countUp(results []peerResultObj) int {
+	n := 0
+	for _, r := range results {
+		if r.Up {
+			n++
+		}
+	}
+	return n
+}
+
 // parseProto извлекает схему транспорта из URI пира ("tls://host:port" → "tls")
 func parseProto(uri string) string {
 	u, err := url.Parse(uri)

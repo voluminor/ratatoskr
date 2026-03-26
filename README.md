@@ -194,6 +194,8 @@ J -->|реализует|K
 
 **Логика `optimizeActive`:**
 
+При `BatchSize <= 1` — один батч = весь список (обратная совместимость):
+
 ```mermaid
 flowchart TD
     ADD[AddPeer для всех кандидатов] --> WAIT[Ожидание ProbeTimeout]
@@ -202,6 +204,25 @@ flowchart TD
     SELECT --> REMOVE[RemovePeer для проигравших]
     REMOVE --> STORE[Сохранить active список]
 ```
+
+При `BatchSize >= 2` — скользящее окно, гонка на выбывание:
+
+```mermaid
+flowchart TD
+   START[connected = текущие winners] --> BATCH[Взять следующий батч из Peers]
+   BATCH --> ADD[AddPeer для батча]
+   ADD --> WAIT[Ожидание ProbeTimeout]
+   WAIT --> BUILD[buildResults по всем connected + батч]
+   BUILD --> SELECT[selectBest: топ-N по протоколу]
+   SELECT --> REMOVE[RemovePeer проигравших]
+   REMOVE --> UPDATE[connected = winners]
+   UPDATE --> MORE{Ещё батчи?}
+   MORE -->|Да| BATCH
+   MORE -->|Нет| DONE[Финальный active список]
+```
+
+Каждый новый батч гонится с текущими победителями. Худшие отсекаются после каждого раунда — в итоге остаются лучшие из
+всего списка.
 
 ### `resolver`
 
@@ -255,13 +276,15 @@ stateDiagram-v2
 
 ### ConfigObj (peermgr)
 
-| Поле              | Тип              | По умолчанию | Описание                                                                         |
-|-------------------|------------------|--------------|----------------------------------------------------------------------------------|
-| `Peers`           | `[]string`       | обязательное | Список URI-кандидатов: `"tls://host:port"`, `"tcp://..."`, `"quic://..."` и т.д. |
-| `ProbeTimeout`    | `time.Duration`  | `10s`        | Ожидание подключения при пробинге. Игнорируется при `MaxPerProto == -1`          |
-| `RefreshInterval` | `time.Duration`  | `0`          | Интервал автоматической перепроверки. `0` — только при запуске                   |
-| `MaxPerProto`     | `int`            | `1`          | Число лучших пиров на протокол. `-1` — пассивный режим                           |
-| `Logger`          | `yggcore.Logger` | `nil`        | Логгер; `nil` — берётся из родительского `ConfigObj.Logger`                      |
+| Поле                 | Тип              | По умолчанию | Описание                                                                         |
+|----------------------|------------------|--------------|----------------------------------------------------------------------------------|
+| `Peers`              | `[]string`       | обязательное | Список URI-кандидатов: `"tls://host:port"`, `"tcp://..."`, `"quic://..."` и т.д. |
+| `ProbeTimeout`       | `time.Duration`  | `10s`        | Ожидание подключения при пробинге. Игнорируется при `MaxPerProto == -1`          |
+| `RefreshInterval`    | `time.Duration`  | `0`          | Интервал автоматической перепроверки. `0` — только при запуске                   |
+| `MaxPerProto`        | `int`            | `1`          | Число лучших пиров на протокол. `-1` — пассивный режим                           |
+| `BatchSize`          | `int`            | `0`          | Размер батча при пробинге. `0`/`1` — все сразу; `≥ 2` — скользящее окно          |
+| `Logger`             | `yggcore.Logger` | обязательное | Логгер; при `nil` возвращается ошибка                                            |
+| `OnNoReachablePeers` | `func()`         | `nil`        | Колбек при отсутствии доступных пиров после пробинга                             |
 
 ### ConfigObj (core)
 
@@ -476,9 +499,10 @@ Peers: []string{
 "tls://peer2.example.com:17117",
 "quic://peer3.example.com:17117",
 },
-ProbeTimeout:    10 * time.Second, // ожидание при пробинге
+ProbeTimeout:    10 * time.Second, // ожидание при пробинге (на батч)
 RefreshInterval: 5 * time.Minute, // переперобировать каждые 5 минут
 MaxPerProto:     1, // один лучший пир на протокол
+BatchSize:       2, // скользящее окно по 2 кандидата
 },
 })
 

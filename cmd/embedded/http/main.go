@@ -61,7 +61,10 @@ func main() {
 		Config:          nodeCfg,
 		CoreStopTimeout: shutdownTimeout,
 		Logger:          logger,
-		Peers:           &peermgr.ConfigObj{Peers: cfg.Peers},
+		Peers: &peermgr.ConfigObj{
+			Peers:     cfg.Peers,
+			BatchSize: 4,
+		},
 	})
 	if err != nil {
 		fmt.Println("Error: start yggdrasil:", err)

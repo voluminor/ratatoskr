@@ -81,7 +81,7 @@ jobs:
           
           ${{ env.RELEASE_COMMAND }}
 
-          git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli gen.go .gitignore
+          git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli gen.go go.work .gitignore
           #git rm -f --cached --ignore-unmatch $(git ls-files '*.bin' '*.md')
           
           git commit -m "release(${BUILD_VER}): strip heavy assets"
