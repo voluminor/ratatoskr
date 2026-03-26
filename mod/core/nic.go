@@ -213,11 +213,9 @@ func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 		return
 	default:
 	}
-	// Очередь полна — вытесняем старый пакет
 	select {
 	case old := <-e.rstPackets:
 		old.DecRef()
-		e.logger.Traceln("[core] RST packet evicted from full queue")
 	default:
 	}
 	select {
@@ -225,7 +223,6 @@ func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	default:
 		pkt.DecRef()
 		e.rstDropped.Add(1)
-		e.logger.Traceln("[core] RST packet dropped, queue full, total dropped:", e.rstDropped.Load())
 	}
 }
 

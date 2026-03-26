@@ -136,7 +136,9 @@ func (m *Obj) optimizePassive() error {
 	}
 
 	m.mu.Lock()
-	m.active = append([]string(nil), m.cfg.Peers...)
+	cp := make([]string, len(m.cfg.Peers))
+	copy(cp, m.cfg.Peers)
+	m.active = cp
 	m.mu.Unlock()
 
 	m.cfg.Logger.Infof("[peermgr] passive mode, added %d peers", len(m.cfg.Peers))

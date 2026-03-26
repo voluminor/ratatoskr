@@ -1,7 +1,7 @@
 package peermgr
 
 import (
-	"net/url"
+	"regexp"
 	"sort"
 	"time"
 
@@ -73,11 +73,13 @@ func countUp(results []peerResultObj) int {
 	return n
 }
 
+var protoRe = regexp.MustCompile(`^([a-z]+)://`)
+
 // parseProto — схема транспорта из URI ("tls://..." → "tls")
 func parseProto(uri string) string {
-	u, err := url.Parse(uri)
-	if err != nil || u.Scheme == "" {
+	m := protoRe.FindStringSubmatch(uri)
+	if len(m) < 2 {
 		return "unknown"
 	}
-	return u.Scheme
+	return m[1]
 }
