@@ -221,9 +221,6 @@ func (m *Obj) optimizePassive() error {
 // // // // // // // // // //
 
 func (m *Obj) logf(level, format string, args ...any) {
-	if m.cfg.Logger == nil {
-		return
-	}
 	msg := fmt.Sprintf("[peermgr] "+format, args...)
 	switch level {
 	case "debug":

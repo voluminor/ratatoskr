@@ -1,8 +1,14 @@
-package core
+package ratatoskr
+
+import yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 // // // // // // // // // //
 
+// noopLoggerObj — реализация yggcore.Logger, отбрасывающая все сообщения.
+// Используется когда пользователь не передал логгер в ConfigObj
 type noopLoggerObj struct{}
+
+var _ yggcore.Logger = noopLoggerObj{}
 
 func (noopLoggerObj) Printf(string, ...interface{}) {}
 func (noopLoggerObj) Println(...interface{})        {}

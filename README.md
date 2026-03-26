@@ -1,8 +1,8 @@
-# yggstack
+# ratatoskr
 
-Go-библиотека для встраивания узла Yggdrasil в приложения. Предоставляет стандартные Go-сетевые примитивы (
-`DialContext`, `Listen`, `ListenPacket`) поверх userspace TCP/IP стека (gVisor netstack), без необходимости создавать
-TUN-интерфейс или получать root-права.
+Go-библиотека для встраивания узла Yggdrasil в приложения. Предоставляет стандартные Go-сетевые примитивы
+(`DialContext`, `Listen`, `ListenPacket`) поверх userspace TCP/IP стека (gVisor netstack), без необходимости
+создавать TUN-интерфейс или получать root-права.
 
 ## Архитектура
 
@@ -10,10 +10,11 @@ TUN-интерфейс или получать root-права.
 graph TB
     App[Приложение]
 
-    subgraph yggstack
-        Obj[yggstack.Obj]
+subgraph ratatoskr
+Obj[ratatoskr.Obj]
         SOCKS[SOCKS5-прокси]
         Resolver[Резолвер .pk.ygg / DNS]
+PeerMgr[PeerManager — выбор пиров]
     end
 
 subgraph core
@@ -32,9 +33,11 @@ end
 App --> Obj
 Obj --> CoreObj
 Obj --> SOCKS
+Obj --> PeerMgr
 SOCKS --> Resolver
 SOCKS -->|DialContext|CoreObj
 Resolver -->|DialContext для DNS|CoreObj
+PeerMgr -->|AddPeer / RemovePeer|CoreObj
 
 CoreObj --> Netstack
 CoreObj --> Multicast
@@ -107,7 +110,7 @@ graph LR
 
 ```mermaid
 graph LR
-subgraph "yggstack (корневой пакет)"
+subgraph "ratatoskr (корневой пакет)"
 A[Obj — фасад]
 B[ConfigObj]
 C[SOCKSConfigObj]
@@ -119,6 +122,11 @@ E[Interface — контракт]
 F[netstackObj — TCP/UDP стек]
 G[nicObj — LinkEndpoint]
 H[componentObj — lifecycle]
+end
+
+subgraph "peermgr"
+PM[Obj — менеджер пиров]
+SEL[selector — выбор лучших]
 end
 
 subgraph "resolver"
@@ -133,6 +141,9 @@ end
 A -->|встраивает|E
 A -->|использует|J
 A -->|создаёт|I
+A -->|опционально|PM
+PM -->|AddPeer/RemovePeer|E
+PM --> SEL
 D -->|реализует|E
 D -->|содержит|F
 F -->|содержит|G
@@ -142,14 +153,14 @@ J -->|реализует|K
 
 ## Пакеты
 
-### `yggstack` (корневой)
+### `ratatoskr` (корневой)
 
-Фасад для встраивания. Объединяет ядро, SOCKS-прокси и резолвер в одну точку входа.
+Фасад для встраивания. Объединяет ядро, SOCKS-прокси, резолвер и менеджер пиров в одну точку входа.
 
 | Тип              | Назначение                                                              |
 |------------------|-------------------------------------------------------------------------|
 | `Obj`            | Узел с полным набором возможностей: сетевые методы + SOCKS + управление |
-| `ConfigObj`      | Контекст, конфиг Yggdrasil, логгер, таймаут                             |
+| `ConfigObj`      | Контекст, конфиг Yggdrasil, логгер, таймаут, менеджер пиров             |
 | `SOCKSConfigObj` | Адрес прокси, DNS-сервер, verbose, лимит соединений                     |
 
 ### `core`
@@ -163,6 +174,34 @@ J -->|реализует|K
 | `netstackObj`  | gVisor TCP/UDP/ICMP стек                                                     |
 | `nicObj`       | Мост между gVisor и Yggdrasil на уровне IPv6-пакетов                         |
 | `componentObj` | Обобщённый Enable/Disable lifecycle для multicast и admin                    |
+
+### `peermgr`
+
+Менеджер пиров — автоматический выбор и поддержание оптимального набора пиров.
+
+| Тип         | Назначение                                                |
+|-------------|-----------------------------------------------------------|
+| `Obj`       | Менеджер: пробинг, выбор лучших, периодическое обновление |
+| `ConfigObj` | Параметры: список кандидатов, таймауты, стратегия выбора  |
+
+**Режимы `MaxPerProto`:**
+
+| Значение  | Поведение                                                                    |
+|-----------|------------------------------------------------------------------------------|
+| `0` / `1` | Один лучший пир на протокол (по умолчанию)                                   |
+| `N > 1`   | Топ-N пиров на протокол, отсортированных по латентности                      |
+| `-1`      | Пассивный режим: добавить всех кандидатов без выбора; пробинг не выполняется |
+
+**Логика `optimizeActive`:**
+
+```mermaid
+flowchart TD
+    ADD[AddPeer для всех кандидатов] --> WAIT[Ожидание ProbeTimeout]
+    WAIT --> BUILD[buildResults: сопоставить с GetPeers]
+    BUILD --> SELECT[selectBest: топ-N по протоколу]
+    SELECT --> REMOVE[RemovePeer для проигравших]
+    REMOVE --> STORE[Сохранить active список]
+```
 
 ### `resolver`
 
@@ -204,14 +243,25 @@ stateDiagram-v2
 
 ## Конфигурация
 
-### ConfigObj (yggstack)
+### ConfigObj (ratatoskr)
 
-| Поле              | Тип                  | По умолчанию | Описание                                                                                           |
-|-------------------|----------------------|--------------|----------------------------------------------------------------------------------------------------|
-| `Ctx`             | `context.Context`    | `nil`        | Родительский контекст; при отмене узел автоматически вызывает `Close()`. `nil` — ручное управление |
-| `Config`          | `*config.NodeConfig` | `nil`        | Конфигурация Yggdrasil (ключи, пиры, listen-адреса). `nil` — генерируются случайные ключи          |
-| `Logger`          | `yggcore.Logger`     | `nil`        | Логгер; `nil` — логи отбрасываются (noop). Передаётся и в ядро, и в SOCKS                          |
-| `CoreStopTimeout` | `time.Duration`      | `0`          | Таймаут `core.Stop()` при завершении. `0` — ожидание без ограничений                               |
+| Поле              | Тип                  | По умолчанию | Описание                                                                                                                                    |
+|-------------------|----------------------|--------------|---------------------------------------------------------------------------------------------------------------------------------------------|
+| `Ctx`             | `context.Context`    | `nil`        | Родительский контекст; при отмене узел автоматически вызывает `Close()`. `nil` — ручное управление                                          |
+| `Config`          | `*config.NodeConfig` | `nil`        | Конфигурация Yggdrasil (ключи, listen-адреса). `nil` — генерируются случайные ключи. `Config.Peers` должен быть пустым если задан `Peers`   |
+| `Logger`          | `yggcore.Logger`     | `nil`        | Логгер; `nil` — логи отбрасываются (noop). Передаётся и в ядро, и в SOCKS, и в менеджер пиров                                               |
+| `CoreStopTimeout` | `time.Duration`      | `0`          | Таймаут `core.Stop()` при завершении. `0` — ожидание без ограничений                                                                        |
+| `Peers`           | `*peermgr.ConfigObj` | `nil`        | Менеджер пиров. `nil` — пиры берутся из `Config.Peers` как в стандартном Yggdrasil. Не `nil` + `Config.Peers` непустой — ошибка при `New()` |
+
+### ConfigObj (peermgr)
+
+| Поле              | Тип              | По умолчанию | Описание                                                                         |
+|-------------------|------------------|--------------|----------------------------------------------------------------------------------|
+| `Peers`           | `[]string`       | обязательное | Список URI-кандидатов: `"tls://host:port"`, `"tcp://..."`, `"quic://..."` и т.д. |
+| `ProbeTimeout`    | `time.Duration`  | `10s`        | Ожидание подключения при пробинге. Игнорируется при `MaxPerProto == -1`          |
+| `RefreshInterval` | `time.Duration`  | `0`          | Интервал автоматической перепроверки. `0` — только при запуске                   |
+| `MaxPerProto`     | `int`            | `1`          | Число лучших пиров на протокол. `-1` — пассивный режим                           |
+| `Logger`          | `yggcore.Logger` | `nil`        | Логгер; `nil` — берётся из родительского `ConfigObj.Logger`                      |
 
 ### ConfigObj (core)
 
@@ -222,13 +272,13 @@ stateDiagram-v2
 | `CoreStopTimeout` | `time.Duration`      | `0`          | Таймаут `core.Stop()`. `0` — без ограничений     |
 | `RSTQueueSize`    | `int`                | `100`        | Размер очереди отложенных RST-пакетов. `0` → 100 |
 
-### SOCKSConfigObj (yggstack)
+### SOCKSConfigObj (ratatoskr)
 
 | Поле             | Тип    | По умолчанию | Описание                                                                                                                    |
 |------------------|--------|--------------|-----------------------------------------------------------------------------------------------------------------------------|
 | `Addr`           | string | обязательное | Адрес прокси: TCP `"127.0.0.1:1080"` или Unix-сокет `"/tmp/ygg.sock"`. Путь, начинающийся с `/` или `.` — Unix              |
 | `Nameserver`     | string | `""`         | DNS-сервер в сети Yggdrasil. Формат: `"[ipv6]:port"`. Пустая строка — только `.pk.ygg` и IP-литералы                        |
-| `Verbose`        | bool   | `false`      | Подробное логирование каждого SOCKS-соединения (через Logger ядра)                                                          |
+| `Verbose`        | bool   | `false`      | Подробное логирование каждого SOCKS-соединения                                                                              |
 | `MaxConnections` | int    | `0`          | Максимум одновременных соединений. `0` — без ограничений. При достижении лимита новые соединения ожидают освобождения слота |
 
 ## Валидация адресов
@@ -272,6 +322,8 @@ flowchart TD
 | `EnableMulticast` / `DisableMulticast`  | Защищены `sync.RWMutex`; повторный `Enable` — ошибка                                |
 | `EnableAdmin` / `DisableAdmin`          | Аналогично multicast                                                                |
 | `AddPeer` / `RemovePeer`                | Потокобезопасны (делегируют в `yggdrasil-go/core`)                                  |
+| `PeerManagerActive`                     | Защищён мьютексом внутри `peermgr.Obj`; возвращает копию списка                     |
+| `PeerManagerOptimize`                   | Блокирует вызывающую горутину до завершения пробинга                                |
 | `Close`                                 | Идемпотентный (`sync.Once`); безопасен для повторного вызова и конкурентного вызова |
 | `Address`, `Subnet`, `PublicKey`, `MTU` | Потокобезопасны; только чтение                                                      |
 
@@ -282,19 +334,20 @@ flowchart TD
 
 ### Методы возвращающие ошибки
 
-| Метод             | Ошибки                                                                        |
-|-------------------|-------------------------------------------------------------------------------|
-| `New`             | Ошибка создания core, ошибка создания netstack                                |
-| `DialContext`     | `ErrNotAvailable` (узел закрыт), ошибки gVisor, невалидный адрес              |
-| `Listen`          | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                            |
-| `ListenPacket`    | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                            |
-| `EnableSOCKS`     | `"SOCKS already enabled"`, ошибка listen (занят порт / невалидный путь)       |
-| `DisableSOCKS`    | Ошибка закрытия listener                                                      |
-| `EnableMulticast` | `"multicast already enabled"`, невалидный regex, ошибка `multicast.New`       |
-| `EnableAdmin`     | `"admin already enabled"`, невалидный адрес, `admin.New` вернул nil           |
-| `AddPeer`         | Невалидный URI, ошибка ядра                                                   |
-| `RemovePeer`      | Невалидный URI, ошибка ядра                                                   |
-| `Close`           | Всегда `nil`; ошибки компонентов логируются через `Warnf`, но не возвращаются |
+| Метод                 | Ошибки                                                                         |
+|-----------------------|--------------------------------------------------------------------------------|
+| `New`                 | Ошибка создания core, конфликт `Config.Peers` + `Peers`, ошибка старта peermgr |
+| `DialContext`         | `ErrNotAvailable` (узел закрыт), ошибки gVisor, невалидный адрес               |
+| `Listen`              | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                             |
+| `ListenPacket`        | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                             |
+| `EnableSOCKS`         | `"SOCKS already enabled"`, ошибка listen (занят порт / невалидный путь)        |
+| `DisableSOCKS`        | Ошибка закрытия listener                                                       |
+| `EnableMulticast`     | `"multicast already enabled"`, невалидный regex, ошибка `multicast.New`        |
+| `EnableAdmin`         | `"admin already enabled"`, невалидный адрес, `admin.New` вернул nil            |
+| `AddPeer`             | Невалидный URI, ошибка ядра                                                    |
+| `RemovePeer`          | Невалидный URI, ошибка ядра                                                    |
+| `PeerManagerOptimize` | `"peermgr: not running"` если менеджер не запущен                              |
+| `Close`               | Всегда `nil`; ошибки компонентов логируются через `Warnf`, но не возвращаются  |
 
 ### ErrNotAvailable
 
@@ -322,12 +375,15 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    START([Создание]) --> NEW[yggstack.New]
+    START([Создание]) --> NEW[ratatoskr.New]
     NEW --> CORE[Запуск Yggdrasil Core]
     CORE --> NS[Создание netstack + NIC]
     NS --> GOROUTINES[Запуск goroutine: read + RST]
     GOROUTINES --> ROUTE[Маршрут 0200::/7]
-    ROUTE --> READY([Узел готов])
+    ROUTE --> PMCHECK{Peers задан?}
+    PMCHECK -->|Да| PMSTART[peermgr.Start — пробинг асинхронно]
+    PMCHECK -->|Нет| READY
+    PMSTART --> READY([Узел готов])
     READY -->|опционально| SOCKS[EnableSOCKS]
     READY -->|опционально| MC[EnableMulticast]
     READY -->|опционально| ADM[EnableAdmin]
@@ -337,26 +393,26 @@ flowchart TD
     ADM --> READY
     PEER --> READY
     READY --> CLOSE[Close]
-    CLOSE --> S1[Disable SOCKS]
+    CLOSE --> S0[peermgr.Stop — RemovePeer активных]
+    S0 --> S1[Disable SOCKS]
     S1 --> S2[Disable Multicast + Admin]
     S2 --> S3[Закрыть listeners]
     S3 --> S4[core.Stop]
     S4 --> S5[Закрыть NIC: done → ipv6rwc.Close → wait goroutines]
-S5 --> S6[Уничтожить gVisor stack]
-S6 --> DONE([Завершено])
+    S5 --> S6[Уничтожить gVisor stack]
+    S6 --> DONE([Завершено])
 ```
 
 ### Порядок shutdown (Close)
 
-Порядок остановки критичен для корректного завершения без deadlock:
-
-1. **Disable SOCKS** — закрытие listener останавливает `Serve`, `wg.Wait()` ждёт завершения. Unix-сокет удаляется
-2. **Disable Multicast + Admin** — вызов `stopFn()` каждого компонента
-3. **Закрытие listeners** — все listener'ы, созданные через `Listen`/`ListenPacket`, закрываются
-4. **core.Stop()** — остановка Yggdrasil core. Разблокирует `ipv6rwc.Read()` в NIC
-5. **NIC Close** — `close(done)` сигнализирует горутинам, `ipv6rwc.Close()`, ожидание `readDone` и `rstDone`, очистка
+1. **peermgr.Stop()** — отмена контекста пробинга, ожидание горутин, `RemovePeer` всех активных пиров
+2. **Disable SOCKS** — закрытие listener останавливает `Serve`, `wg.Wait()` ждёт завершения. Unix-сокет удаляется
+3. **Disable Multicast + Admin** — вызов `stopFn()` каждого компонента
+4. **Закрытие listeners** — все listener'ы, созданные через `Listen`/`ListenPacket`, закрываются
+5. **core.Stop()** — остановка Yggdrasil core. Разблокирует `ipv6rwc.Read()` в NIC
+6. **NIC Close** — `close(done)` сигнализирует горутинам, `ipv6rwc.Close()`, ожидание `readDone` и `rstDone`, очистка
    RST-очереди, `RemoveNIC`
-6. **stack.Destroy()** — уничтожение gVisor стека
+7. **stack.Destroy()** — уничтожение gVisor стека
 
 При наличии `CoreStopTimeout > 0`: если `core.Stop()` не завершился за указанное время,
 логируется предупреждение и shutdown продолжается.
@@ -372,57 +428,93 @@ S6 --> DONE([Завершено])
 package main
 
 import (
-	"context"
-	"fmt"
-	"net/http"
+    "context"
+    "fmt"
+    "net/http"
 
-	"github.com/yggdrasil-network/yggstack/temp-new"
+    "github.com/voluminor/ratatoskr"
 )
 
 func main() {
-	// Создаём узел (случайные ключи)
-	node, err := yggstack.New(yggstack.ConfigObj{
-		Ctx: context.Background(),
-	})
-	if err != nil {
-		panic(err)
-	}
-	defer node.Close()
+    node, err := ratatoskr.New(ratatoskr.ConfigObj{
+        Ctx: context.Background(),
+    })
+    if err != nil {
+        panic(err)
+    }
+    defer node.Close()
 
-	fmt.Println("Адрес:", node.Address())
+    fmt.Println("Адрес:", node.Address())
 
-	// HTTP-клиент через Yggdrasil
-	client := &http.Client{
-		Transport: &http.Transport{
-			DialContext: node.DialContext,
-		},
-	}
+    client := &http.Client{
+        Transport: &http.Transport{
+            DialContext: node.DialContext,
+        },
+    }
 
-	// Запрос к Yggdrasil-узлу
-	resp, err := client.Get("http://[200:abcd::1]:8080/")
-	if err != nil {
-		panic(err)
-	}
-	defer resp.Body.Close()
+    resp, err := client.Get("http://[200:abcd::1]:8080/")
+    if err != nil {
+        panic(err)
+    }
+    defer resp.Body.Close()
 }
+```
+
+## Менеджер пиров
+
+```go
+import (
+"github.com/voluminor/ratatoskr"
+"github.com/voluminor/ratatoskr/mod/peermgr"
+)
+
+node, err := ratatoskr.New(ratatoskr.ConfigObj{
+Ctx: ctx,
+Peers: &peermgr.ConfigObj{
+Peers: []string{
+"tls://peer1.example.com:17117",
+"tls://peer2.example.com:17117",
+"quic://peer3.example.com:17117",
+},
+ProbeTimeout:    10 * time.Second, // ожидание при пробинге
+RefreshInterval: 5 * time.Minute, // переперобировать каждые 5 минут
+MaxPerProto:     1, // один лучший пир на протокол
+},
+})
+
+// Текущие активные пиры (выбранные менеджером)
+active := node.PeerManagerActive()
+
+// Внеплановая перепроверка (блокирует)
+err = node.PeerManagerOptimize()
+```
+
+**Пассивный режим** (`MaxPerProto: -1`) — добавить всех кандидатов без выбора лучшего,
+поведение идентично стандартному Yggdrasil с `Config.Peers`:
+
+```go
+Peers: &peermgr.ConfigObj{
+Peers:           peers,
+MaxPerProto:     -1,
+RefreshInterval: 10 * time.Minute, // переподключать весь список целиком
+},
 ```
 
 ## Запуск с SOCKS5-прокси
 
 ```go
-// Включаем SOCKS5
-err = node.EnableSOCKS(yggstack.SOCKSConfigObj{
+err = node.EnableSOCKS(ratatoskr.SOCKSConfigObj{
 Addr:           "127.0.0.1:1080",
-Nameserver:     "[200:abcd::1]:53", // DNS через Yggdrasil
+Nameserver:     "[200:abcd::1]:53",
 Verbose:        true,
-MaxConnections: 128, // 0 = без ограничений
+MaxConnections: 128,
 })
 if err != nil {
 panic(err)
 }
 defer node.DisableSOCKS()
 
-// Теперь curl --proxy socks5h://127.0.0.1:1080 http://example.pk.ygg/
+// curl --proxy socks5h://127.0.0.1:1080 http://example.pk.ygg/
 ```
 
 ## TCP-сервер в сети Yggdrasil
@@ -454,12 +546,15 @@ n, addr, err := pc.ReadFrom(buf)
 ## Управление пирами в runtime
 
 ```go
-// Добавить пир
+// Добавить пир вручную (без менеджера)
 err = node.AddPeer("tcp://1.2.3.4:5678")
 err = node.AddPeer("quic://[200:abc::1]:5678")
 
 // Удалить пир
 err = node.RemovePeer("tcp://1.2.3.4:5678")
+
+// Инициировать переподключение ко всем отключённым пирам
+node.RetryPeers()
 ```
 
 ## Multicast и Admin

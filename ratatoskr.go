@@ -30,6 +30,10 @@ type Obj struct {
 // New создаёт и запускает узел.
 // Если cfg.Peers задан, запускается менеджер пиров; cfg.Config.Peers при этом должен быть пустым.
 func New(cfg ConfigObj) (*Obj, error) {
+	if cfg.Logger == nil {
+		cfg.Logger = noopLoggerObj{}
+	}
+
 	if cfg.Peers != nil && cfg.Config != nil && len(cfg.Config.Peers) > 0 {
 		return nil, fmt.Errorf("cannot use Config.Peers and Peers manager simultaneously")
 	}
@@ -134,10 +138,10 @@ func (o *Obj) Close() error {
 		if o.peerMgr != nil {
 			o.peerMgr.Stop()
 		}
-		if err := o.socksServer.Disable(); err != nil && o.logger != nil {
+		if err := o.socksServer.Disable(); err != nil {
 			o.logger.Warnf("socks disable: %v", err)
 		}
-		if err := o.Interface.Close(); err != nil && o.logger != nil {
+		if err := o.Interface.Close(); err != nil {
 			o.logger.Warnf("core close: %v", err)
 		}
 	})

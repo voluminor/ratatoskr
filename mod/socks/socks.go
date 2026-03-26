@@ -65,7 +65,7 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 	if cfg.Resolver != nil {
 		opts = append(opts, socks5.WithResolver(cfg.Resolver))
 	}
-	if cfg.Verbose && cfg.Logger != nil {
+	if cfg.Verbose {
 		opts = append(opts, socks5.WithLogger(cfg.Logger))
 	}
 	server := socks5.NewServer(opts...)
@@ -94,9 +94,7 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 		}
 	}
 
-	if s.logger != nil {
-		s.logger.Infof("SOCKS5 started on %s", cfg.Addr)
-	}
+	s.logger.Infof("SOCKS5 started on %s", cfg.Addr)
 
 	s.wg.Add(1)
 	go func() {
@@ -128,9 +126,7 @@ func (s *Obj) Disable() error {
 	}
 	s.wg.Wait()
 
-	if s.logger != nil {
-		s.logger.Infof("SOCKS5 stopped on %s", addr)
-	}
+	s.logger.Infof("SOCKS5 stopped on %s", addr)
 	return err
 }
 

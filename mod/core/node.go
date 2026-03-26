@@ -47,9 +47,6 @@ type Obj struct {
 // Для корректного завершения вызывающий обязан вызвать Close()
 func New(cfg ConfigObj) (*Obj, error) {
 	log := cfg.Logger
-	if log == nil {
-		log = noopLoggerObj{}
-	}
 
 	nodeCfg := cfg.Config
 	if nodeCfg == nil {
