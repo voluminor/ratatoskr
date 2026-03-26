@@ -9,18 +9,18 @@ import (
 
 // // // // // // // // // //
 
-// Допустимые транспортные схемы Yggdrasil
+// Allowed Yggdrasil transport schemes
 var AllowedSchemes = []string{"tcp", "tls", "quic", "ws", "wss"}
 
-// peerEntryObj — валидированный пир: оригинальный URI + схема транспорта
+// peerEntryObj — validated peer: original URI + transport scheme
 type peerEntryObj struct {
 	URI    string
 	Scheme string
 }
 
-// ValidatePeers проверяет массив URI-строк:
-// пустые строки отсекаются, дубликаты → ошибка, затем парсинг и проверка схемы.
-// Порядок валидных записей сохраняется
+// ValidatePeers validates an array of URI strings:
+// empty strings are skipped, duplicates → error, then URI parsing and scheme validation.
+// Order of valid entries is preserved
 func ValidatePeers(peers []string) ([]peerEntryObj, []error) {
 	var errs []error
 	result := make([]peerEntryObj, 0, len(peers))

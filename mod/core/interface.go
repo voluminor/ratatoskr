@@ -11,7 +11,7 @@ import (
 
 // // // // // // // // // //
 
-// Interface — публичный контракт узла Yggdrasil
+// Interface — public contract of the Yggdrasil node
 type Interface interface {
 	DialContext(ctx context.Context, network, address string) (net.Conn, error)
 	Listen(network, address string) (net.Listener, error)
@@ -23,7 +23,7 @@ type Interface interface {
 	AddPeer(uri string) error
 	RemovePeer(uri string) error
 	GetPeers() []yggcore.PeerInfo
-	EnableMulticast(logger *golog.Logger) error // todo: gologme — временная зависимость до новой версии Yggdrasil
+	EnableMulticast(logger *golog.Logger) error // todo: gologme — temporary dependency until a new Yggdrasil release
 	DisableMulticast() error
 	EnableAdmin(addr string) error
 	DisableAdmin() error

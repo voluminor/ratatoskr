@@ -18,7 +18,7 @@ import (
 
 var _ Interface = (*Obj)(nil)
 
-// Obj — SOCKS5-прокси-сервер поверх Yggdrasil
+// Obj — SOCKS5 proxy server over Yggdrasil
 type Obj struct {
 	network  proxy.ContextDialer
 	listener net.Listener
@@ -29,28 +29,28 @@ type Obj struct {
 	wg       sync.WaitGroup
 }
 
-// EnableConfigObj — параметры запуска SOCKS5
+// EnableConfigObj — SOCKS5 startup parameters
 type EnableConfigObj struct {
-	// Адрес: TCP "127.0.0.1:1080" или Unix "/tmp/ygg.sock"
+	// Address: TCP "127.0.0.1:1080" or Unix "/tmp/ygg.sock"
 	Addr string
-	// Резолвер имён (.pk.ygg, DNS)
+	// Name resolver (.pk.ygg, DNS)
 	Resolver socks5.NameResolver
-	// Подробное логирование каждого соединения
+	// Verbose logging for each connection
 	Verbose bool
-	// Логгер; nil → без логирования
+	// Logger; nil → no logging
 	Logger yggcore.Logger
-	// Максимум одновременных соединений; 0 → без ограничений
+	// Maximum simultaneous connections; 0 → unlimited
 	MaxConnections int
 }
 
-// New создаёт SOCKS-сервер (не запускает его)
+// New creates a SOCKS server (does not start it)
 func New(network proxy.ContextDialer) *Obj {
 	return &Obj{network: network}
 }
 
 // //
 
-// Enable запускает SOCKS5-прокси с указанными параметрами
+// Enable starts the SOCKS5 proxy with the given parameters
 func (s *Obj) Enable(cfg EnableConfigObj) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -72,7 +72,7 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 
 	s.logger = cfg.Logger
 
-	// Путь файловой системы → Unix-сокет, иначе TCP
+	// Filesystem path → Unix socket, otherwise TCP
 	var err error
 	if strings.HasPrefix(cfg.Addr, "/") || strings.HasPrefix(cfg.Addr, ".") {
 		s.listener, err = listenUnix(cfg.Addr)
@@ -128,7 +128,7 @@ func (s *Obj) Disable() error {
 	return err
 }
 
-// Addr — адрес прослушивания; пусто если не запущен
+// Addr — listen address; empty if not started
 func (s *Obj) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -149,7 +149,7 @@ func (s *Obj) IsEnabled() bool {
 
 // //
 
-// listenUnix открывает Unix-сокет с обработкой устаревших файлов
+// listenUnix opens a Unix socket with stale file handling
 func listenUnix(path string) (net.Listener, error) {
 	ln, err := net.Listen("unix", path)
 	if err == nil {
@@ -158,20 +158,20 @@ func listenUnix(path string) (net.Listener, error) {
 	if !isAddrInUse(err) {
 		return nil, err
 	}
-	// EADDRINUSE — проверяем, жив ли процесс-владелец
+	// EADDRINUSE — check if the owning process is still alive
 	probe, dialErr := net.Dial("unix", path)
 	if dialErr == nil {
 		_ = probe.Close()
 		return nil, fmt.Errorf("another instance is listening on %q", path)
 	}
-	// Процесс мёртв — удаляем устаревший сокет и сразу слушаем
+	// Process is dead — remove the stale socket and listen immediately
 	if rmErr := removeUnixSocket(path); rmErr != nil {
 		return nil, rmErr
 	}
 	return net.Listen("unix", path)
 }
 
-// removeUnixSocket — безопасное удаление; отказ при символической ссылке
+// removeUnixSocket — safe removal; refuses to remove symlinks
 func removeUnixSocket(path string) error {
 	fi, err := os.Lstat(path)
 	if err != nil {
@@ -196,7 +196,7 @@ func isAddrInUse(err error) bool {
 
 // //
 
-// limitedListenerObj — семафор на число одновременных соединений
+// limitedListenerObj — semaphore limiting simultaneous connections
 type limitedListenerObj struct {
 	net.Listener
 	sem chan struct{}
@@ -211,7 +211,7 @@ func (l *limitedListenerObj) Accept() (net.Conn, error) {
 	return &limitedConnObj{Conn: conn, sem: l.sem}, nil
 }
 
-// limitedConnObj — соединение, освобождающее слот семафора при Close()
+// limitedConnObj — connection that releases a semaphore slot on Close()
 type limitedConnObj struct {
 	net.Conn
 	once sync.Once

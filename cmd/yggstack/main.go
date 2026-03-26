@@ -56,7 +56,7 @@ func main() {
 
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	// Логгер
+	// Logger
 	var logger *log.Logger
 	switch *logto {
 	case "stdout":
@@ -186,12 +186,12 @@ func main() {
 		panic(err)
 	}
 
-	// Мультикаст
+	// Multicast
 	if err := node.EnableMulticast(logger); err != nil {
 		logger.Warnf("Multicast: %v", err)
 	}
 
-	// SOCKS5-прокси
+	// SOCKS5 proxy
 	if *socks != "" {
 		if err := node.EnableSOCKS(ratatoskr.SOCKSConfigObj{
 			Addr:           *socks,
@@ -203,7 +203,7 @@ func main() {
 		}
 	}
 
-	// Форвардинг портов
+	// Port forwarding
 	mgr := forward.New(logger, 120*time.Second)
 	mgr.AddLocalTCP(localtcp...)
 	mgr.AddLocalUDP(localudp...)

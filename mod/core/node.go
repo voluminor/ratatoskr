@@ -27,8 +27,8 @@ var ErrNotAvailable = fmt.Errorf("netstack is not available")
 
 var _ Interface = (*Obj)(nil)
 
-// Obj — узел Yggdrasil с userspace TCP/UDP стеком.
-// Предоставляет стандартные Go-сетевые методы: DialContext, Listen, ListenPacket
+// Obj — Yggdrasil node with a userspace TCP/UDP stack.
+// Provides standard Go networking methods: DialContext, Listen, ListenPacket
 type Obj struct {
 	corePtr      atomic.Pointer[yggcore.Core]
 	nodeCfg      *config.NodeConfig
@@ -45,8 +45,8 @@ type Obj struct {
 	closeErr     error
 }
 
-// New создаёт и запускает узел Yggdrasil.
-// Для корректного завершения вызывающий обязан вызвать Close()
+// New creates and starts the Yggdrasil node.
+// For proper shutdown, the caller must call Close()
 func New(cfg ConfigObj) (*Obj, error) {
 	log := cfg.Logger
 
@@ -70,14 +70,14 @@ func New(cfg ConfigObj) (*Obj, error) {
 		adminSocket:  componentObj{name: "admin"},
 	}
 
-	// Ядро Yggdrasil
+	// Yggdrasil core
 	c, err := yggcore.New(nodeCfg.Certificate, log, buildCoreOptions(nodeCfg, log)...)
 	if err != nil {
 		return nil, fmt.Errorf("core.New: %w", err)
 	}
 	obj.corePtr.Store(c)
 
-	// Сетевой стек
+	// Network stack
 	ns, err := newNetstack(c, log, rstQueueSize)
 	if err != nil {
 		c.Stop()
@@ -94,8 +94,8 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 // //
 
-// Close останавливает узел; безопасен для повторного вызова.
-// CoreStopTimeout ограничивает весь процесс завершения, не только core.Stop()
+// Close stops the node; safe to call multiple times.
+// CoreStopTimeout limits the entire shutdown process, not just core.Stop()
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		if o.coreTimeout > 0 {
@@ -119,11 +119,11 @@ func (o *Obj) Close() error {
 	return o.closeErr
 }
 
-// closeSequence — последовательное завершение всех компонентов
+// closeSequence — sequential shutdown of all components
 func (o *Obj) closeSequence() error {
 	var errs []error
 
-	// Компоненты — до закрытия core
+	// Components — before closing core
 	if err := o.multicast.disable(); err != nil {
 		errs = append(errs, fmt.Errorf("multicast: %w", err))
 	}
@@ -131,7 +131,7 @@ func (o *Obj) closeSequence() error {
 		errs = append(errs, fmt.Errorf("admin: %w", err))
 	}
 
-	// Зарегистрированные ресурсы (listeners и т.д.)
+	// Registered resources (listeners, etc.)
 	o.closersMu.Lock()
 	for _, c := range o.closers {
 		if err := c.Close(); err != nil {
@@ -141,8 +141,8 @@ func (o *Obj) closeSequence() error {
 	o.closers = nil
 	o.closersMu.Unlock()
 
-	// Core останавливается до netstack: ipv6rwc.Read() разблокируется
-	// только после core.Stop()
+	// Core stops before netstack: ipv6rwc.Read() unblocks
+	// only after core.Stop()
 	if c := o.corePtr.Swap(nil); c != nil {
 		c.Stop()
 	}
@@ -156,7 +156,7 @@ func (o *Obj) closeSequence() error {
 
 // //
 
-// DialContext открывает соединение к Yggdrasil-адресу; совместим с http.Transport.DialContext
+// DialContext opens a connection to a Yggdrasil address; compatible with http.Transport.DialContext
 func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -165,8 +165,8 @@ func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Con
 	return ns.DialContext(ctx, network, address)
 }
 
-// Listen создаёт TCP listener; ":port" или "[ipv6]:port".
-// Закрывается автоматически при Close()
+// Listen creates a TCP listener; ":port" or "[ipv6]:port".
+// Closed automatically on Close()
 func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -180,8 +180,8 @@ func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	return ln, nil
 }
 
-// ListenPacket создаёт UDP listener; ":port" или "[ipv6]:port".
-// Закрывается автоматически при Close()
+// ListenPacket creates a UDP listener; ":port" or "[ipv6]:port".
+// Closed automatically on Close()
 func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -197,12 +197,12 @@ func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 
 // //
 
-// UnsafeCore — прямой доступ к ядру; нестабильный API
+// UnsafeCore — direct access to the core; unstable API
 func (o *Obj) UnsafeCore() *yggcore.Core {
 	return o.corePtr.Load()
 }
 
-// Address — IPv6-адрес узла в диапазоне 200::/7
+// Address — node IPv6 address in the 200::/7 range
 func (o *Obj) Address() net.IP {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -212,7 +212,7 @@ func (o *Obj) Address() net.IP {
 	return net.IP(addr[:])
 }
 
-// Subnet — маршрутизируемая /64 подсеть узла в диапазоне 300::/7
+// Subnet — routable /64 subnet of the node in the 300::/7 range
 func (o *Obj) Subnet() net.IPNet {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -221,7 +221,7 @@ func (o *Obj) Subnet() net.IPNet {
 	return c.Subnet()
 }
 
-// PublicKey — ed25519 публичный ключ узла (32 байта)
+// PublicKey — ed25519 public key of the node (32 bytes)
 func (o *Obj) PublicKey() ed25519.PublicKey {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -230,7 +230,7 @@ func (o *Obj) PublicKey() ed25519.PublicKey {
 	return c.PublicKey()
 }
 
-// MTU возвращает MTU NIC-интерфейса
+// MTU returns the MTU of the NIC interface
 func (o *Obj) MTU() uint64 {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -241,7 +241,7 @@ func (o *Obj) MTU() uint64 {
 
 // //
 
-// RSTDropped — счётчик отброшенных RST при переполнении очереди
+// RSTDropped — count of RST packets dropped on queue overflow
 func (o *Obj) RSTDropped() int64 {
 	ns := o.netstackPtr.Load()
 	if ns == nil || ns.nic == nil {
@@ -250,7 +250,7 @@ func (o *Obj) RSTDropped() int64 {
 	return ns.nic.rstDropped.Load()
 }
 
-// AddPeer добавляет пир; URI: "tcp://...", "quic://...", etc.
+// AddPeer adds a peer; URI: "tcp://...", "quic://...", etc.
 func (o *Obj) AddPeer(uri string) error {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -275,7 +275,7 @@ func (o *Obj) RemovePeer(uri string) error {
 	return c.RemovePeer(u, "")
 }
 
-// GetPeers — все пиры (подключённые и настроенные)
+// GetPeers — all peers (connected and configured)
 func (o *Obj) GetPeers() []yggcore.PeerInfo {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -286,8 +286,8 @@ func (o *Obj) GetPeers() []yggcore.PeerInfo {
 
 // //
 
-// EnableMulticast включает mDNS-обнаружение в локальной сети.
-// Интерфейсы берутся из NodeConfig.MulticastInterfaces
+// EnableMulticast enables mDNS discovery on the local network.
+// Interfaces are taken from NodeConfig.MulticastInterfaces
 func (o *Obj) EnableMulticast(logger *golog.Logger) error {
 	err := o.multicast.enable(func() (any, func() error, error) {
 		c := o.corePtr.Load()
@@ -328,7 +328,7 @@ func (o *Obj) DisableMulticast() error {
 
 // //
 
-// EnableAdmin запускает admin-сокет; "unix:///path" или "tcp://host:port"
+// EnableAdmin starts the admin socket; "unix:///path" or "tcp://host:port"
 func (o *Obj) EnableAdmin(addr string) error {
 	err := o.adminSocket.enable(func() (any, func() error, error) {
 		c := o.corePtr.Load()
@@ -358,7 +358,7 @@ func (o *Obj) DisableAdmin() error {
 
 // //
 
-// registerAdminHandlers связывает admin и multicast если оба активны
+// registerAdminHandlers wires admin and multicast together if both are active
 func (o *Obj) registerAdminHandlers() {
 	o.handlersMu.Lock()
 	defer o.handlersMu.Unlock()

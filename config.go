@@ -12,42 +12,42 @@ import (
 
 // // // // // // // // // //
 
-// ConfigObj — параметры создания узла для встраивания
+// ConfigObj — node creation parameters for embedding
 type ConfigObj struct {
-	// Родительский контекст; при отмене узел завершает работу.
-	// nil → Close() нужно вызвать вручную
+	// Parent context; cancellation shuts down the node.
+	// nil → Close() must be called manually
 	Ctx context.Context
 
-	// Конфигурация Yggdrasil; nil → случайные ключи.
-	// Config.Peers должен быть пустым если задан Peers.
+	// Yggdrasil configuration; nil → random keys.
+	// Config.Peers must be empty if Peers is set.
 	Config *config.NodeConfig
 
-	// Логгер; nil → логи отбрасываются
+	// Logger; nil → logs are discarded
 	Logger yggcore.Logger
 
-	// Таймаут core.Stop(); 0 → без ограничения
+	// core.Stop() timeout; 0 → no limit
 	CoreStopTimeout time.Duration
 
-	// Peers запускает менеджер пиров вместо стандартного механизма Yggdrasil.
-	// nil → пиры берутся из Config.Peers как обычно.
-	// Не nil + Config.Peers непустой → ошибка при New().
+	// Peers enables the peer manager instead of the standard Yggdrasil mechanism.
+	// nil → peers are taken from Config.Peers as usual.
+	// Not nil + Config.Peers non-empty → error in New().
 	Peers *peermgr.ConfigObj
 }
 
 // //
 
-// SOCKSConfigObj — параметры запуска SOCKS5-прокси
+// SOCKSConfigObj — SOCKS5 proxy startup parameters
 type SOCKSConfigObj struct {
-	// Адрес: TCP "127.0.0.1:1080" или Unix "/tmp/ygg.sock"
+	// Address: TCP "127.0.0.1:1080" or Unix "/tmp/ygg.sock"
 	Addr string
 
-	// DNS-сервер в сети Yggdrasil для .ygg доменов.
-	// Формат: "[ipv6]:port". Пустая строка → только .pk.ygg и литералы
+	// DNS server in the Yggdrasil network for .ygg domains.
+	// Format: "[ipv6]:port". Empty string → only .pk.ygg and literals
 	Nameserver string
 
-	// Подробное логирование SOCKS-соединений
+	// Verbose logging of SOCKS connections
 	Verbose bool
 
-	// Максимум одновременных соединений; 0 → без ограничений
+	// Maximum simultaneous connections; 0 → unlimited
 	MaxConnections int
 }

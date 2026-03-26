@@ -90,13 +90,13 @@ func (m *ManagerObj) startRemoteUDP(ctx context.Context) {
 
 // //
 
-// RunUDPLoop читает пакеты, маршрутизирует в сессии через dialFn,
-// очищает неактивные по timeout. maxSessions: 0 = без ограничений
+// RunUDPLoop reads packets, routes them to sessions via dialFn,
+// and cleans up inactive ones by timeout. maxSessions: 0 = unlimited
 func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn net.PacketConn, dialFn func() (net.Conn, error), timeout time.Duration, maxSessions int) {
 	var sessionCount atomic.Int64
 	sessions := sync.Map{}
 
-	// Очистка неактивных сессий
+	// Clean up inactive sessions
 	go func() {
 		ticker := time.NewTicker(timeout / 4)
 		defer ticker.Stop()
@@ -172,7 +172,7 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 	}
 }
 
-// ReverseProxyUDP — обратный канал: src → dst по dstAddr
+// ReverseProxyUDP — reverse channel: src → dst to dstAddr
 func ReverseProxyUDP(ctx context.Context, mtu uint64, dst net.PacketConn, dstAddr net.Addr, src net.Conn) {
 	watchDone := make(chan struct{})
 	defer close(watchDone)

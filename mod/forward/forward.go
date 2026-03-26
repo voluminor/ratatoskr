@@ -13,13 +13,13 @@ import (
 
 // // // // // // // // // //
 
-// TCPMappingObj — маппинг TCP: локальный адрес ↔ удалённый
+// TCPMappingObj — TCP mapping: local address ↔ remote
 type TCPMappingObj struct {
 	Listen *net.TCPAddr
 	Mapped *net.TCPAddr
 }
 
-// UDPMappingObj — маппинг UDP: локальный адрес ↔ удалённый
+// UDPMappingObj — UDP mapping: local address ↔ remote
 type UDPMappingObj struct {
 	Listen *net.UDPAddr
 	Mapped *net.UDPAddr
@@ -27,10 +27,10 @@ type UDPMappingObj struct {
 
 // //
 
-// DefaultTCPCloseTimeout — ожидание второй стороны TCP после закрытия первой
+// DefaultTCPCloseTimeout — wait for the TCP peer after one side closes
 const DefaultTCPCloseTimeout = 30 * time.Second
 
-// ManagerObj — менеджер правил форвардинга: New → Add* → Start
+// ManagerObj — forwarding rule manager: New → Add* → Start
 type ManagerObj struct {
 	log             yggcore.Logger
 	node            core.Interface
@@ -45,8 +45,8 @@ type ManagerObj struct {
 	remoteUDPs []UDPMappingObj
 }
 
-// New создаёт менеджер; sessionTimeout — неактивность UDP до закрытия сессии.
-// Паникует при sessionTimeout <= 0
+// New creates a manager; sessionTimeout — UDP inactivity before closing a session.
+// Panics if sessionTimeout <= 0
 func New(log yggcore.Logger, sessionTimeout time.Duration) *ManagerObj {
 	if sessionTimeout <= 0 {
 		panic("forward: sessionTimeout must be > 0")
@@ -76,28 +76,28 @@ func (m *ManagerObj) AddRemoteUDP(mappings ...UDPMappingObj) {
 	m.remoteUDPs = append(m.remoteUDPs, mappings...)
 }
 
-// SetTimeout обновляет таймаут неактивности UDP-сессий. До Start()
+// SetTimeout updates the UDP session inactivity timeout. Before Start()
 func (m *ManagerObj) SetTimeout(d time.Duration) {
 	m.timeout = d
 }
 
-// SetTCPCloseTimeout — ожидание второй стороны TCP при разрыве. До Start()
+// SetTCPCloseTimeout — wait for the TCP peer on disconnect. Before Start()
 func (m *ManagerObj) SetTCPCloseTimeout(d time.Duration) {
 	m.tcpCloseTimeout = d
 }
 
-// SetMaxUDPSessions — лимит UDP-сессий на маппинг; 0 = без ограничений. До Start()
+// SetMaxUDPSessions — UDP session limit per mapping; 0 = unlimited. Before Start()
 func (m *ManagerObj) SetMaxUDPSessions(n int) {
 	m.maxUDPSessions = n
 }
 
-// ClearLocal сбрасывает локальные маппинги. До Start()
+// ClearLocal clears local mappings. Before Start()
 func (m *ManagerObj) ClearLocal() {
 	m.localTCPs = nil
 	m.localUDPs = nil
 }
 
-// ClearRemote сбрасывает удалённые маппинги. До Start()
+// ClearRemote clears remote mappings. Before Start()
 func (m *ManagerObj) ClearRemote() {
 	m.remoteTCPs = nil
 	m.remoteUDPs = nil
@@ -105,7 +105,7 @@ func (m *ManagerObj) ClearRemote() {
 
 // //
 
-// Start запускает горутины для всех маппингов; вызывается один раз
+// Start launches goroutines for all mappings; called once
 func (m *ManagerObj) Start(ctx context.Context, node core.Interface) {
 	m.node = node
 	m.startLocalTCP(ctx)
@@ -114,7 +114,7 @@ func (m *ManagerObj) Start(ctx context.Context, node core.Interface) {
 	m.startRemoteUDP(ctx)
 }
 
-// Wait блокирует до завершения всех горутин
+// Wait blocks until all goroutines finish
 func (m *ManagerObj) Wait() {
 	m.wg.Wait()
 }

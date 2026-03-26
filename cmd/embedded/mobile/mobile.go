@@ -1,4 +1,4 @@
-// Пакет mobile предоставляет gomobile-биндинги для Ratatoskr.
+// Package mobile provides gomobile bindings for Ratatoskr.
 //
 // Android: gomobile bind -target=android -o ratatoskr.aar .
 // iOS:     gomobile bind -target=ios -o Ratatoskr.xcframework .
@@ -27,7 +27,7 @@ const (
 
 // //
 
-// Ratatoskr — основной тип мобильного биндинга. Создаётся через NewRatatoskr().
+// Ratatoskr — main type of the mobile binding. Created via NewRatatoskr().
 type Ratatoskr struct {
 	mu         sync.Mutex
 	node       *ratatoskr.Obj
@@ -35,19 +35,19 @@ type Ratatoskr struct {
 	logBridge  *logBridgeObj
 	peerBridge *peerBridgeObj
 
-	// fwdMgr создаётся в NewYggstack(), запускается в Start()
+	// fwdMgr is created in NewRatatoskr(), started in Start()
 	fwdMgr    *forward.ManagerObj
 	fwdCancel context.CancelFunc
 	peerMonWg sync.WaitGroup
 
-	// Опции до Start()
+	// Options before Start()
 	udpTimeout   time.Duration
 	coreStopMs   int64
 	multicast    bool
 	socksMaxConn int
 }
 
-// NewRatatoskr создаёт новый экземпляр Ratatoskr.
+// NewRatatoskr creates a new Ratatoskr instance.
 func NewRatatoskr() *Ratatoskr {
 	lb := newLogBridge()
 	return &Ratatoskr{
@@ -60,7 +60,7 @@ func NewRatatoskr() *Ratatoskr {
 
 // // // // // // // // // //
 
-// LoadConfigJSON разбирает NodeConfig JSON и сохраняет для Start(). Ошибка если нода запущена
+// LoadConfigJSON parses the NodeConfig JSON and stores it for Start(). Error if the node is running
 func (y *Ratatoskr) LoadConfigJSON(jsonStr string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -77,29 +77,29 @@ func (y *Ratatoskr) LoadConfigJSON(jsonStr string) error {
 	return nil
 }
 
-// SetLogCallback регистрирует колбек логов; можно вызывать в любой момент
+// SetLogCallback registers the log callback; can be called at any time
 func (y *Ratatoskr) SetLogCallback(cb LogCallback) {
 	y.logBridge.setCallback(cb)
 }
 
-// SetLogLevel — минимальный уровень: "trace", "debug", "info" (default), "warn", "error"
+// SetLogLevel — minimum level: "trace", "debug", "info" (default), "warn", "error"
 func (y *Ratatoskr) SetLogLevel(level string) {
 	y.logBridge.setLevel(level)
 }
 
-// SetPeerChangeCallback — колбек при изменении числа пиров; можно вызывать в любой момент
+// SetPeerChangeCallback — callback on peer count change; can be called at any time
 func (y *Ratatoskr) SetPeerChangeCallback(cb PeerChangeCallback) {
 	y.peerBridge.setCallback(cb)
 }
 
-// SetCoreStopTimeout — макс. ожидание остановки ядра в мс; 0 = бесконечно. До Start()
+// SetCoreStopTimeout — max core stop wait in ms; 0 = infinite. Before Start()
 func (y *Ratatoskr) SetCoreStopTimeout(ms int64) {
 	y.mu.Lock()
 	y.coreStopMs = ms
 	y.mu.Unlock()
 }
 
-// SetSessionTimeout — таймаут неактивности UDP-сессии в мс; default 120000. До Start()
+// SetSessionTimeout — UDP session inactivity timeout in ms; default 120000. Before Start()
 func (y *Ratatoskr) SetSessionTimeout(ms int64) {
 	y.mu.Lock()
 	if ms > 0 {
@@ -109,14 +109,14 @@ func (y *Ratatoskr) SetSessionTimeout(ms int64) {
 	y.mu.Unlock()
 }
 
-// SetMulticastEnabled — mDNS-обнаружение пиров в локальной сети. До Start()
+// SetMulticastEnabled — mDNS peer discovery on the local network. Before Start()
 func (y *Ratatoskr) SetMulticastEnabled(enabled bool) {
 	y.mu.Lock()
 	y.multicast = enabled
 	y.mu.Unlock()
 }
 
-// SetSOCKSMaxConnections — лимит SOCKS5-соединений; 0 = без ограничений. До Start()
+// SetSOCKSMaxConnections — SOCKS5 connection limit; 0 = unlimited. Before Start()
 func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
 	y.mu.Lock()
 	y.socksMaxConn = max
@@ -125,8 +125,8 @@ func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
 
 // // // // // // // // // //
 
-// AddPeer добавляет пир; tcp, tls, quic, ws, wss.
-// До Start() → в конфиг; во время работы → подключение немедленно
+// AddPeer adds a peer; tcp, tls, quic, ws, wss.
+// Before Start() → stored in config; while running → connect immediately
 func (y *Ratatoskr) AddPeer(uri string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -146,7 +146,7 @@ func (y *Ratatoskr) AddPeer(uri string) error {
 	return nil
 }
 
-// RemovePeer удаляет пир; до Start() → из конфига, во время работы → отключение
+// RemovePeer removes a peer; before Start() → from config, while running → disconnect
 func (y *Ratatoskr) RemovePeer(uri string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -168,7 +168,7 @@ func (y *Ratatoskr) RemovePeer(uri string) error {
 
 // // // // // // // // // //
 
-// AddLocalTCPMapping — форвардинг локального TCP на Yggdrasil; "127.0.0.1:8080" → "[200:...]:80". До Start()
+// AddLocalTCPMapping — forward local TCP to Yggdrasil; "127.0.0.1:8080" → "[200:...]:80". Before Start()
 func (y *Ratatoskr) AddLocalTCPMapping(local, remote string) error {
 	m, err := parseTCPMapping(local, remote)
 	if err != nil {
@@ -180,7 +180,7 @@ func (y *Ratatoskr) AddLocalTCPMapping(local, remote string) error {
 	return nil
 }
 
-// AddLocalUDPMapping — форвардинг локального UDP на Yggdrasil. До Start()
+// AddLocalUDPMapping — forward local UDP to Yggdrasil. Before Start()
 func (y *Ratatoskr) AddLocalUDPMapping(local, remote string) error {
 	m, err := parseUDPMapping(local, remote)
 	if err != nil {
@@ -192,7 +192,7 @@ func (y *Ratatoskr) AddLocalUDPMapping(local, remote string) error {
 	return nil
 }
 
-// AddRemoteTCPMapping — экспозиция локального TCP в Yggdrasil; port → local. До Start()
+// AddRemoteTCPMapping — expose local TCP to Yggdrasil; port → local. Before Start()
 func (y *Ratatoskr) AddRemoteTCPMapping(port int, local string) error {
 	m, err := parseRemoteTCPMapping(port, local)
 	if err != nil {
@@ -204,7 +204,7 @@ func (y *Ratatoskr) AddRemoteTCPMapping(port int, local string) error {
 	return nil
 }
 
-// AddRemoteUDPMapping — экспозиция локального UDP в Yggdrasil; port → local. До Start()
+// AddRemoteUDPMapping — expose local UDP to Yggdrasil; port → local. Before Start()
 func (y *Ratatoskr) AddRemoteUDPMapping(port int, local string) error {
 	m, err := parseRemoteUDPMapping(port, local)
 	if err != nil {
@@ -216,14 +216,14 @@ func (y *Ratatoskr) AddRemoteUDPMapping(port int, local string) error {
 	return nil
 }
 
-// ClearLocalMappings сбрасывает локальные правила форвардинга. До Start()
+// ClearLocalMappings clears local forwarding rules. Before Start()
 func (y *Ratatoskr) ClearLocalMappings() {
 	y.mu.Lock()
 	y.fwdMgr.ClearLocal()
 	y.mu.Unlock()
 }
 
-// ClearRemoteMappings сбрасывает удалённые правила форвардинга. До Start()
+// ClearRemoteMappings clears remote forwarding rules. Before Start()
 func (y *Ratatoskr) ClearRemoteMappings() {
 	y.mu.Lock()
 	y.fwdMgr.ClearRemote()
@@ -232,7 +232,7 @@ func (y *Ratatoskr) ClearRemoteMappings() {
 
 // // // // // // // // // //
 
-// Start запускает ноду. socksAddr: адрес SOCKS5 (пусто = отключён); nameserver: DNS для .ygg (пусто = отключён)
+// Start starts the node. socksAddr: SOCKS5 address (empty = disabled); nameserver: DNS for .ygg (empty = disabled)
 func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -289,7 +289,7 @@ func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 	return nil
 }
 
-// Stop останавливает ноду и форвардинг; безопасен если не запущена
+// Stop stops the node and forwarding; safe if not running
 func (y *Ratatoskr) Stop() error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -305,7 +305,7 @@ func (y *Ratatoskr) Stop() error {
 	return err
 }
 
-// IsRunning — запущена ли нода
+// IsRunning — whether the node is running
 func (y *Ratatoskr) IsRunning() bool {
 	y.mu.Lock()
 	running := y.node != nil
@@ -315,7 +315,7 @@ func (y *Ratatoskr) IsRunning() bool {
 
 // // // // // // // // // //
 
-// GetAddress — IPv6-адрес ноды; пусто если не запущена
+// GetAddress — node IPv6 address; empty if not running
 func (y *Ratatoskr) GetAddress() string {
 	y.mu.Lock()
 	node := y.node
@@ -326,7 +326,7 @@ func (y *Ratatoskr) GetAddress() string {
 	return node.Address().String()
 }
 
-// GetSubnet — IPv6-подсеть ноды; пусто если не запущена
+// GetSubnet — node IPv6 subnet; empty if not running
 func (y *Ratatoskr) GetSubnet() string {
 	y.mu.Lock()
 	node := y.node
@@ -338,7 +338,7 @@ func (y *Ratatoskr) GetSubnet() string {
 	return s.String()
 }
 
-// GetPublicKey — Ed25519 ключ (hex); пусто если не запущена
+// GetPublicKey — Ed25519 key (hex); empty if not running
 func (y *Ratatoskr) GetPublicKey() string {
 	y.mu.Lock()
 	node := y.node
@@ -349,7 +349,7 @@ func (y *Ratatoskr) GetPublicKey() string {
 	return hex.EncodeToString(node.PublicKey())
 }
 
-// GetPeers — URI всех пиров как JSON-массив; "[]" если не запущена
+// GetPeers — URI of all peers as a JSON array; "[]" if not running
 func (y *Ratatoskr) GetPeers() string {
 	y.mu.Lock()
 	node := y.node
@@ -369,7 +369,7 @@ func (y *Ratatoskr) GetPeers() string {
 	return string(b)
 }
 
-// peerJSONObj — детальная информация о пире для JSON
+// peerJSONObj — detailed peer information for JSON
 type peerJSONObj struct {
 	URI           string `json:"uri"`
 	Up            bool   `json:"up"`
@@ -383,7 +383,7 @@ type peerJSONObj struct {
 	LastError     string `json:"last_error,omitempty"`
 }
 
-// GetPeersJSON — детальная статистика пиров (URI, трафик, латентность, аптайм) как JSON
+// GetPeersJSON — detailed peer stats (URI, traffic, latency, uptime) as JSON
 func (y *Ratatoskr) GetPeersJSON() string {
 	y.mu.Lock()
 	node := y.node
@@ -417,8 +417,8 @@ func (y *Ratatoskr) GetPeersJSON() string {
 	return string(b)
 }
 
-// RetryPeersNow инициирует немедленное переподключение ко всем отключённым пирам.
-// Не выполняет действий если нода не запущена.
+// RetryPeersNow initiates immediate reconnection to all disconnected peers.
+// No-op if the node is not running.
 func (y *Ratatoskr) RetryPeersNow() {
 	y.mu.Lock()
 	node := y.node
@@ -428,9 +428,9 @@ func (y *Ratatoskr) RetryPeersNow() {
 	}
 }
 
-// TriggerPeerUpdate вызывает PeerChangeCallback с текущим количеством пиров.
-// Полезно для обновления UI после регистрации колбека во время работы.
-// Не выполняет действий если нода не запущена или колбек не установлен.
+// TriggerPeerUpdate calls PeerChangeCallback with the current peer count.
+// Useful for refreshing the UI after registering a callback while running.
+// No-op if the node is not running or the callback is not set.
 func (y *Ratatoskr) TriggerPeerUpdate() {
 	y.mu.Lock()
 	node := y.node
@@ -450,7 +450,7 @@ func (y *Ratatoskr) TriggerPeerUpdate() {
 
 // // // // // // // // // //
 
-// peerMonitorLoop периодически проверяет состояние пиров и уведомляет callback
+// peerMonitorLoop periodically checks peer state and notifies the callback
 func (y *Ratatoskr) peerMonitorLoop(ctx context.Context) {
 	defer y.peerMonWg.Done()
 	ticker := time.NewTicker(defaultPeerMonitorInterval)

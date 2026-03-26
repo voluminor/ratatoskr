@@ -18,13 +18,13 @@ const NameMappingSuffix = ".pk.ygg"
 
 // //
 
-// Obj — резолвер имён с поддержкой .pk.ygg и DNS через Yggdrasil
+// Obj — name resolver supporting .pk.ygg and DNS over Yggdrasil
 type Obj struct {
 	resolver *net.Resolver
 	hasDNS   bool
 }
 
-// New создаёт резолвер; nameserver пустой = только .pk.ygg и литералы
+// New creates a resolver; empty nameserver = only .pk.ygg and literals
 func New(dialer proxy.ContextDialer, nameserver string) *Obj {
 	r := &Obj{
 		resolver: &net.Resolver{PreferGo: true},
@@ -46,9 +46,9 @@ func New(dialer proxy.ContextDialer, nameserver string) *Obj {
 
 // //
 
-// Resolve — <pubkey>.pk.ygg, IPv6-литералы, DNS (при наличии nameserver)
+// Resolve — <pubkey>.pk.ygg, IPv6 literals, DNS (when nameserver is configured)
 func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
-	// Публичный ключ → IPv6
+	// Public key → IPv6
 	if pkName, ok := strings.CutSuffix(name, NameMappingSuffix); ok {
 		ip, err := resolvePublicKey(pkName)
 		if err != nil {
@@ -57,12 +57,12 @@ func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP
 		return ctx, ip, nil
 	}
 
-	// IPv6-литерал
+	// IPv6 literal
 	if ip := net.ParseIP(name); ip != nil {
 		return ctx, ip, nil
 	}
 
-	// DNS — только если настроен nameserver
+	// DNS — only if nameserver is configured
 	if !r.hasDNS {
 		return ctx, nil, fmt.Errorf("cannot resolve %q: no nameserver configured", name)
 	}
@@ -79,7 +79,7 @@ func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP
 // //
 
 func resolvePublicKey(name string) (net.IP, error) {
-	// subdomain.<pubkey> → берём только последний сегмент
+	// subdomain.<pubkey> → take only the last segment
 	if idx := strings.LastIndex(name, "."); idx >= 0 {
 		name = name[idx+1:]
 	}

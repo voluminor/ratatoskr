@@ -10,7 +10,7 @@ import (
 
 // // // // // // // // // //
 
-// PeerSnapshotObj — состояние одного пира
+// PeerSnapshotObj — state of a single peer
 type PeerSnapshotObj struct {
 	URI           string        `json:"uri"`
 	Up            bool          `json:"up"`
@@ -25,14 +25,14 @@ type PeerSnapshotObj struct {
 	LastErrorTime time.Time     `json:"last_error_time,omitempty"`
 }
 
-// SOCKSSnapshotObj — состояние SOCKS5-прокси
+// SOCKSSnapshotObj — SOCKS5 proxy state
 type SOCKSSnapshotObj struct {
 	Enabled bool   `json:"enabled"`
 	Addr    string `json:"addr,omitempty"`
 	IsUnix  bool   `json:"is_unix,omitempty"`
 }
 
-// SnapshotObj — полное состояние узла в момент вызова
+// SnapshotObj — full node state at the time of the call
 type SnapshotObj struct {
 	Address     string            `json:"address"`
 	Subnet      string            `json:"subnet"`
@@ -46,7 +46,7 @@ type SnapshotObj struct {
 
 // //
 
-// Snapshot собирает полное состояние узла за один вызов
+// Snapshot collects the full node state in a single call
 func (o *Obj) Snapshot() SnapshotObj {
 	snap := SnapshotObj{
 		MTU: o.Interface.MTU(),
@@ -65,7 +65,7 @@ func (o *Obj) Snapshot() SnapshotObj {
 		snap.PublicKey = hex.EncodeToString(pk)
 	}
 
-	// Пиры
+	// Peers
 	peers := o.Interface.GetPeers()
 	snap.Peers = make([]PeerSnapshotObj, len(peers))
 	for i, p := range peers {
@@ -87,7 +87,7 @@ func (o *Obj) Snapshot() SnapshotObj {
 		snap.Peers[i] = entry
 	}
 
-	// Менеджер пиров
+	// Peer manager
 	if o.peerMgr != nil {
 		snap.ActivePeers = o.peerMgr.Active()
 	}

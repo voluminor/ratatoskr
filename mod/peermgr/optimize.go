@@ -25,7 +25,7 @@ func (m *Obj) run(ctx context.Context) {
 	}
 }
 
-// optimizeLocked — сериализует вызовы optimize через optimizeMu
+// optimizeLocked — serializes optimize calls via optimizeMu
 func (m *Obj) optimizeLocked(ctx context.Context) error {
 	m.optimizeMu.Lock()
 	defer m.optimizeMu.Unlock()
@@ -37,7 +37,7 @@ func (m *Obj) optimizeLocked(ctx context.Context) error {
 
 // //
 
-// optimizeActive — скользящая гонка: батчами добавляет, после каждого отсекает худших
+// optimizeActive — sliding race: adds in batches, drops losers after each
 func (m *Obj) optimizeActive(ctx context.Context) error {
 	peers := m.peers
 	batchSize := m.cfg.BatchSize
@@ -86,7 +86,7 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 	return nil
 }
 
-// probeAndSelect — выбирает лучших, удаляет проигравших, обновляет m.active
+// probeAndSelect — selects best peers, removes losers, updates m.active
 func (m *Obj) probeAndSelect(connected []peerEntryObj, batchIdx, totalBatches int) ([]peerEntryObj, error) {
 	results := buildResults(connected, m.node.GetPeers())
 	selected := selectBest(results, m.cfg.MaxPerProto)
@@ -120,7 +120,7 @@ func (m *Obj) probeAndSelect(connected []peerEntryObj, batchIdx, totalBatches in
 	return kept, nil
 }
 
-// reportResult логирует итог; вызывает OnNoReachablePeers при пустом результате
+// reportResult logs the outcome; calls OnNoReachablePeers if result is empty
 func (m *Obj) reportResult(connected []peerEntryObj) {
 	if len(connected) == 0 {
 		m.cfg.Logger.Warnf("[peermgr] no reachable peers after probe")
@@ -138,7 +138,7 @@ func (m *Obj) reportResult(connected []peerEntryObj) {
 
 // //
 
-// optimizePassive — режим -1: переподключает весь список целиком
+// optimizePassive — mode -1: reconnects the entire peer list
 func (m *Obj) optimizePassive() error {
 	uris := make([]string, len(m.peers))
 	for i, p := range m.peers {

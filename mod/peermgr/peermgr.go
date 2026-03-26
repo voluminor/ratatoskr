@@ -17,41 +17,41 @@ const defaultProbeTimeout = 10 * time.Second
 
 // //
 
-// ConfigObj — параметры менеджера пиров
+// ConfigObj — peer manager parameters
 type ConfigObj struct {
-	// Список URI-кандидатов ("tls://host:port", "tcp://...", "quic://...", etc.)
+	// List of candidate URIs ("tls://host:port", "tcp://...", "quic://...", etc.)
 	Peers []string
 
-	// Таймаут ожидания подключения пира при пробинге. 0 → 10s.
-	// Применяется к каждому батчу отдельно. Игнорируется при MaxPerProto == -1.
+	// Peer connection wait timeout during probing. 0 → 10s.
+	// Applied per batch separately. Ignored when MaxPerProto == -1.
 	ProbeTimeout time.Duration
 
-	// Интервал автоматической перепроверки. 0 → только при запуске.
+	// Auto re-evaluation interval. 0 → only at startup.
 	RefreshInterval time.Duration
 
-	// Количество лучших пиров на протокол:
-	//   0 или 1  — один лучший на протокол (default)
-	//   N > 1    — топ-N на протокол
-	//  -1        — пассивный режим: добавить всех без выбора;
-	//              при RefreshInterval > 0 список переподключается целиком
+	// Number of best peers per protocol:
+	//   0 or 1  — one best per protocol (default)
+	//   N > 1    — top-N per protocol
+	//  -1        — passive mode: add all without selection;
+	//              when RefreshInterval > 0 the entire list is reconnected
 	MaxPerProto int
 
-	// Размер батча при пробинге:
-	//   0 или 1 — все кандидаты добавляются одним батчем (default)
-	//   N >= 2  — скользящее окно: N кандидатов за раз, гонка на выбывание
+	// Batch size during probing:
+	//   0 or 1 — all candidates added in one batch (default)
+	//   N >= 2  — sliding window: N candidates at a time, race to elimination
 	BatchSize int
 
-	// Логгер; обязателен
+	// Logger; required
 	Logger yggcore.Logger
 
-	// OnNoReachablePeers вызывается после пробинга, если ни один пир не ответил.
-	// Вызывается из горутины менеджера; не должен блокировать.
+	// OnNoReachablePeers is called after probing if no peer responded.
+	// Called from the manager goroutine; must not block.
 	OnNoReachablePeers func()
 }
 
 // // // // // // // // // //
 
-// Obj — менеджер пиров
+// Obj — peer manager
 type Obj struct {
 	cfg        ConfigObj
 	node       core.Interface
@@ -64,7 +64,7 @@ type Obj struct {
 	wg         sync.WaitGroup
 }
 
-// New создаёт менеджер; пиры не добавляются до Start()
+// New creates the manager; peers are not added until Start()
 func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 	if cfg.Logger == nil {
 		return nil, fmt.Errorf("peermgr: logger is required")
@@ -89,7 +89,7 @@ func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 
 // // // // // // // // // //
 
-// Start запускает менеджер асинхронно; повторный вызов без Stop — ошибка
+// Start launches the manager asynchronously; calling again without Stop is an error
 func (m *Obj) Start() error {
 	m.mu.Lock()
 	if m.cancel != nil {
@@ -112,7 +112,7 @@ func (m *Obj) Start() error {
 	return nil
 }
 
-// Stop отменяет контекст, удаляет управляемые пиры; безопасен для повторного вызова
+// Stop cancels the context, removes managed peers; safe to call multiple times
 func (m *Obj) Stop() {
 	m.mu.Lock()
 	cancel := m.cancel
@@ -136,7 +136,7 @@ func (m *Obj) Stop() {
 	m.cfg.Logger.Infof("[peermgr] stopped, removed %d peers", len(active))
 }
 
-// Active — копия текущего списка активных пиров
+// Active — copy of the current active peer list
 func (m *Obj) Active() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -145,7 +145,7 @@ func (m *Obj) Active() []string {
 	return out
 }
 
-// Optimize — внеплановая перепроверка; блокирует до завершения
+// Optimize — unscheduled re-evaluation; blocks until done
 func (m *Obj) Optimize() error {
 	m.mu.Lock()
 	ctx := m.ctx

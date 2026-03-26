@@ -9,7 +9,7 @@ import (
 
 // // // // // // // // // //
 
-// peerResultObj — результат пробинга одного пира
+// peerResultObj — probing result for a single peer
 type peerResultObj struct {
 	URI     string
 	Proto   string
@@ -17,7 +17,7 @@ type peerResultObj struct {
 	Latency time.Duration
 }
 
-// buildResults сопоставляет кандидатов с GetPeers(); отсутствующие → Up == false
+// buildResults matches candidates against GetPeers(); missing ones → Up == false
 func buildResults(candidates []peerEntryObj, peers []yggcore.PeerInfo) []peerResultObj {
 	peerMap := make(map[string]yggcore.PeerInfo, len(peers))
 	for _, p := range peers {
@@ -35,7 +35,7 @@ func buildResults(candidates []peerEntryObj, peers []yggcore.PeerInfo) []peerRes
 	return results
 }
 
-// selectBest — топ-N пиров по протоколу среди Up==true, сортировка по латентности
+// selectBest — top-N peers per protocol among Up==true, sorted by latency
 func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
 	groups := make(map[string][]peerResultObj)
 	for _, r := range results {
@@ -59,7 +59,7 @@ func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
 	return selected
 }
 
-// countUp — количество Up == true
+// countUp — count of Up == true
 func countUp(results []peerResultObj) int {
 	n := 0
 	for _, r := range results {

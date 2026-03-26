@@ -9,17 +9,17 @@ import (
 
 // // // // // // // // // //
 
-// ConfigObj — параметры создания узла Yggdrasil
+// ConfigObj — Yggdrasil node creation parameters
 type ConfigObj struct {
-	// Конфигурация Yggdrasil (ключи, пиры, listen); nil → случайные ключи
+	// Yggdrasil configuration (keys, peers, listen); nil → random keys
 	Config *config.NodeConfig
 
-	// Логгер; nil → логи отбрасываются
+	// Logger; nil → logs are discarded
 	Logger yggcore.Logger
 
-	// Таймаут core.Stop(); 0 → ожидание без ограничений
+	// core.Stop() timeout; 0 → unlimited wait
 	CoreStopTimeout time.Duration
 
-	// Размер очереди отложенных RST-пакетов; 0 → 100
+	// RST packet deferred queue size; 0 → 100
 	RSTQueueSize int
 }

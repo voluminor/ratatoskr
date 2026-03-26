@@ -24,7 +24,7 @@ var writeBufPool = sync.Pool{
 	New: func() interface{} { return make([]byte, 65535) },
 }
 
-// nicObj — мост между gVisor и Yggdrasil на уровне IPv6-пакетов
+// nicObj — bridge between gVisor and Yggdrasil at the IPv6 packet level
 type nicObj struct {
 	ns         *netstackObj
 	ipv6rwc    *ipv6rwc.ReadWriteCloser
@@ -55,7 +55,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 		return nil, err
 	}
 
-	// Чтение пакетов из Yggdrasil → доставка в netstack
+	// Read packets from Yggdrasil → deliver to netstack
 	go func() {
 		defer close(nic.readDone)
 		for {
@@ -78,7 +78,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 		}
 	}()
 
-	// Отложенная отправка RST-пакетов (TCP reset без payload)
+	// Deferred sending of RST packets (TCP reset with no payload)
 	go func() {
 		defer close(nic.rstDone)
 		for {
@@ -99,7 +99,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 		}
 	}()
 
-	// Маршрут для Yggdrasil-подсети 0200::/7
+	// Route for Yggdrasil subnet 0200::/7
 	_, snet, err := net.ParseCIDR("0200::/7")
 	if err != nil {
 		nic.Close()
@@ -115,7 +115,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 	}
 	s.stack.AddRoute(tcpip.Route{Destination: subnet, NIC: 1})
 
-	// Регистрация локального адреса (HandleLocal всегда включён)
+	// Register the local address (HandleLocal is always enabled)
 	ip := ygg.Address()
 	if err := s.stack.AddProtocolAddress(
 		1,
@@ -155,14 +155,14 @@ func (*nicObj) Wait()                                        {}
 func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 	vl, offset := pkt.AsViewList()
 	front := vl.Front()
-	// Быстрый путь: один View — отправляем без копирования
+	// Fast path: single View — send without copying
 	if front != nil && front.Next() == nil {
 		if _, err := e.ipv6rwc.Write(front.AsSlice()[offset:]); err != nil {
 			return &tcpip.ErrAborted{}
 		}
 		return nil
 	}
-	// Несколько View — собираем в буфер из пула
+	// Multiple Views — assemble into a pool buffer
 	buf := writeBufPool.Get().([]byte)
 	n := 0
 	first := true
@@ -189,7 +189,7 @@ func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
 		}
 	}()
 	for i, pkt := range list.AsSlice() {
-		// TCP RST без payload — отправляем отложенно через канал
+		// TCP RST with no payload — enqueue for deferred sending
 		if pkt.Data().Size() == 0 &&
 			pkt.Network().TransportProtocol() == tcp.ProtocolNumber {
 			tcpHdr := header.TCP(pkt.TransportHeader().Slice())
@@ -206,7 +206,7 @@ func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
 	return list.Len(), nil
 }
 
-// enqueueRST ставит RST в очередь; при переполнении вытесняет старый
+// enqueueRST enqueues an RST packet; evicts the oldest on overflow
 func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	select {
 	case e.rstPackets <- pkt:

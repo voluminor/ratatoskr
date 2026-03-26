@@ -2,7 +2,7 @@ package socks
 
 // // // // // // // // // //
 
-// Interface — контракт SOCKS5-сервера
+// Interface — SOCKS5 server contract
 type Interface interface {
 	Enable(cfg EnableConfigObj) error
 	Disable() error

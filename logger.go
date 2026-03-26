@@ -4,7 +4,7 @@ import yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 // // // // // // // // // //
 
-// noopLoggerObj — заглушка логгера, отбрасывающая все сообщения
+// noopLoggerObj — logger stub that discards all messages
 type noopLoggerObj struct{}
 
 var _ yggcore.Logger = noopLoggerObj{}

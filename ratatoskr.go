@@ -15,10 +15,10 @@ import (
 
 // // // // // // // // // //
 
-// Obj — узел Yggdrasil для встраивания в приложения.
-// Объединяет ядро (DialContext/Listen), резолвер (.pk.ygg) и SOCKS5.
-// Все сетевые методы ядра доступны напрямую через встраивание интерфейса.
-// Multicast и Admin доступны через core.Interface
+// Obj — Yggdrasil node for embedding in applications.
+// Combines core (DialContext/Listen), resolver (.pk.ygg), and SOCKS5.
+// All core networking methods are available directly via interface embedding.
+// Multicast and Admin are accessible via core.Interface
 type Obj struct {
 	core.Interface
 	socksServer socks.Interface
@@ -28,8 +28,8 @@ type Obj struct {
 	closeOnce   sync.Once
 }
 
-// New создаёт и запускает узел.
-// Если cfg.Peers задан, запускается менеджер пиров; cfg.Config.Peers при этом должен быть пустым.
+// New creates and starts the node.
+// If cfg.Peers is set, starts the peer manager; cfg.Config.Peers must be empty.
 func New(cfg ConfigObj) (*Obj, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = noopLoggerObj{}
@@ -72,7 +72,7 @@ func New(cfg ConfigObj) (*Obj, error) {
 		obj.peerMgr = mgr
 	}
 
-	// Автозавершение при отмене контекста
+	// Auto-shutdown on context cancellation
 	if cfg.Ctx != nil {
 		go func() {
 			select {
@@ -88,8 +88,8 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 // //
 
-// EnableSOCKS запускает SOCKS5-прокси с указанными параметрами.
-// Резолвер создаётся автоматически на основе cfg.Nameserver
+// EnableSOCKS starts the SOCKS5 proxy with the given parameters.
+// Resolver is created automatically based on cfg.Nameserver
 func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 	return o.socksServer.Enable(socks.EnableConfigObj{
 		Addr:           cfg.Addr,
@@ -106,7 +106,7 @@ func (o *Obj) DisableSOCKS() error {
 
 // //
 
-// PeerManagerActive возвращает текущий список активных пиров; nil если менеджер не используется
+// PeerManagerActive returns the current list of active peers; nil if the manager is not used
 func (o *Obj) PeerManagerActive() []string {
 	if o.peerMgr == nil {
 		return nil
@@ -114,7 +114,7 @@ func (o *Obj) PeerManagerActive() []string {
 	return o.peerMgr.Active()
 }
 
-// PeerManagerOptimize запускает внеплановую перепроверку пиров
+// PeerManagerOptimize triggers an unscheduled peer re-evaluation
 func (o *Obj) PeerManagerOptimize() error {
 	if o.peerMgr == nil {
 		return fmt.Errorf("peer manager not enabled")
@@ -124,7 +124,7 @@ func (o *Obj) PeerManagerOptimize() error {
 
 // //
 
-// RetryPeers инициирует немедленное переподключение отключённых пиров
+// RetryPeers initiates immediate reconnection of disconnected peers
 func (o *Obj) RetryPeers() {
 	if coreNode, ok := o.Interface.(*core.Obj); ok {
 		coreNode.UnsafeCore().RetryPeersNow()
@@ -133,7 +133,7 @@ func (o *Obj) RetryPeers() {
 
 // //
 
-// Close останавливает все компоненты; безопасен для повторного вызова
+// Close stops all components; safe to call multiple times
 func (o *Obj) Close() error {
 	var closeErr error
 	o.closeOnce.Do(func() {

@@ -19,7 +19,7 @@ import (
 
 // // // // // // // // // //
 
-// netstackObj — userspace TCP/UDP стек поверх gVisor
+// netstackObj — userspace TCP/UDP stack on top of gVisor
 type netstackObj struct {
 	stack  *stack.Stack
 	nic    *nicObj
@@ -126,7 +126,7 @@ func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, err
 	}
 }
 
-// MTU возвращает MTU NIC-интерфейса
+// MTU returns the MTU of the NIC interface
 func (s *netstackObj) MTU() uint64 {
 	if s.nic == nil {
 		return 0
