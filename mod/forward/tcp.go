@@ -34,11 +34,11 @@ func (m *ManagerObj) startLocalTCP(ctx context.Context) {
 			defer m.wg.Done()
 			listener, err := net.ListenTCP("tcp", mp.Listen)
 			if err != nil {
-				m.log.Errorf("Failed to listen on local TCP %s: %s", mp.Listen, err)
+				m.log.Errorf("[forward] failed to listen on local TCP %s: %s", mp.Listen, err)
 				return
 			}
 			defer listener.Close()
-			m.log.Infof("Mapping local TCP port %d to Yggdrasil %s", mp.Listen.Port, mp.Mapped)
+			m.log.Infof("[forward] mapping local TCP port %d to Yggdrasil %s", mp.Listen.Port, mp.Mapped)
 
 			go func() {
 				<-ctx.Done()
@@ -51,12 +51,12 @@ func (m *ManagerObj) startLocalTCP(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					m.log.Errorf("Local TCP accept error: %s", err)
+					m.log.Errorf("[forward] local TCP accept error: %s", err)
 					return
 				}
 				remote, err := m.node.DialContext(ctx, "tcp", fmt.Sprintf("[%s]:%d", mp.Mapped.IP, mp.Mapped.Port))
 				if err != nil {
-					m.log.Errorf("Failed to connect to %s: %s", mp.Mapped, err)
+					m.log.Errorf("[forward] failed to dial %s: %s", mp.Mapped, err)
 					_ = c.Close()
 					continue
 				}
@@ -74,11 +74,11 @@ func (m *ManagerObj) startRemoteTCP(ctx context.Context) {
 			addr := fmt.Sprintf("[%s]:%d", m.node.Address(), mp.Listen.Port)
 			listener, err := m.node.Listen("tcp", addr)
 			if err != nil {
-				m.log.Errorf("Failed to listen on Yggdrasil TCP %s: %s", addr, err)
+				m.log.Errorf("[forward] failed to listen on Yggdrasil TCP %s: %s", addr, err)
 				return
 			}
 			defer listener.Close()
-			m.log.Infof("Mapping Yggdrasil TCP port %d to %s", mp.Listen.Port, mp.Mapped)
+			m.log.Infof("[forward] mapping Yggdrasil TCP port %d to %s", mp.Listen.Port, mp.Mapped)
 
 			go func() {
 				<-ctx.Done()
@@ -91,12 +91,12 @@ func (m *ManagerObj) startRemoteTCP(ctx context.Context) {
 					if ctx.Err() != nil {
 						return
 					}
-					m.log.Errorf("Remote TCP accept error: %s", err)
+					m.log.Errorf("[forward] remote TCP accept error: %s", err)
 					return
 				}
 				remote, err := net.DialTCP("tcp", nil, mp.Mapped)
 				if err != nil {
-					m.log.Errorf("Failed to connect to %s: %s", mp.Mapped, err)
+					m.log.Errorf("[forward] failed to dial %s: %s", mp.Mapped, err)
 					_ = c.Close()
 					continue
 				}

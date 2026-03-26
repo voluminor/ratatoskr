@@ -143,10 +143,10 @@ func (o *Obj) Close() error {
 			o.peerMgr.Stop()
 		}
 		if err := o.socksServer.Disable(); err != nil {
-			o.logger.Warnf("socks disable: %v", err)
+			o.logger.Warnf("[ratatoskr] socks disable: %v", err)
 		}
 		if err := o.Interface.Close(); err != nil {
-			o.logger.Warnf("core close: %v", err)
+			o.logger.Warnf("[ratatoskr] core close: %v", err)
 		}
 	})
 	return nil

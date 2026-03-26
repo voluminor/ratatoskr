@@ -41,11 +41,11 @@ func (m *ManagerObj) startLocalUDP(ctx context.Context) {
 			defer m.wg.Done()
 			conn, err := net.ListenUDP("udp", mp.Listen)
 			if err != nil {
-				m.log.Errorf("Failed to listen on local UDP %s: %s", mp.Listen, err)
+				m.log.Errorf("[forward] failed to listen on local UDP %s: %s", mp.Listen, err)
 				return
 			}
 			defer conn.Close()
-			m.log.Infof("Mapping local UDP port %d to Yggdrasil %s", mp.Listen.Port, mp.Mapped)
+			m.log.Infof("[forward] mapping local UDP port %d to Yggdrasil %s", mp.Listen.Port, mp.Mapped)
 
 			go func() {
 				<-ctx.Done()
@@ -67,11 +67,11 @@ func (m *ManagerObj) startRemoteUDP(ctx context.Context) {
 			addr := fmt.Sprintf("[%s]:%d", m.node.Address(), mp.Listen.Port)
 			conn, err := m.node.ListenPacket("udp", addr)
 			if err != nil {
-				m.log.Errorf("Failed to listen on Yggdrasil UDP %s: %s", addr, err)
+				m.log.Errorf("[forward] failed to listen on Yggdrasil UDP %s: %s", addr, err)
 				return
 			}
 			defer conn.Close()
-			m.log.Infof("Mapping Yggdrasil UDP port %d to %s", mp.Listen.Port, mp.Mapped)
+			m.log.Infof("[forward] mapping Yggdrasil UDP port %d to %s", mp.Listen.Port, mp.Mapped)
 
 			go func() {
 				<-ctx.Done()
@@ -111,7 +111,7 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 				sessions.Range(func(k, v any) bool {
 					s := v.(*udpSessionObj)
 					if now-s.lastActivity.Load() > timeout.Milliseconds() {
-						log.Debugf("Cleaning up inactive UDP session %s", k)
+						log.Debugf("[forward] cleaning up inactive UDP session %s", k)
 						s.close()
 						sessions.Delete(k)
 					}
@@ -128,7 +128,7 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 			if ctx.Err() != nil {
 				return
 			}
-			log.Debugf("UDP read error: %v", err)
+			log.Debugf("[forward] UDP read error: %v", err)
 			continue
 		}
 		if n == 0 {
@@ -139,12 +139,12 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 		val, ok := sessions.Load(key)
 		if !ok {
 			if maxSessions > 0 && sessionCount.Load() >= int64(maxSessions) {
-				log.Warnf("UDP session limit reached (%d), dropping packet from %s", maxSessions, remoteAddr)
+				log.Warnf("[forward] UDP session limit reached (%d), dropping packet from %s", maxSessions, remoteAddr)
 				continue
 			}
 			fwdConn, err := dialFn()
 			if err != nil {
-				log.Errorf("Failed to connect to upstream: %s", err)
+				log.Errorf("[forward] failed to dial upstream: %s", err)
 				continue
 			}
 			sessCtx, sessCancel := context.WithCancel(ctx)
@@ -163,7 +163,7 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 		session := val.(*udpSessionObj)
 		session.lastActivity.Store(time.Now().UnixMilli())
 		if _, err = session.conn.Write(buf[:n]); err != nil {
-			log.Debugf("Session write error: %s", err)
+			log.Debugf("[forward] session write error: %s", err)
 			session.close()
 			sessions.Delete(key)
 		}

@@ -93,7 +93,7 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 		}
 	}
 
-	s.logger.Infof("SOCKS5 started on %s", cfg.Addr)
+	s.logger.Infof("[socks] started on %s", cfg.Addr)
 
 	s.wg.Add(1)
 	go func() {
@@ -125,7 +125,7 @@ func (s *Obj) Disable() error {
 	}
 	s.wg.Wait()
 
-	s.logger.Infof("SOCKS5 stopped on %s", addr)
+	s.logger.Infof("[socks] stopped on %s", addr)
 	return err
 }
 

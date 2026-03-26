@@ -83,9 +83,9 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 	obj.netstackPtr.Store(ns)
 
-	log.Infof("Address: %s", obj.Address())
-	log.Infof("Subnet: %s", obj.Subnet())
-	log.Infof("Public key: %s", hex.EncodeToString(obj.core.PublicKey()))
+	log.Infof("[core] address: %s", obj.Address())
+	log.Infof("[core] subnet: %s", obj.Subnet())
+	log.Infof("[core] public key: %s", hex.EncodeToString(obj.core.PublicKey()))
 
 	return obj, nil
 }
@@ -105,7 +105,7 @@ func (o *Obj) Close() error {
 			select {
 			case <-done:
 			case <-time.After(o.coreTimeout):
-				o.logger.Warnf("Close() timed out after %s", o.coreTimeout)
+				o.logger.Warnf("[core] close timed out after %s", o.coreTimeout)
 				// Установить nil — дальнейшие вызовы не будут зависать
 				o.netstackPtr.Store(nil)
 				o.core = nil
@@ -121,17 +121,17 @@ func (o *Obj) Close() error {
 func (o *Obj) closeSequence() {
 	// Компоненты — до закрытия core
 	if err := o.multicast.disable(); err != nil {
-		o.logger.Warnf("multicast disable: %v", err)
+		o.logger.Warnf("[core] multicast disable: %v", err)
 	}
 	if err := o.adminSocket.disable(); err != nil {
-		o.logger.Warnf("admin disable: %v", err)
+		o.logger.Warnf("[core] admin disable: %v", err)
 	}
 
 	// Зарегистрированные ресурсы (listeners и т.д.)
 	o.closersMu.Lock()
 	for _, c := range o.closers {
 		if err := c.Close(); err != nil {
-			o.logger.Warnf("closer: %v", err)
+			o.logger.Warnf("[core] closer: %v", err)
 		}
 	}
 	o.closers = nil
@@ -389,7 +389,7 @@ func buildCoreOptions(cfg *config.NodeConfig, log yggcore.Logger) []yggcore.Setu
 	for _, allowed := range cfg.AllowedPublicKeys {
 		k, err := hex.DecodeString(allowed)
 		if err != nil {
-			log.Debugf("Skipping invalid AllowedPublicKey %q: %v", allowed, err)
+			log.Debugf("[core] skipping invalid AllowedPublicKey %q: %v", allowed, err)
 			continue
 		}
 		opts = append(opts, yggcore.AllowedPublicKey(k[:]))
