@@ -1,7 +1,6 @@
 package peermgr
 
 import (
-	"regexp"
 	"sort"
 	"time"
 
@@ -19,15 +18,15 @@ type peerResultObj struct {
 }
 
 // buildResults сопоставляет кандидатов с GetPeers(); отсутствующие → Up == false
-func buildResults(candidates []string, peers []yggcore.PeerInfo) []peerResultObj {
+func buildResults(candidates []peerEntryObj, peers []yggcore.PeerInfo) []peerResultObj {
 	peerMap := make(map[string]yggcore.PeerInfo, len(peers))
 	for _, p := range peers {
 		peerMap[p.URI] = p
 	}
 	results := make([]peerResultObj, 0, len(candidates))
-	for _, uri := range candidates {
-		r := peerResultObj{URI: uri, Proto: parseProto(uri)}
-		if p, ok := peerMap[uri]; ok {
+	for _, c := range candidates {
+		r := peerResultObj{URI: c.URI, Proto: c.Scheme}
+		if p, ok := peerMap[c.URI]; ok {
 			r.Up = p.Up
 			r.Latency = p.Latency
 		}
@@ -37,7 +36,7 @@ func buildResults(candidates []string, peers []yggcore.PeerInfo) []peerResultObj
 }
 
 // selectBest — топ-N пиров по протоколу среди Up==true, сортировка по латентности
-func selectBest(results []peerResultObj, maxPerProto int) []string {
+func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
 	groups := make(map[string][]peerResultObj)
 	for _, r := range results {
 		if !r.Up {
@@ -46,7 +45,7 @@ func selectBest(results []peerResultObj, maxPerProto int) []string {
 		groups[r.Proto] = append(groups[r.Proto], r)
 	}
 
-	var selected []string
+	var selected []peerResultObj
 	for _, group := range groups {
 		sort.Slice(group, func(i, j int) bool {
 			return group[i].Latency < group[j].Latency
@@ -55,9 +54,7 @@ func selectBest(results []peerResultObj, maxPerProto int) []string {
 		if n > len(group) {
 			n = len(group)
 		}
-		for _, r := range group[:n] {
-			selected = append(selected, r.URI)
-		}
+		selected = append(selected, group[:n]...)
 	}
 	return selected
 }
@@ -71,15 +68,4 @@ func countUp(results []peerResultObj) int {
 		}
 	}
 	return n
-}
-
-var protoRe = regexp.MustCompile(`^([a-z]+)://`)
-
-// parseProto — схема транспорта из URI ("tls://..." → "tls")
-func parseProto(uri string) string {
-	m := protoRe.FindStringSubmatch(uri)
-	if len(m) < 2 {
-		return "unknown"
-	}
-	return m[1]
 }

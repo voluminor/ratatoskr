@@ -39,13 +39,13 @@ func (m *Obj) optimizeLocked(ctx context.Context) error {
 
 // optimizeActive — скользящая гонка: батчами добавляет, после каждого отсекает худших
 func (m *Obj) optimizeActive(ctx context.Context) error {
-	peers := m.cfg.Peers
+	peers := m.peers
 	batchSize := m.cfg.BatchSize
 	if batchSize <= 1 {
 		batchSize = len(peers)
 	}
 
-	connected := make([]string, 0, len(peers))
+	connected := make([]peerEntryObj, 0, len(peers))
 	totalBatches := (len(peers) + batchSize - 1) / batchSize
 
 	for i := 0; i < len(peers); i += batchSize {
@@ -56,20 +56,22 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 		batch := peers[i:end]
 		batchIdx := i/batchSize + 1
 
-		m.cfg.Logger.Debugf("[peermgr] batch %d/%d: adding %d candidates %v", batchIdx, totalBatches, len(batch), batch)
+		m.cfg.Logger.Debugf("[peermgr] batch %d/%d: adding %d candidates", batchIdx, totalBatches, len(batch))
 
-		for _, uri := range batch {
-			if err := m.node.AddPeer(uri); err != nil {
-				m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", uri, err)
+		for _, p := range batch {
+			if err := m.node.AddPeer(p.URI); err != nil {
+				m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", p.URI, err)
 			}
 		}
 		connected = append(connected, batch...)
 
 		m.cfg.Logger.Traceln("[peermgr] batch", batchIdx, "/", totalBatches, "waiting", m.cfg.ProbeTimeout, ",", len(connected), "connected")
 
+		timer := time.NewTimer(m.cfg.ProbeTimeout)
 		select {
-		case <-time.After(m.cfg.ProbeTimeout):
+		case <-timer.C:
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
 		}
 
@@ -85,7 +87,7 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 }
 
 // probeAndSelect — выбирает лучших, удаляет проигравших, обновляет m.active
-func (m *Obj) probeAndSelect(connected []string, batchIdx, totalBatches int) ([]string, error) {
+func (m *Obj) probeAndSelect(connected []peerEntryObj, batchIdx, totalBatches int) ([]peerEntryObj, error) {
 	results := buildResults(connected, m.node.GetPeers())
 	selected := selectBest(results, m.cfg.MaxPerProto)
 
@@ -93,34 +95,44 @@ func (m *Obj) probeAndSelect(connected []string, batchIdx, totalBatches int) ([]
 		batchIdx, totalBatches, countUp(results), len(selected), len(connected)-len(selected))
 
 	selectedSet := make(map[string]bool, len(selected))
-	for _, uri := range selected {
-		selectedSet[uri] = true
+	for _, r := range selected {
+		selectedSet[r.URI] = true
 	}
-	for _, uri := range connected {
-		if !selectedSet[uri] {
-			m.cfg.Logger.Traceln("[peermgr] batch", batchIdx, "/", totalBatches, "removing loser", uri)
-			if err := m.node.RemovePeer(uri); err != nil {
-				m.cfg.Logger.Debugf("[peermgr] RemovePeer %s: %v", uri, err)
+
+	kept := make([]peerEntryObj, 0, len(selected))
+	uris := make([]string, 0, len(selected))
+	for _, p := range connected {
+		if selectedSet[p.URI] {
+			kept = append(kept, p)
+			uris = append(uris, p.URI)
+		} else {
+			m.cfg.Logger.Traceln("[peermgr] batch", batchIdx, "/", totalBatches, "removing loser", p.URI)
+			if err := m.node.RemovePeer(p.URI); err != nil {
+				m.cfg.Logger.Debugf("[peermgr] RemovePeer %s: %v", p.URI, err)
 			}
 		}
 	}
 
 	m.mu.Lock()
-	m.active = selected
+	m.active = uris
 	m.mu.Unlock()
 
-	return selected, nil
+	return kept, nil
 }
 
 // reportResult логирует итог; вызывает OnNoReachablePeers при пустом результате
-func (m *Obj) reportResult(connected []string) {
+func (m *Obj) reportResult(connected []peerEntryObj) {
 	if len(connected) == 0 {
 		m.cfg.Logger.Warnf("[peermgr] no reachable peers after probe")
 		if m.cfg.OnNoReachablePeers != nil {
 			m.cfg.OnNoReachablePeers()
 		}
 	} else {
-		m.cfg.Logger.Infof("[peermgr] active peers: %v", connected)
+		uris := make([]string, len(connected))
+		for i, p := range connected {
+			uris[i] = p.URI
+		}
+		m.cfg.Logger.Infof("[peermgr] active peers: %v", uris)
 	}
 }
 
@@ -128,19 +140,19 @@ func (m *Obj) reportResult(connected []string) {
 
 // optimizePassive — режим -1: переподключает весь список целиком
 func (m *Obj) optimizePassive() error {
-	for _, uri := range m.cfg.Peers {
-		_ = m.node.RemovePeer(uri)
-		if err := m.node.AddPeer(uri); err != nil {
-			m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", uri, err)
+	uris := make([]string, len(m.peers))
+	for i, p := range m.peers {
+		uris[i] = p.URI
+		_ = m.node.RemovePeer(p.URI)
+		if err := m.node.AddPeer(p.URI); err != nil {
+			m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", p.URI, err)
 		}
 	}
 
 	m.mu.Lock()
-	cp := make([]string, len(m.cfg.Peers))
-	copy(cp, m.cfg.Peers)
-	m.active = cp
+	m.active = uris
 	m.mu.Unlock()
 
-	m.cfg.Logger.Infof("[peermgr] passive mode, added %d peers", len(m.cfg.Peers))
+	m.cfg.Logger.Infof("[peermgr] passive mode, added %d peers", len(m.peers))
 	return nil
 }

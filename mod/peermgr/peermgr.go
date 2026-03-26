@@ -55,6 +55,7 @@ type ConfigObj struct {
 type Obj struct {
 	cfg        ConfigObj
 	node       core.Interface
+	peers      []peerEntryObj
 	ctx        context.Context
 	cancel     context.CancelFunc
 	active     []string
@@ -74,7 +75,16 @@ func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 	if cfg.ProbeTimeout <= 0 {
 		cfg.ProbeTimeout = defaultProbeTimeout
 	}
-	return &Obj{cfg: cfg, node: node}, nil
+
+	peers, errs := ValidatePeers(cfg.Peers)
+	for _, err := range errs {
+		cfg.Logger.Warnf("[peermgr] %v", err)
+	}
+	if len(peers) == 0 {
+		return nil, fmt.Errorf("peermgr: no valid peers after validation")
+	}
+
+	return &Obj{cfg: cfg, node: node, peers: peers}, nil
 }
 
 // // // // // // // // // //
@@ -92,7 +102,7 @@ func (m *Obj) Start() error {
 	m.mu.Unlock()
 
 	m.cfg.Logger.Infof("[peermgr] starting, %d candidates, MaxPerProto=%d, BatchSize=%d",
-		len(m.cfg.Peers), m.cfg.MaxPerProto, m.cfg.BatchSize)
+		len(m.peers), m.cfg.MaxPerProto, m.cfg.BatchSize)
 
 	m.wg.Add(1)
 	go func() {
