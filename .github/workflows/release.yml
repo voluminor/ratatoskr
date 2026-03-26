@@ -9,59 +9,182 @@ concurrency:
 
 on:
   workflow_dispatch:
-    inputs:
-      branch:
-        description: "Branch from which we make a release"
-        default: "main"
-        required: false
 
 env:
-  GO_VERSION: "1.24"
-  RELEASE_COMMAND: "git add -f target"
-  PUSH_BRANCH: ${{ github.repository.default_branch }}
+  GO_VERSION: "1.25"
 
 jobs:
   prepare:
     name: "🔧 Prepare"
     runs-on: ubuntu-latest
     steps:
-      - name: 🛎️ Checkout ${{ env.PUSH_BRANCH }}
-        uses: actions/checkout@v4
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
         with:
-          ref: ${{ env.PUSH_BRANCH }}
+          ref: main
           fetch-depth: 1
 
       - uses: ./.github/actions/init-go
         with:
           go-version: ${{ env.GO_VERSION }}
 
-      - uses: ./.github/actions/generate-build-env
-
       - uses: ./.github/actions/tidy-all-and-generate
 
-      - name: 📦 Save the repository as an artifact
+      - name: 📦 Upload source
         uses: actions/upload-artifact@v4
         with:
           name: src-gen
           path: .
 
-  release:
-    name: "🚀 Publication of release"
+  test:
+    name: "🧪 Test [${{ matrix.os }}]"
     needs: [ prepare ]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest ]
+
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: 📥 Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: ./.github/actions/run-tests
+
+  cross-build:
+    name: "🛠️ Build [${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('/v{0}', matrix.goarm) || '' }}${{ matrix.gomips && format('/{0}', matrix.gomips) || '' }}]"
+    needs: [ prepare ]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: linux, goarch: arm, goarm: "7" }
+          - { goos: linux, goarch: arm, goarm: "6" }
+          - { goos: linux, goarch: "386" }
+          - { goos: linux, goarch: riscv64 }
+          - { goos: linux, goarch: mips64 }
+          - { goos: linux, goarch: mips64le }
+          - { goos: linux, goarch: mips, gomips: softfloat }
+          - { goos: linux, goarch: mipsle, gomips: softfloat }
+          - { goos: linux, goarch: ppc64 }
+          - { goos: linux, goarch: ppc64le }
+          - { goos: linux, goarch: s390x }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+          - { goos: windows, goarch: "386" }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: freebsd, goarch: amd64 }
+          - { goos: freebsd, goarch: arm64 }
+          - { goos: freebsd, goarch: "386" }
+          - { goos: openbsd, goarch: amd64 }
+          - { goos: openbsd, goarch: arm64 }
+          - { goos: netbsd, goarch: amd64 }
+          - { goos: netbsd, goarch: arm64 }
+
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: 📥 Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: ./.github/actions/cross-build-check
+        with:
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          goarm: ${{ matrix.goarm || '' }}
+          gomips: ${{ matrix.gomips || '' }}
+
+  bump-version:
+    name: "📦 Minor version bump"
+    needs: [ test, cross-build ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: ./.github/actions/github-setup-user
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: 📦 Increment minor version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          new_ver=$(./_run/scripts/sys.sh --increment --minor)
+          echo "New version: $new_ver"
+
+          git add _run/values/ver.txt
+          git commit -m "minor(${new_ver}): release"
+          git push origin HEAD:main
+
+      - name: 🛠️ Regenerate with new version
+        shell: bash
+        env:
+          GOFLAGS: -mod=mod
+        run: |
+          set -Eeuo pipefail
+          ./_run/scripts/go_tidy_all.sh
+          mkdir -p target tmp
+          go generate ./...
+
+      - uses: ./.github/actions/generate-build-env
+
+      - name: 📦 Upload bumped source
+        uses: actions/upload-artifact@v4
+        with:
+          name: src-bumped
+          path: .
+
+  release:
+    name: "🚀 Release"
+    needs: [ bump-version ]
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: 🛎️ Checkout ${{ env.PUSH_BRANCH }}
-        uses: actions/checkout@v4
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
         with:
-          ref: ${{ env.PUSH_BRANCH }}
-          fetch-depth: 1
+          ref: main
+          fetch-depth: 0
 
-      - name: 📥 Download src-gen
+      - name: 📥 Download bumped source
         uses: actions/download-artifact@v4
         with:
-          name: src-gen
+          name: src-bumped
           path: .
 
       - name: 🗒️ Source env
@@ -70,27 +193,24 @@ jobs:
 
       - uses: ./.github/actions/github-setup-user
 
-      - name: 🏷️ Create Commit without “heavy” and tag ${BUILD_VER}
-        id: tag
+      - name: 🏷️ Create stripped commit and tag ${{ env.BUILD_VER }}
         shell: bash
         env:
           GOFLAGS: -mod=mod
         run: |
           set -Eeuo pipefail
           ORIG_SHA=$(git rev-parse HEAD)
-          
-          ${{ env.RELEASE_COMMAND }}
 
+          git add -f target
           git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli gen.go go.work .gitignore
-          #git rm -f --cached --ignore-unmatch $(git ls-files '*.bin' '*.md')
-          
+
           git commit -m "release(${BUILD_VER}): strip heavy assets"
           git tag -a "${BUILD_VER}" -m "Release ${BUILD_VER}"
           git push origin "${BUILD_VER}"
 
           git reset --hard "$ORIG_SHA"
 
-      - name: 🚀 Create a release
+      - name: 🚀 Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.BUILD_VER }}
@@ -99,22 +219,11 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: ✔️ Finish
-        run: |
-          new_version=$(./_run/scripts/sys.sh --increment --minor)
-          
-          git add ./_run/values/ver.txt
-          git commit -m "actions [$new_version] "$'\n'"Build: [${BUILD_VER}] >> [$new_version]"
-          git push origin HEAD:main
-          
-          echo "🎉 Release $BUILD_VER successfully published!"
-
-      - name: 🧹 Remove temporary artifacts
-        if: success()
+      - name: 🧹 Cleanup artifacts
+        if: always()
         uses: geekyeggo/delete-artifact@v5
         with:
           name: |
-            build-env
             src-gen
-            ${{ env.BUILD_NAME }}.*
+            src-bumped
           failOnError: false
