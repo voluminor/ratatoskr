@@ -5,9 +5,9 @@ import (
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
-	"github.com/yggdrasil-network/ratatoskr/mod/core"
-	"github.com/yggdrasil-network/ratatoskr/mod/resolver"
-	"github.com/yggdrasil-network/ratatoskr/mod/socks"
+	"github.com/voluminor/ratatoskr/mod/core"
+	"github.com/voluminor/ratatoskr/mod/resolver"
+	"github.com/voluminor/ratatoskr/mod/socks"
 )
 
 // // // // // // // // // //

@@ -6,5 +6,5 @@ use (
 	./cmd/embedded/mobile
 	./cmd/embedded/tiny-chat
 	./cmd/embedded/tiny-http
-	./cmd/ratatoskr
+	./cmd/yggstack
 )

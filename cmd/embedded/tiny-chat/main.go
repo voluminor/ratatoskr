@@ -19,7 +19,7 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
-	ratatoskr "github.com/yggdrasil-network/ratatoskr"
+	"github.com/voluminor/ratatoskr"
 )
 
 // // // // // // // // // //

@@ -1,10 +1,10 @@
-module github.com/yggdrasil-network/ratatoskr
+module github.com/voluminor/ratatoskr
 
 go 1.25.5
 
 require (
 	github.com/gologme/log v1.3.0
-	github.com/things-go/go-socks5 v0.1.0
+	github.com/things-go/go-socks5 v0.1.1
 	github.com/yggdrasil-network/yggdrasil-go v0.5.13
 	golang.org/x/net v0.52.0
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6

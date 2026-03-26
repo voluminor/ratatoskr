@@ -14,8 +14,8 @@ import (
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 
-	ratatoskr "github.com/yggdrasil-network/ratatoskr"
-	"github.com/yggdrasil-network/ratatoskr/mod/forward"
+	"github.com/voluminor/ratatoskr"
+	"github.com/voluminor/ratatoskr/mod/forward"
 )
 
 // // // // // // // // // //

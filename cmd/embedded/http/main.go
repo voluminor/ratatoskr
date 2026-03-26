@@ -16,7 +16,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
-	ratatoskr "github.com/yggdrasil-network/ratatoskr"
+	"github.com/voluminor/ratatoskr"
 )
 
 // // // // // // // // // //

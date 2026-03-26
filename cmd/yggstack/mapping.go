@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/yggdrasil-network/ratatoskr/mod/forward"
+	"github.com/voluminor/ratatoskr/mod/forward"
 )
 
 // // // // // // // // // //
