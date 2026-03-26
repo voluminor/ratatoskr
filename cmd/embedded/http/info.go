@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,7 +9,7 @@ import (
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
-	"github.com/voluminor/ratatoskr/mod/core"
+	"github.com/voluminor/ratatoskr"
 )
 
 // // // // // // // // // //
@@ -45,13 +44,13 @@ type infoJSON struct {
 // //
 
 type cachedMetricsObj struct {
-	peers []peerJSON
-	bw    bandwidthJSON
-	at    time.Time
+	snap ratatoskr.SnapshotObj
+	bw   bandwidthJSON
+	at   time.Time
 }
 
 type InfoHandlerObj struct {
-	node      core.Interface
+	node      *ratatoskr.Obj
 	cfg       *ConfigObj
 	log       yggcore.Logger
 	startTime time.Time
@@ -61,38 +60,23 @@ type InfoHandlerObj struct {
 
 // //
 
-func newInfoHandler(node core.Interface, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
+func newInfoHandler(node *ratatoskr.Obj, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
 	return &InfoHandlerObj{node: node, cfg: cfg, log: log, startTime: time.Now()}
 }
 
 func (h *InfoHandlerObj) refreshMetrics() *cachedMetricsObj {
-	peers := h.node.GetPeers()
+	snap := h.node.Snapshot()
 
-	peerList := make([]peerJSON, len(peers))
 	var bw bandwidthJSON
-	for i, p := range peers {
-		entry := peerJSON{
-			URI:       p.URI,
-			Up:        p.Up,
-			RxBytes:   p.RXBytes,
-			TxBytes:   p.TXBytes,
-			LatencyMs: float64(p.Latency.Microseconds()) / 1000.0,
-		}
-		if !p.Up && p.LastError != nil {
-			msg := p.LastError.Error()
-			entry.LastError = msg
-			entry.LastErrorTime = &p.LastErrorTime
-			h.log.Warnf("peer down: %s — %s", p.URI, msg)
-		}
-		peerList[i] = entry
+	for _, p := range snap.Peers {
 		bw.RxBytes += p.RXBytes
 		bw.TxBytes += p.TXBytes
+		if !p.Up && p.LastError != "" {
+			h.log.Warnf("peer down: %s — %s", p.URI, p.LastError)
+		}
 	}
-	return &cachedMetricsObj{
-		peers: peerList,
-		bw:    bw,
-		at:    time.Now(),
-	}
+
+	return &cachedMetricsObj{snap: snap, bw: bw, at: time.Now()}
 }
 
 func (h *InfoHandlerObj) getMetrics() *cachedMetricsObj {
@@ -118,15 +102,33 @@ func (h *InfoHandlerObj) buildAddresses() []string {
 func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m := h.getMetrics()
+
+		peers := make([]peerJSON, len(m.snap.Peers))
+		for i, p := range m.snap.Peers {
+			entry := peerJSON{
+				URI:       p.URI,
+				Up:        p.Up,
+				RxBytes:   p.RXBytes,
+				TxBytes:   p.TXBytes,
+				LatencyMs: float64(p.Latency.Microseconds()) / 1000.0,
+				LastError: p.LastError,
+			}
+			if !p.LastErrorTime.IsZero() {
+				t := p.LastErrorTime
+				entry.LastErrorTime = &t
+			}
+			peers[i] = entry
+		}
+
 		resp := infoJSON{
-			PublicKey:     hex.EncodeToString(h.node.PublicKey()),
-			YggAddress:    h.node.Address().String(),
+			PublicKey:     m.snap.PublicKey,
+			YggAddress:    m.snap.Address,
 			Addresses:     h.buildAddresses(),
 			YggPorts:      h.cfg.YggPorts,
 			IsYggdrasil:   isYggdrasil,
 			UptimeSeconds: time.Since(h.startTime).Seconds(),
 			Bandwidth:     m.bw,
-			Peers:         m.peers,
+			Peers:         peers,
 			CachedAt:      m.at,
 		}
 		data, _ := json.Marshal(resp)
