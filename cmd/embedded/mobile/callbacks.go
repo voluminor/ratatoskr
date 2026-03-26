@@ -7,12 +7,12 @@ import (
 
 // // // // // // // // // //
 
-// LogCallback получает отформатированные строки логов от ноды. Реализации не должны блокироваться.
+// LogCallback получает строки логов. Реализации не должны блокироваться
 type LogCallback interface {
 	Log(message string)
 }
 
-// PeerChangeCallback вызывается при изменении количества подключённых пиров. Реализации не должны блокироваться.
+// PeerChangeCallback — уведомление об изменении количества пиров. Не блокировать
 type PeerChangeCallback interface {
 	OnPeerCountChanged(connected, total int64)
 }
@@ -44,7 +44,7 @@ func parseLogLevel(level string) int {
 
 // //
 
-// logBridgeObj реализует core.Logger и перенаправляет вывод в LogCallback.
+// logBridgeObj — мост core.Logger → LogCallback
 type logBridgeObj struct {
 	mu    sync.RWMutex
 	cb    LogCallback
@@ -112,7 +112,7 @@ func (b *logBridgeObj) Traceln(args ...interface{}) {
 
 // //
 
-// peerBridgeObj перенаправляет изменения количества пиров в PeerChangeCallback.
+// peerBridgeObj — мост для PeerChangeCallback
 type peerBridgeObj struct {
 	mu sync.RWMutex
 	cb PeerChangeCallback

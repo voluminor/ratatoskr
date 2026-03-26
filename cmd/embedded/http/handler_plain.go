@@ -8,6 +8,7 @@ import (
 
 // // // // // // // // // //
 
+// noListFSObj — обёртка http.FileSystem, запрещающая листинг директорий
 type noListFSObj struct {
 	http.FileSystem
 }

@@ -7,9 +7,7 @@ import (
 
 // // // // // // // // // //
 
-// componentObj — обобщённый управляемый компонент с Enable/Disable lifecycle.
-// Потокобезопасен; гарантирует что активен не более одного экземпляра.
-// value хранит типизированный экземпляр для доступа через get()
+// componentObj — потокобезопасный Enable/Disable lifecycle; не более одного экземпляра
 type componentObj struct {
 	name   string
 	mu     sync.RWMutex
@@ -17,8 +15,7 @@ type componentObj struct {
 	stopFn func() error
 }
 
-// enable создаёт компонент; ошибка если уже активен.
-// start возвращает экземпляр (для типизированного доступа) и функцию остановки
+// enable создаёт компонент; ошибка если уже активен
 func (c *componentObj) enable(start func() (any, func() error, error)) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -35,7 +32,7 @@ func (c *componentObj) enable(start func() (any, func() error, error)) error {
 	return nil
 }
 
-// disable останавливает компонент; no-op если не активен
+// disable останавливает компонент; no-op если неактивен
 func (c *componentObj) disable() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -49,7 +46,7 @@ func (c *componentObj) disable() error {
 	return err
 }
 
-// get возвращает типизированный экземпляр (nil если неактивен)
+// get возвращает экземпляр; nil если неактивен
 func (c *componentObj) get() any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

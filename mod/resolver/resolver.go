@@ -24,9 +24,7 @@ type Obj struct {
 	hasDNS   bool
 }
 
-// New создаёт резолвер.
-// dialer используется для DNS-запросов через сеть Yggdrasil.
-// nameserver — адрес DNS-сервера; пустая строка = только .pk.ygg и литералы
+// New создаёт резолвер; nameserver пустой = только .pk.ygg и литералы
 func New(dialer proxy.ContextDialer, nameserver string) *Obj {
 	r := &Obj{
 		resolver: &net.Resolver{PreferGo: true},
@@ -48,8 +46,7 @@ func New(dialer proxy.ContextDialer, nameserver string) *Obj {
 
 // //
 
-// Resolve разрешает имя в IP-адрес.
-// Поддерживает: <pubkey>.pk.ygg, IPv6-литералы, DNS-имена (при наличии nameserver)
+// Resolve — <pubkey>.pk.ygg, IPv6-литералы, DNS (при наличии nameserver)
 func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
 	// Публичный ключ → IPv6
 	if pkName, ok := strings.CutSuffix(name, NameMappingSuffix); ok {

@@ -99,15 +99,13 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 	})
 }
 
-// DisableSOCKS останавливает SOCKS5-прокси
 func (o *Obj) DisableSOCKS() error {
 	return o.socksServer.Disable()
 }
 
 // //
 
-// PeerManagerActive возвращает текущий список активных пиров менеджера.
-// Возвращает nil если менеджер не используется.
+// PeerManagerActive возвращает текущий список активных пиров; nil если менеджер не используется
 func (o *Obj) PeerManagerActive() []string {
 	if o.peerMgr == nil {
 		return nil
@@ -115,8 +113,7 @@ func (o *Obj) PeerManagerActive() []string {
 	return o.peerMgr.Active()
 }
 
-// PeerManagerOptimize запускает внеплановую перепроверку пиров.
-// Возвращает ошибку если менеджер не используется.
+// PeerManagerOptimize запускает внеплановую перепроверку пиров
 func (o *Obj) PeerManagerOptimize() error {
 	if o.peerMgr == nil {
 		return fmt.Errorf("peer manager not enabled")
@@ -126,7 +123,7 @@ func (o *Obj) PeerManagerOptimize() error {
 
 // //
 
-// RetryPeers немедленно инициирует переподключение ко всем отключённым пирам
+// RetryPeers инициирует немедленное переподключение отключённых пиров
 func (o *Obj) RetryPeers() {
 	if coreNode, ok := o.Interface.(*core.Obj); ok {
 		coreNode.UnsafeCore().RetryPeersNow()
@@ -135,7 +132,7 @@ func (o *Obj) RetryPeers() {
 
 // //
 
-// Close корректно останавливает все компоненты и ядро; безопасен для повторного вызова
+// Close останавливает все компоненты; безопасен для повторного вызова
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		close(o.done)

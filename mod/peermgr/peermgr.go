@@ -78,8 +78,7 @@ func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 
 // // // // // // // // // //
 
-// Start запускает менеджер: первичный прогон и тикер работают асинхронно.
-// Повторный Start без Stop возвращает ошибку.
+// Start запускает менеджер асинхронно; повторный вызов без Stop — ошибка
 func (m *Obj) Start() error {
 	m.mu.Lock()
 	if m.cancel != nil {
@@ -102,8 +101,7 @@ func (m *Obj) Start() error {
 	return nil
 }
 
-// Stop отменяет контекст, ждёт завершения горутин и удаляет все управляемые пиры.
-// Безопасен при повторном вызове.
+// Stop отменяет контекст, удаляет управляемые пиры; безопасен для повторного вызова
 func (m *Obj) Stop() {
 	m.mu.Lock()
 	cancel := m.cancel
@@ -127,7 +125,7 @@ func (m *Obj) Stop() {
 	m.cfg.Logger.Infof("[peermgr] stopped, removed %d peers", len(active))
 }
 
-// Active возвращает копию текущего списка активных пиров
+// Active — копия текущего списка активных пиров
 func (m *Obj) Active() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -136,8 +134,7 @@ func (m *Obj) Active() []string {
 	return out
 }
 
-// Optimize запускает внеплановую перепроверку пиров.
-// Блокирует до завершения. Возвращает ошибку если менеджер не запущен.
+// Optimize — внеплановая перепроверка; блокирует до завершения
 func (m *Obj) Optimize() error {
 	m.mu.Lock()
 	ctx := m.ctx

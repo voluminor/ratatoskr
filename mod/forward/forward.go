@@ -27,11 +27,10 @@ type UDPMappingObj struct {
 
 // //
 
-// DefaultTCPCloseTimeout — время ожидания второй стороны TCP-соединения после закрытия первой.
+// DefaultTCPCloseTimeout — ожидание второй стороны TCP после закрытия первой
 const DefaultTCPCloseTimeout = 30 * time.Second
 
-// ManagerObj запускает и останавливает все правила форвардинга.
-// Создаётся через New; маппинги добавляются через Add*; запускается через Start.
+// ManagerObj — менеджер правил форвардинга: New → Add* → Start
 type ManagerObj struct {
 	log             yggcore.Logger
 	node            core.Interface
@@ -46,7 +45,7 @@ type ManagerObj struct {
 	remoteUDPs []UDPMappingObj
 }
 
-// New создаёт менеджер форвардинга. sessionTimeout — таймаут неактивности UDP-сессии.
+// New создаёт менеджер; sessionTimeout — неактивность UDP до закрытия сессии
 func New(log yggcore.Logger, sessionTimeout time.Duration) *ManagerObj {
 	return &ManagerObj{
 		log:             log,
@@ -73,30 +72,28 @@ func (m *ManagerObj) AddRemoteUDP(mappings ...UDPMappingObj) {
 	m.remoteUDPs = append(m.remoteUDPs, mappings...)
 }
 
-// SetTimeout обновляет таймаут неактивности UDP-сессий. Должен вызываться до Start().
+// SetTimeout обновляет таймаут неактивности UDP-сессий. До Start()
 func (m *ManagerObj) SetTimeout(d time.Duration) {
 	m.timeout = d
 }
 
-// SetTCPCloseTimeout задаёт время ожидания второй стороны TCP при закрытии соединения.
-// По умолчанию DefaultTCPCloseTimeout. Должен вызываться до Start().
+// SetTCPCloseTimeout — ожидание второй стороны TCP при разрыве. До Start()
 func (m *ManagerObj) SetTCPCloseTimeout(d time.Duration) {
 	m.tcpCloseTimeout = d
 }
 
-// SetMaxUDPSessions задаёт максимальное число одновременных UDP-сессий на маппинг (0 = без ограничений).
-// Должен вызываться до Start().
+// SetMaxUDPSessions — лимит UDP-сессий на маппинг; 0 = без ограничений. До Start()
 func (m *ManagerObj) SetMaxUDPSessions(n int) {
 	m.maxUDPSessions = n
 }
 
-// ClearLocal сбрасывает все локальные маппинги (TCP и UDP). Должен вызываться до Start().
+// ClearLocal сбрасывает локальные маппинги. До Start()
 func (m *ManagerObj) ClearLocal() {
 	m.localTCPs = nil
 	m.localUDPs = nil
 }
 
-// ClearRemote сбрасывает все удалённые маппинги (TCP и UDP). Должен вызываться до Start().
+// ClearRemote сбрасывает удалённые маппинги. До Start()
 func (m *ManagerObj) ClearRemote() {
 	m.remoteTCPs = nil
 	m.remoteUDPs = nil
@@ -104,8 +101,7 @@ func (m *ManagerObj) ClearRemote() {
 
 // //
 
-// Start запускает горутины для всех добавленных маппингов.
-// Вызывается один раз после добавления всех маппингов.
+// Start запускает горутины для всех маппингов; вызывается один раз
 func (m *ManagerObj) Start(ctx context.Context, node core.Interface) {
 	m.node = node
 	m.startLocalTCP(ctx)
@@ -114,7 +110,7 @@ func (m *ManagerObj) Start(ctx context.Context, node core.Interface) {
 	m.startRemoteUDP(ctx)
 }
 
-// Wait блокирует до завершения всех горутин форвардинга.
+// Wait блокирует до завершения всех горутин
 func (m *ManagerObj) Wait() {
 	m.wg.Wait()
 }

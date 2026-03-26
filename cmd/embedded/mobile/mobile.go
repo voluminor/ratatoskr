@@ -60,8 +60,7 @@ func NewRatatoskr() *Ratatoskr {
 
 // // // // // // // // // //
 
-// LoadConfigJSON разбирает JSON-строку конфигурации и сохраняет её для Start().
-// Формат — NodeConfig Yggdrasil (см. GenerateConfig). Возвращает ошибку если нода запущена или JSON невалидный.
+// LoadConfigJSON разбирает NodeConfig JSON и сохраняет для Start(). Ошибка если нода запущена
 func (y *Ratatoskr) LoadConfigJSON(jsonStr string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -78,31 +77,29 @@ func (y *Ratatoskr) LoadConfigJSON(jsonStr string) error {
 	return nil
 }
 
-// SetLogCallback регистрирует колбек для вывода логов. Можно вызывать в любой момент.
+// SetLogCallback регистрирует колбек логов; можно вызывать в любой момент
 func (y *Ratatoskr) SetLogCallback(cb LogCallback) {
 	y.logBridge.setCallback(cb)
 }
 
-// SetLogLevel задаёт минимальный уровень логирования. Допустимые значения: "trace", "debug", "info" (по умолчанию), "warn", "error".
+// SetLogLevel — минимальный уровень: "trace", "debug", "info" (default), "warn", "error"
 func (y *Ratatoskr) SetLogLevel(level string) {
 	y.logBridge.setLevel(level)
 }
 
-// SetPeerChangeCallback регистрирует колбек на изменение количества подключённых пиров. Можно вызывать в любой момент.
+// SetPeerChangeCallback — колбек при изменении числа пиров; можно вызывать в любой момент
 func (y *Ratatoskr) SetPeerChangeCallback(cb PeerChangeCallback) {
 	y.peerBridge.setCallback(cb)
 }
 
-// SetCoreStopTimeout задаёт максимальное время ожидания остановки ядра в мс.
-// 0 — ждать бесконечно (по умолчанию). Вызывать до Start().
+// SetCoreStopTimeout — макс. ожидание остановки ядра в мс; 0 = бесконечно. До Start()
 func (y *Ratatoskr) SetCoreStopTimeout(ms int64) {
 	y.mu.Lock()
 	y.coreStopMs = ms
 	y.mu.Unlock()
 }
 
-// SetSessionTimeout задаёт таймаут неактивности UDP-сессии в мс.
-// По истечении без трафика сессия закрывается. По умолчанию: 120000 (120с). Вызывать до Start().
+// SetSessionTimeout — таймаут неактивности UDP-сессии в мс; default 120000. До Start()
 func (y *Ratatoskr) SetSessionTimeout(ms int64) {
 	y.mu.Lock()
 	if ms > 0 {
@@ -112,15 +109,14 @@ func (y *Ratatoskr) SetSessionTimeout(ms int64) {
 	y.mu.Unlock()
 }
 
-// SetMulticastEnabled включает или отключает mDNS-обнаружение пиров в локальной сети. Вызывать до Start().
+// SetMulticastEnabled — mDNS-обнаружение пиров в локальной сети. До Start()
 func (y *Ratatoskr) SetMulticastEnabled(enabled bool) {
 	y.mu.Lock()
 	y.multicast = enabled
 	y.mu.Unlock()
 }
 
-// SetSOCKSMaxConnections задаёт максимальное количество одновременных SOCKS5-соединений.
-// 0 — без ограничений (по умолчанию). Вызывать до Start().
+// SetSOCKSMaxConnections — лимит SOCKS5-соединений; 0 = без ограничений. До Start()
 func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
 	y.mu.Lock()
 	y.socksMaxConn = max
@@ -129,8 +125,8 @@ func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
 
 // // // // // // // // // //
 
-// AddPeer добавляет пир по URI. Поддерживаемые схемы: tcp, tls, quic, ws, wss.
-// До Start() — сохраняется в конфиг. Во время работы — подключается немедленно.
+// AddPeer добавляет пир; tcp, tls, quic, ws, wss.
+// До Start() → в конфиг; во время работы → подключение немедленно
 func (y *Ratatoskr) AddPeer(uri string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -150,8 +146,7 @@ func (y *Ratatoskr) AddPeer(uri string) error {
 	return nil
 }
 
-// RemovePeer удаляет пир по URI.
-// До Start() — удаляется из конфига. Во время работы — отключается немедленно.
+// RemovePeer удаляет пир; до Start() → из конфига, во время работы → отключение
 func (y *Ratatoskr) RemovePeer(uri string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -173,9 +168,7 @@ func (y *Ratatoskr) RemovePeer(uri string) error {
 
 // // // // // // // // // //
 
-// AddLocalTCPMapping добавляет правило форвардинга локального TCP-порта на Yggdrasil-адрес.
-// local: адрес прослушивания, например "127.0.0.1:8080"; remote: назначение в Yggdrasil, например "[200:1234::1]:80".
-// Вызывать до Start(); вступает в силу при следующем Start().
+// AddLocalTCPMapping — форвардинг локального TCP на Yggdrasil; "127.0.0.1:8080" → "[200:...]:80". До Start()
 func (y *Ratatoskr) AddLocalTCPMapping(local, remote string) error {
 	m, err := parseTCPMapping(local, remote)
 	if err != nil {
@@ -187,9 +180,7 @@ func (y *Ratatoskr) AddLocalTCPMapping(local, remote string) error {
 	return nil
 }
 
-// AddLocalUDPMapping добавляет правило форвардинга локального UDP-порта на Yggdrasil-адрес.
-// local: адрес прослушивания, например "127.0.0.1:5353"; remote: назначение в Yggdrasil, например "[200:1234::1]:53".
-// Вызывать до Start(); вступает в силу при следующем Start().
+// AddLocalUDPMapping — форвардинг локального UDP на Yggdrasil. До Start()
 func (y *Ratatoskr) AddLocalUDPMapping(local, remote string) error {
 	m, err := parseUDPMapping(local, remote)
 	if err != nil {
@@ -201,9 +192,7 @@ func (y *Ratatoskr) AddLocalUDPMapping(local, remote string) error {
 	return nil
 }
 
-// AddRemoteTCPMapping открывает локальный TCP-сервис в сети Yggdrasil.
-// port: порт прослушивания на стороне Yggdrasil (1-65535); local: локальный сервис, например "127.0.0.1:80".
-// Вызывать до Start(); вступает в силу при следующем Start().
+// AddRemoteTCPMapping — экспозиция локального TCP в Yggdrasil; port → local. До Start()
 func (y *Ratatoskr) AddRemoteTCPMapping(port int, local string) error {
 	m, err := parseRemoteTCPMapping(port, local)
 	if err != nil {
@@ -215,9 +204,7 @@ func (y *Ratatoskr) AddRemoteTCPMapping(port int, local string) error {
 	return nil
 }
 
-// AddRemoteUDPMapping открывает локальный UDP-сервис в сети Yggdrasil.
-// port: порт прослушивания на стороне Yggdrasil (1-65535); local: локальный сервис, например "127.0.0.1:53".
-// Вызывать до Start(); вступает в силу при следующем Start().
+// AddRemoteUDPMapping — экспозиция локального UDP в Yggdrasil; port → local. До Start()
 func (y *Ratatoskr) AddRemoteUDPMapping(port int, local string) error {
 	m, err := parseRemoteUDPMapping(port, local)
 	if err != nil {
@@ -229,16 +216,14 @@ func (y *Ratatoskr) AddRemoteUDPMapping(port int, local string) error {
 	return nil
 }
 
-// ClearLocalMappings удаляет все ожидающие локальные правила TCP/UDP-форвардинга.
-// Вызывать до Start(); во время работы не имеет эффекта.
+// ClearLocalMappings сбрасывает локальные правила форвардинга. До Start()
 func (y *Ratatoskr) ClearLocalMappings() {
 	y.mu.Lock()
 	y.fwdMgr.ClearLocal()
 	y.mu.Unlock()
 }
 
-// ClearRemoteMappings удаляет все ожидающие удалённые правила TCP/UDP-форвардинга.
-// Вызывать до Start(); во время работы не имеет эффекта.
+// ClearRemoteMappings сбрасывает удалённые правила форвардинга. До Start()
 func (y *Ratatoskr) ClearRemoteMappings() {
 	y.mu.Lock()
 	y.fwdMgr.ClearRemote()
@@ -247,11 +232,7 @@ func (y *Ratatoskr) ClearRemoteMappings() {
 
 // // // // // // // // // //
 
-// Start запускает ноду Yggdrasil с SOCKS5-прокси на socksAddr и опциональным DNS-сервером.
-// Возвращает ошибку если нода уже запущена или запуск не удался.
-//
-// socksAddr: адрес SOCKS5-прокси (TCP или UNIX-сокет), например "127.0.0.1:1080". Пустая строка — SOCKS5 отключён.
-// nameserver: DNS-сервер в сети Yggdrasil для доменов .ygg. Пустая строка — внешнее .ygg DNS отключено.
+// Start запускает ноду. socksAddr: адрес SOCKS5 (пусто = отключён); nameserver: DNS для .ygg (пусто = отключён)
 func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -308,7 +289,7 @@ func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 	return nil
 }
 
-// Stop останавливает ноду и весь форвардинг портов. Безопасен при вызове если нода не запущена.
+// Stop останавливает ноду и форвардинг; безопасен если не запущена
 func (y *Ratatoskr) Stop() error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
@@ -324,7 +305,7 @@ func (y *Ratatoskr) Stop() error {
 	return err
 }
 
-// IsRunning возвращает true если нода запущена.
+// IsRunning — запущена ли нода
 func (y *Ratatoskr) IsRunning() bool {
 	y.mu.Lock()
 	running := y.node != nil
@@ -334,8 +315,7 @@ func (y *Ratatoskr) IsRunning() bool {
 
 // // // // // // // // // //
 
-// GetAddress возвращает IPv6-адрес ноды в сети Yggdrasil, например "200:1234::1".
-// Возвращает пустую строку если нода не запущена.
+// GetAddress — IPv6-адрес ноды; пусто если не запущена
 func (y *Ratatoskr) GetAddress() string {
 	y.mu.Lock()
 	node := y.node
@@ -346,8 +326,7 @@ func (y *Ratatoskr) GetAddress() string {
 	return node.Address().String()
 }
 
-// GetSubnet возвращает IPv6-подсеть ноды в сети Yggdrasil, например "300:1234::/64".
-// Возвращает пустую строку если нода не запущена.
+// GetSubnet — IPv6-подсеть ноды; пусто если не запущена
 func (y *Ratatoskr) GetSubnet() string {
 	y.mu.Lock()
 	node := y.node
@@ -359,8 +338,7 @@ func (y *Ratatoskr) GetSubnet() string {
 	return s.String()
 }
 
-// GetPublicKey возвращает Ed25519 публичный ключ ноды в виде hex-строки.
-// Возвращает пустую строку если нода не запущена.
+// GetPublicKey — Ed25519 ключ (hex); пусто если не запущена
 func (y *Ratatoskr) GetPublicKey() string {
 	y.mu.Lock()
 	node := y.node
@@ -371,8 +349,7 @@ func (y *Ratatoskr) GetPublicKey() string {
 	return hex.EncodeToString(node.PublicKey())
 }
 
-// GetPeers возвращает список URI настроенных пиров в виде JSON-массива.
-// Включает как подключённые, так и отключённые пиры. Возвращает "[]" если нода не запущена.
+// GetPeers — URI всех пиров как JSON-массив; "[]" если не запущена
 func (y *Ratatoskr) GetPeers() string {
 	y.mu.Lock()
 	node := y.node
@@ -392,7 +369,7 @@ func (y *Ratatoskr) GetPeers() string {
 	return string(b)
 }
 
-// peerJSONObj — структура для сериализации информации о пире
+// peerJSONObj — детальная информация о пире для JSON
 type peerJSONObj struct {
 	URI           string `json:"uri"`
 	Up            bool   `json:"up"`
@@ -406,9 +383,7 @@ type peerJSONObj struct {
 	LastError     string `json:"last_error,omitempty"`
 }
 
-// GetPeersJSON возвращает детальную статистику по пирам в виде JSON-массива.
-// Каждая запись содержит URI, состояние соединения, счётчики трафика, задержку и аптайм.
-// Возвращает "[]" если нода не запущена или при ошибке.
+// GetPeersJSON — детальная статистика пиров (URI, трафик, латентность, аптайм) как JSON
 func (y *Ratatoskr) GetPeersJSON() string {
 	y.mu.Lock()
 	node := y.node

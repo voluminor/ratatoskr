@@ -23,7 +23,7 @@ type Interface interface {
 	AddPeer(uri string) error
 	RemovePeer(uri string) error
 	GetPeers() []yggcore.PeerInfo
-	EnableMulticast(logger *golog.Logger) error //todo: gologme временно пока не зарелизится новая версия Yggdrasil
+	EnableMulticast(logger *golog.Logger) error // todo: gologme — временная зависимость до новой версии Yggdrasil
 	DisableMulticast() error
 	EnableAdmin(addr string) error
 	DisableAdmin() error

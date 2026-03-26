@@ -18,8 +18,7 @@ type peerResultObj struct {
 	Latency time.Duration
 }
 
-// buildResults сопоставляет список кандидатов с текущим состоянием GetPeers().
-// Пиры не вернувшиеся в GetPeers() считаются недоступными (Up == false).
+// buildResults сопоставляет кандидатов с GetPeers(); отсутствующие → Up == false
 func buildResults(candidates []string, peers []yggcore.PeerInfo) []peerResultObj {
 	peerMap := make(map[string]yggcore.PeerInfo, len(peers))
 	for _, p := range peers {
@@ -37,8 +36,7 @@ func buildResults(candidates []string, peers []yggcore.PeerInfo) []peerResultObj
 	return results
 }
 
-// selectBest выбирает топ-maxPerProto пиров по каждому протоколу среди Up==true,
-// отсортированных по латентности (меньше — лучше).
+// selectBest — топ-N пиров по протоколу среди Up==true, сортировка по латентности
 func selectBest(results []peerResultObj, maxPerProto int) []string {
 	groups := make(map[string][]peerResultObj)
 	for _, r := range results {
@@ -64,7 +62,7 @@ func selectBest(results []peerResultObj, maxPerProto int) []string {
 	return selected
 }
 
-// countUp возвращает количество пиров с Up == true
+// countUp — количество Up == true
 func countUp(results []peerResultObj) int {
 	n := 0
 	for _, r := range results {
@@ -75,7 +73,7 @@ func countUp(results []peerResultObj) int {
 	return n
 }
 
-// parseProto извлекает схему транспорта из URI пира ("tls://host:port" → "tls")
+// parseProto — схема транспорта из URI ("tls://..." → "tls")
 func parseProto(uri string) string {
 	u, err := url.Parse(uri)
 	if err != nil || u.Scheme == "" {

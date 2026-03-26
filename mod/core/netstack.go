@@ -82,7 +82,7 @@ func parseAddress(address string) (tcpip.FullAddress, tcpip.NetworkProtocolNumbe
 
 // //
 
-// DialContext — стандартный Go dialer; tcp, tcp6, udp, udp6
+// DialContext — tcp, tcp6, udp, udp6
 func (s *netstackObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	fa, pn, err := parseAddress(address)
 	if err != nil {
@@ -98,7 +98,7 @@ func (s *netstackObj) DialContext(ctx context.Context, network, address string) 
 	}
 }
 
-// Listen — TCP listener; tcp, tcp6
+// Listen — tcp, tcp6
 func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
 	fa, pn, err := parseAddress(address)
 	if err != nil {
@@ -112,7 +112,7 @@ func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
 	}
 }
 
-// ListenPacket — UDP listener; udp, udp6
+// ListenPacket — udp, udp6
 func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, error) {
 	fa, pn, err := parseAddress(address)
 	if err != nil {
@@ -126,7 +126,7 @@ func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, err
 	}
 }
 
-// MTU — MTU сетевого интерфейса
+// MTU возвращает MTU NIC-интерфейса
 func (s *netstackObj) MTU() uint64 {
 	if s.nic == nil {
 		return 0

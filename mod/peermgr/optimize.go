@@ -35,9 +35,7 @@ func (m *Obj) optimize(ctx context.Context) error {
 
 // //
 
-// optimizeActive: батчами добавляет кандидатов, после каждого батча
-// отсекает худших — скользящая гонка на выбывание.
-// При BatchSize <= 1 весь список обрабатывается за один проход.
+// optimizeActive — скользящая гонка: батчами добавляет, после каждого отсекает худших
 func (m *Obj) optimizeActive(ctx context.Context) error {
 	peers := m.cfg.Peers
 	batchSize := m.cfg.BatchSize
@@ -84,8 +82,7 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 	return nil
 }
 
-// probeAndSelect собирает результаты пробинга, выбирает лучших,
-// удаляет проигравших и обновляет m.active.
+// probeAndSelect — выбирает лучших, удаляет проигравших, обновляет m.active
 func (m *Obj) probeAndSelect(connected []string, batchIdx, totalBatches int) ([]string, error) {
 	results := buildResults(connected, m.node.GetPeers())
 	selected := selectBest(results, m.cfg.MaxPerProto)
@@ -113,7 +110,7 @@ func (m *Obj) probeAndSelect(connected []string, batchIdx, totalBatches int) ([]
 	return selected, nil
 }
 
-// reportResult логирует финальный результат и вызывает OnNoReachablePeers при необходимости.
+// reportResult логирует итог; вызывает OnNoReachablePeers при пустом результате
 func (m *Obj) reportResult(connected []string) {
 	if len(connected) == 0 {
 		m.cfg.Logger.Warnf("[peermgr] no reachable peers after probe")
@@ -127,8 +124,7 @@ func (m *Obj) reportResult(connected []string) {
 
 // //
 
-// optimizePassive: режим -1 — переподключить весь список целиком.
-// При первом вызове RemovePeer завершается ошибкой (пир ещё не добавлен) — это нормально.
+// optimizePassive — режим -1: переподключает весь список целиком
 func (m *Obj) optimizePassive() error {
 	for _, uri := range m.cfg.Peers {
 		_ = m.node.RemovePeer(uri)

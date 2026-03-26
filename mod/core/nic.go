@@ -19,7 +19,6 @@ import (
 
 // // // // // // // // // //
 
-// Проверка реализации интерфейса на этапе компиляции
 var _ stack.LinkEndpoint = (*nicObj)(nil)
 
 var writeBufPool = sync.Pool{
@@ -208,7 +207,7 @@ func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
 	return list.Len(), nil
 }
 
-// enqueueRST ставит RST-пакет в очередь; при переполнении вытесняет старый
+// enqueueRST ставит RST в очередь; при переполнении вытесняет старый
 func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	select {
 	case e.rstPackets <- pkt:

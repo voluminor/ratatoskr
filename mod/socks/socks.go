@@ -104,7 +104,6 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 	return nil
 }
 
-// Disable останавливает SOCKS5-прокси
 func (s *Obj) Disable() error {
 	s.mu.Lock()
 	if s.listener == nil {
@@ -129,21 +128,19 @@ func (s *Obj) Disable() error {
 	return err
 }
 
-// Addr — адрес, на котором слушает SOCKS; пусто если не запущен
+// Addr — адрес прослушивания; пусто если не запущен
 func (s *Obj) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.addr
 }
 
-// IsUnix — true если SOCKS слушает на Unix-сокете
 func (s *Obj) IsUnix() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.isUnix
 }
 
-// IsEnabled — true если SOCKS запущен
 func (s *Obj) IsEnabled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -186,7 +183,6 @@ func removeUnixSocket(path string) error {
 	return os.Remove(path)
 }
 
-// isAddrInUse — проверка EADDRINUSE
 func isAddrInUse(err error) bool {
 	var opErr *net.OpError
 	if errors.As(err, &opErr) {
@@ -200,7 +196,7 @@ func isAddrInUse(err error) bool {
 
 // //
 
-// limitedListenerObj ограничивает число одновременных соединений через семафор
+// limitedListenerObj — семафор на число одновременных соединений
 type limitedListenerObj struct {
 	net.Listener
 	sem chan struct{}
@@ -216,7 +212,7 @@ func (l *limitedListenerObj) Accept() (net.Conn, error) {
 	return &limitedConnObj{Conn: conn, sem: l.sem}, nil
 }
 
-// limitedConnObj освобождает слот семафора при закрытии
+// limitedConnObj — соединение, освобождающее слот семафора при Close()
 type limitedConnObj struct {
 	net.Conn
 	once sync.Once

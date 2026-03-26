@@ -21,7 +21,6 @@ type udpSessionObj struct {
 	counter      *atomic.Int64
 }
 
-// close закрывает сессию ровно один раз и декрементирует счётчик.
 func (s *udpSessionObj) close() {
 	s.closeOnce.Do(func() {
 		s.cancel()
@@ -87,9 +86,8 @@ func (m *ManagerObj) startRemoteUDP(ctx context.Context) {
 
 // //
 
-// RunUDPLoop читает пакеты из listenConn, маршрутизирует по remoteAddr,
-// создаёт сессии через dialFn и очищает их по timeout неактивности.
-// maxSessions — максимум одновременных сессий (0 = без ограничений).
+// RunUDPLoop читает пакеты, маршрутизирует в сессии через dialFn,
+// очищает неактивные по timeout. maxSessions: 0 = без ограничений
 func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn net.PacketConn, dialFn func() (net.Conn, error), timeout time.Duration, maxSessions int) {
 	var sessionCount atomic.Int64
 	sessions := sync.Map{}
@@ -170,7 +168,7 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 	}
 }
 
-// ReverseProxyUDP читает пакеты из src и пишет их в dst по адресу dstAddr.
+// ReverseProxyUDP — обратный канал: src → dst по dstAddr
 func ReverseProxyUDP(ctx context.Context, mtu uint64, dst net.PacketConn, dstAddr net.Addr, src net.Conn) {
 	watchDone := make(chan struct{})
 	defer close(watchDone)
