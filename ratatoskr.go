@@ -1,6 +1,7 @@
 package ratatoskr
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 
@@ -134,17 +135,16 @@ func (o *Obj) RetryPeers() {
 
 // Close останавливает все компоненты; безопасен для повторного вызова
 func (o *Obj) Close() error {
+	var closeErr error
 	o.closeOnce.Do(func() {
 		close(o.done)
 		if o.peerMgr != nil {
 			o.peerMgr.Stop()
 		}
-		if err := o.socksServer.Disable(); err != nil {
-			o.logger.Warnf("[ratatoskr] socks disable: %v", err)
-		}
-		if err := o.Interface.Close(); err != nil {
-			o.logger.Warnf("[ratatoskr] core close: %v", err)
-		}
+		closeErr = errors.Join(
+			o.socksServer.Disable(),
+			o.Interface.Close(),
+		)
 	})
-	return nil
+	return closeErr
 }

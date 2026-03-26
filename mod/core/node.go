@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -29,7 +30,7 @@ var _ Interface = (*Obj)(nil)
 // Obj — узел Yggdrasil с userspace TCP/UDP стеком.
 // Предоставляет стандартные Go-сетевые методы: DialContext, Listen, ListenPacket
 type Obj struct {
-	core         *yggcore.Core
+	corePtr      atomic.Pointer[yggcore.Core]
 	nodeCfg      *config.NodeConfig
 	netstackPtr  atomic.Pointer[netstackObj]
 	logger       yggcore.Logger
@@ -41,6 +42,7 @@ type Obj struct {
 	closersMu    sync.Mutex
 	coreTimeout  time.Duration
 	rstQueueSize int
+	closeErr     error
 }
 
 // New создаёт и запускает узел Yggdrasil.
@@ -69,23 +71,23 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 
 	// Ядро Yggdrasil
-	var err error
-	obj.core, err = yggcore.New(nodeCfg.Certificate, log, buildCoreOptions(nodeCfg, log)...)
+	c, err := yggcore.New(nodeCfg.Certificate, log, buildCoreOptions(nodeCfg, log)...)
 	if err != nil {
 		return nil, fmt.Errorf("core.New: %w", err)
 	}
+	obj.corePtr.Store(c)
 
 	// Сетевой стек
-	ns, err := newNetstack(obj.core, log, rstQueueSize)
+	ns, err := newNetstack(c, log, rstQueueSize)
 	if err != nil {
-		obj.core.Stop()
+		c.Stop()
 		return nil, fmt.Errorf("netstack: %w", err)
 	}
 	obj.netstackPtr.Store(ns)
 
 	log.Infof("[core] address: %s", obj.Address())
 	log.Infof("[core] subnet: %s", obj.Subnet())
-	log.Infof("[core] public key: %s", hex.EncodeToString(obj.core.PublicKey()))
+	log.Infof("[core] public key: %s", hex.EncodeToString(c.PublicKey()))
 
 	return obj, nil
 }
@@ -99,39 +101,41 @@ func (o *Obj) Close() error {
 		if o.coreTimeout > 0 {
 			done := make(chan struct{})
 			go func() {
-				o.closeSequence()
+				o.closeErr = o.closeSequence()
 				close(done)
 			}()
 			select {
 			case <-done:
 			case <-time.After(o.coreTimeout):
 				o.logger.Warnf("[core] close timed out after %s", o.coreTimeout)
-				// Установить nil — дальнейшие вызовы не будут зависать
 				o.netstackPtr.Store(nil)
-				o.core = nil
+				o.corePtr.Store(nil)
+				o.closeErr = fmt.Errorf("close timed out after %s", o.coreTimeout)
 			}
 		} else {
-			o.closeSequence()
+			o.closeErr = o.closeSequence()
 		}
 	})
-	return nil
+	return o.closeErr
 }
 
 // closeSequence — последовательное завершение всех компонентов
-func (o *Obj) closeSequence() {
+func (o *Obj) closeSequence() error {
+	var errs []error
+
 	// Компоненты — до закрытия core
 	if err := o.multicast.disable(); err != nil {
-		o.logger.Warnf("[core] multicast disable: %v", err)
+		errs = append(errs, fmt.Errorf("multicast: %w", err))
 	}
 	if err := o.adminSocket.disable(); err != nil {
-		o.logger.Warnf("[core] admin disable: %v", err)
+		errs = append(errs, fmt.Errorf("admin: %w", err))
 	}
 
 	// Зарегистрированные ресурсы (listeners и т.д.)
 	o.closersMu.Lock()
 	for _, c := range o.closers {
 		if err := c.Close(); err != nil {
-			o.logger.Warnf("[core] closer: %v", err)
+			errs = append(errs, err)
 		}
 	}
 	o.closers = nil
@@ -139,14 +143,15 @@ func (o *Obj) closeSequence() {
 
 	// Core останавливается до netstack: ipv6rwc.Read() разблокируется
 	// только после core.Stop()
-	if o.core != nil {
-		o.core.Stop()
-		o.core = nil
+	if c := o.corePtr.Swap(nil); c != nil {
+		c.Stop()
 	}
 
 	if ns := o.netstackPtr.Swap(nil); ns != nil {
 		ns.close()
 	}
+
+	return errors.Join(errs...)
 }
 
 // //
@@ -194,32 +199,35 @@ func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 
 // UnsafeCore — прямой доступ к ядру; нестабильный API
 func (o *Obj) UnsafeCore() *yggcore.Core {
-	return o.core
+	return o.corePtr.Load()
 }
 
 // Address — IPv6-адрес узла в диапазоне 200::/7
 func (o *Obj) Address() net.IP {
-	if o.core == nil {
+	c := o.corePtr.Load()
+	if c == nil {
 		return nil
 	}
-	addr := o.core.Address()
+	addr := c.Address()
 	return net.IP(addr[:])
 }
 
 // Subnet — маршрутизируемая /64 подсеть узла в диапазоне 300::/7
 func (o *Obj) Subnet() net.IPNet {
-	if o.core == nil {
+	c := o.corePtr.Load()
+	if c == nil {
 		return net.IPNet{}
 	}
-	return o.core.Subnet()
+	return c.Subnet()
 }
 
 // PublicKey — ed25519 публичный ключ узла (32 байта)
 func (o *Obj) PublicKey() ed25519.PublicKey {
-	if o.core == nil {
+	c := o.corePtr.Load()
+	if c == nil {
 		return nil
 	}
-	return o.core.PublicKey()
+	return c.PublicKey()
 }
 
 // MTU возвращает MTU NIC-интерфейса
@@ -244,33 +252,36 @@ func (o *Obj) RSTDropped() int64 {
 
 // AddPeer добавляет пир; URI: "tcp://...", "quic://...", etc.
 func (o *Obj) AddPeer(uri string) error {
-	if o.core == nil {
+	c := o.corePtr.Load()
+	if c == nil {
 		return ErrNotAvailable
 	}
 	u, err := url.Parse(uri)
 	if err != nil {
 		return fmt.Errorf("url.Parse: %w", err)
 	}
-	return o.core.AddPeer(u, "")
+	return c.AddPeer(u, "")
 }
 
 func (o *Obj) RemovePeer(uri string) error {
-	if o.core == nil {
+	c := o.corePtr.Load()
+	if c == nil {
 		return ErrNotAvailable
 	}
 	u, err := url.Parse(uri)
 	if err != nil {
 		return fmt.Errorf("url.Parse: %w", err)
 	}
-	return o.core.RemovePeer(u, "")
+	return c.RemovePeer(u, "")
 }
 
 // GetPeers — все пиры (подключённые и настроенные)
 func (o *Obj) GetPeers() []yggcore.PeerInfo {
-	if o.core == nil {
+	c := o.corePtr.Load()
+	if c == nil {
 		return nil
 	}
-	return o.core.GetPeers()
+	return c.GetPeers()
 }
 
 // //
@@ -279,6 +290,10 @@ func (o *Obj) GetPeers() []yggcore.PeerInfo {
 // Интерфейсы берутся из NodeConfig.MulticastInterfaces
 func (o *Obj) EnableMulticast(logger *golog.Logger) error {
 	err := o.multicast.enable(func() (any, func() error, error) {
+		c := o.corePtr.Load()
+		if c == nil {
+			return nil, nil, ErrNotAvailable
+		}
 		options := make([]multicast.SetupOption, 0, len(o.nodeCfg.MulticastInterfaces))
 		for _, intf := range o.nodeCfg.MulticastInterfaces {
 			re, err := regexp.Compile(intf.Regex)
@@ -294,7 +309,7 @@ func (o *Obj) EnableMulticast(logger *golog.Logger) error {
 				Password: intf.Password,
 			})
 		}
-		mc, err := multicast.New(o.core, logger, options...)
+		mc, err := multicast.New(c, logger, options...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("multicast.New: %w", err)
 		}
@@ -316,7 +331,11 @@ func (o *Obj) DisableMulticast() error {
 // EnableAdmin запускает admin-сокет; "unix:///path" или "tcp://host:port"
 func (o *Obj) EnableAdmin(addr string) error {
 	err := o.adminSocket.enable(func() (any, func() error, error) {
-		as, err := admin.New(o.core, o.logger, admin.ListenAddress(addr))
+		c := o.corePtr.Load()
+		if c == nil {
+			return nil, nil, ErrNotAvailable
+		}
+		as, err := admin.New(c, o.logger, admin.ListenAddress(addr))
 		if err != nil {
 			return nil, nil, fmt.Errorf("admin.New: %w", err)
 		}

@@ -203,12 +203,11 @@ type limitedListenerObj struct {
 }
 
 func (l *limitedListenerObj) Accept() (net.Conn, error) {
-	l.sem <- struct{}{}
 	conn, err := l.Listener.Accept()
 	if err != nil {
-		<-l.sem
 		return nil, err
 	}
+	l.sem <- struct{}{}
 	return &limitedConnObj{Conn: conn, sem: l.sem}, nil
 }
 

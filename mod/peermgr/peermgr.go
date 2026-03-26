@@ -53,13 +53,14 @@ type ConfigObj struct {
 
 // Obj — менеджер пиров
 type Obj struct {
-	cfg    ConfigObj
-	node   core.Interface
-	ctx    context.Context
-	cancel context.CancelFunc
-	active []string
-	mu     sync.Mutex
-	wg     sync.WaitGroup
+	cfg        ConfigObj
+	node       core.Interface
+	ctx        context.Context
+	cancel     context.CancelFunc
+	active     []string
+	mu         sync.Mutex
+	optimizeMu sync.Mutex
+	wg         sync.WaitGroup
 }
 
 // New создаёт менеджер; пиры не добавляются до Start()
@@ -142,5 +143,5 @@ func (m *Obj) Optimize() error {
 	if ctx == nil {
 		return fmt.Errorf("peermgr: not running")
 	}
-	return m.optimize(ctx)
+	return m.optimizeLocked(ctx)
 }

@@ -2,14 +2,13 @@ package peermgr
 
 import (
 	"context"
-	"fmt"
 	"time"
 )
 
 // // // // // // // // // //
 
 func (m *Obj) run(ctx context.Context) {
-	_ = m.optimize(ctx)
+	_ = m.optimizeLocked(ctx)
 
 	if m.cfg.RefreshInterval <= 0 {
 		return
@@ -19,14 +18,17 @@ func (m *Obj) run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
-			_ = m.optimize(ctx)
+			_ = m.optimizeLocked(ctx)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (m *Obj) optimize(ctx context.Context) error {
+// optimizeLocked — сериализует вызовы optimize через optimizeMu
+func (m *Obj) optimizeLocked(ctx context.Context) error {
+	m.optimizeMu.Lock()
+	defer m.optimizeMu.Unlock()
 	if m.cfg.MaxPerProto == -1 {
 		return m.optimizePassive()
 	}
@@ -63,7 +65,7 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 		}
 		connected = append(connected, batch...)
 
-		m.cfg.Logger.Traceln(fmt.Sprintf("[peermgr] batch %d/%d: waiting %s, %d connected", batchIdx, totalBatches, m.cfg.ProbeTimeout, len(connected)))
+		m.cfg.Logger.Traceln("[peermgr] batch", batchIdx, "/", totalBatches, "waiting", m.cfg.ProbeTimeout, ",", len(connected), "connected")
 
 		select {
 		case <-time.After(m.cfg.ProbeTimeout):
@@ -96,7 +98,7 @@ func (m *Obj) probeAndSelect(connected []string, batchIdx, totalBatches int) ([]
 	}
 	for _, uri := range connected {
 		if !selectedSet[uri] {
-			m.cfg.Logger.Traceln(fmt.Sprintf("[peermgr] batch %d/%d: removing loser %s", batchIdx, totalBatches, uri))
+			m.cfg.Logger.Traceln("[peermgr] batch", batchIdx, "/", totalBatches, "removing loser", uri)
 			if err := m.node.RemovePeer(uri); err != nil {
 				m.cfg.Logger.Debugf("[peermgr] RemovePeer %s: %v", uri, err)
 			}

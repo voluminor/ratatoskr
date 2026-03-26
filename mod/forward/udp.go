@@ -46,8 +46,10 @@ func (m *ManagerObj) startLocalUDP(ctx context.Context) {
 			defer conn.Close()
 			m.log.Infof("[forward] mapping local UDP port %d to Yggdrasil %s", mp.Listen.Port, mp.Mapped)
 
+			acceptCtx, acceptCancel := context.WithCancel(ctx)
+			defer acceptCancel()
 			go func() {
-				<-ctx.Done()
+				<-acceptCtx.Done()
 				conn.Close()
 			}()
 
@@ -72,8 +74,10 @@ func (m *ManagerObj) startRemoteUDP(ctx context.Context) {
 			defer conn.Close()
 			m.log.Infof("[forward] mapping Yggdrasil UDP port %d to %s", mp.Listen.Port, mp.Mapped)
 
+			acceptCtx, acceptCancel := context.WithCancel(ctx)
+			defer acceptCancel()
 			go func() {
-				<-ctx.Done()
+				<-acceptCtx.Done()
 				conn.Close()
 			}()
 

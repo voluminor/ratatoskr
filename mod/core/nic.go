@@ -1,7 +1,6 @@
 package core
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -226,7 +225,7 @@ func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	default:
 		pkt.DecRef()
 		e.rstDropped.Add(1)
-		e.logger.Traceln(fmt.Sprintf("[core] RST packet dropped, queue full (total dropped: %d)", e.rstDropped.Load()))
+		e.logger.Traceln("[core] RST packet dropped, queue full, total dropped:", e.rstDropped.Load())
 	}
 }
 

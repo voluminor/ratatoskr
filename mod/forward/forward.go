@@ -45,8 +45,12 @@ type ManagerObj struct {
 	remoteUDPs []UDPMappingObj
 }
 
-// New создаёт менеджер; sessionTimeout — неактивность UDP до закрытия сессии
+// New создаёт менеджер; sessionTimeout — неактивность UDP до закрытия сессии.
+// Паникует при sessionTimeout <= 0
 func New(log yggcore.Logger, sessionTimeout time.Duration) *ManagerObj {
+	if sessionTimeout <= 0 {
+		panic("forward: sessionTimeout must be > 0")
+	}
 	return &ManagerObj{
 		log:             log,
 		timeout:         sessionTimeout,

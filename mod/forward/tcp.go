@@ -40,8 +40,10 @@ func (m *ManagerObj) startLocalTCP(ctx context.Context) {
 			defer listener.Close()
 			m.log.Infof("[forward] mapping local TCP port %d to Yggdrasil %s", mp.Listen.Port, mp.Mapped)
 
+			acceptCtx, acceptCancel := context.WithCancel(ctx)
+			defer acceptCancel()
 			go func() {
-				<-ctx.Done()
+				<-acceptCtx.Done()
 				listener.Close()
 			}()
 
@@ -80,8 +82,10 @@ func (m *ManagerObj) startRemoteTCP(ctx context.Context) {
 			defer listener.Close()
 			m.log.Infof("[forward] mapping Yggdrasil TCP port %d to %s", mp.Listen.Port, mp.Mapped)
 
+			acceptCtx, acceptCancel := context.WithCancel(ctx)
+			defer acceptCancel()
 			go func() {
-				<-ctx.Done()
+				<-acceptCtx.Done()
 				listener.Close()
 			}()
 
