@@ -12,6 +12,17 @@ peers:
   - quic://yggdrasil.sunsung.fun:4441
   - tcp://yggdrasil.sunsung.fun:4442
   - tls://yggdrasil.sunsung.fun:4443
+  - tcp://37.186.113.100:1514
+  - tls://37.186.113.100:1515
+  - quic://37.186.113.100:1515
+  - ws://37.186.113.100:1516
+  - wss://ygg-evn-1.wgos.org:443
+  - tls://[2a03:3b40:fe:ab::1]:993
+  - tls://37.205.14.171:993
+  - tcp://ygg5.mk16.de:1337?key=0000009611ae5391dc0aceea9f3fa6a0dc1279f4306059339e84bfb8b74d2f9b
+  - tls://ygg5.mk16.de:1338?key=0000009611ae5391dc0aceea9f3fa6a0dc1279f4306059339e84bfb8b74d2f9b
+  - quic://ygg5.mk16.de:1339?key=0000009611ae5391dc0aceea9f3fa6a0dc1279f4306059339e84bfb8b74d2f9b
+  - ws://ygg5.mk16.de:1340?key=0000009611ae5391dc0aceea9f3fa6a0dc1279f4306059339e84bfb8b74d2f9b
 
 # Ports for the regular HTTP server (plain TCP).
 http_ports:

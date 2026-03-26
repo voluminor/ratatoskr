@@ -1,11 +1,13 @@
 package ratatoskr
 
 import (
+	"fmt"
 	"sync"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 	"github.com/voluminor/ratatoskr/mod/core"
+	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/resolver"
 	"github.com/voluminor/ratatoskr/mod/socks"
 )
@@ -19,13 +21,19 @@ import (
 type Obj struct {
 	core.Interface
 	socksServer socks.Interface
+	peerMgr     *peermgr.Obj
 	logger      yggcore.Logger
 	done        chan struct{}
 	closeOnce   sync.Once
 }
 
-// New создаёт и запускает узел
+// New создаёт и запускает узел.
+// Если cfg.Peers задан, запускается менеджер пиров; cfg.Config.Peers при этом должен быть пустым.
 func New(cfg ConfigObj) (*Obj, error) {
+	if cfg.Peers != nil && cfg.Config != nil && len(cfg.Config.Peers) > 0 {
+		return nil, fmt.Errorf("cannot use Config.Peers and Peers manager simultaneously")
+	}
+
 	coreNode, err := core.New(core.ConfigObj{
 		Config:          cfg.Config,
 		Logger:          cfg.Logger,
@@ -40,6 +48,19 @@ func New(cfg ConfigObj) (*Obj, error) {
 		socksServer: socks.New(coreNode),
 		logger:      cfg.Logger,
 		done:        make(chan struct{}),
+	}
+
+	if cfg.Peers != nil {
+		pCfg := *cfg.Peers
+		if pCfg.Logger == nil {
+			pCfg.Logger = cfg.Logger
+		}
+		mgr := peermgr.New(coreNode, pCfg)
+		if err := mgr.Start(); err != nil {
+			_ = coreNode.Close()
+			return nil, fmt.Errorf("peer manager: %w", err)
+		}
+		obj.peerMgr = mgr
 	}
 
 	// Автозавершение при отмене контекста
@@ -70,6 +91,33 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 	})
 }
 
+// DisableSOCKS останавливает SOCKS5-прокси
+func (o *Obj) DisableSOCKS() error {
+	return o.socksServer.Disable()
+}
+
+// //
+
+// PeerManagerActive возвращает текущий список активных пиров менеджера.
+// Возвращает nil если менеджер не используется.
+func (o *Obj) PeerManagerActive() []string {
+	if o.peerMgr == nil {
+		return nil
+	}
+	return o.peerMgr.Active()
+}
+
+// PeerManagerOptimize запускает внеплановую перепроверку пиров.
+// Возвращает ошибку если менеджер не используется.
+func (o *Obj) PeerManagerOptimize() error {
+	if o.peerMgr == nil {
+		return fmt.Errorf("peer manager not enabled")
+	}
+	return o.peerMgr.Optimize()
+}
+
+// //
+
 // RetryPeers немедленно инициирует переподключение ко всем отключённым пирам
 func (o *Obj) RetryPeers() {
 	if coreNode, ok := o.Interface.(*core.Obj); ok {
@@ -77,15 +125,15 @@ func (o *Obj) RetryPeers() {
 	}
 }
 
-// DisableSOCKS останавливает SOCKS5-прокси
-func (o *Obj) DisableSOCKS() error {
-	return o.socksServer.Disable()
-}
+// //
 
-// Close корректно останавливает SOCKS и ядро; безопасен для повторного вызова
+// Close корректно останавливает все компоненты и ядро; безопасен для повторного вызова
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		close(o.done)
+		if o.peerMgr != nil {
+			o.peerMgr.Stop()
+		}
 		if err := o.socksServer.Disable(); err != nil && o.logger != nil {
 			o.logger.Warnf("socks disable: %v", err)
 		}

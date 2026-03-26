@@ -7,7 +7,7 @@ import (
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 
-	"github.com/yggdrasil-network/ratatoskr/mod/forward"
+	"github.com/voluminor/ratatoskr/mod/forward"
 )
 
 // // // // // // // // // //

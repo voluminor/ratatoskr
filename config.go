@@ -6,6 +6,8 @@ import (
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
+
+	"github.com/voluminor/ratatoskr/mod/peermgr"
 )
 
 // // // // // // // // // //
@@ -16,7 +18,8 @@ type ConfigObj struct {
 	// nil → Close() нужно вызвать вручную
 	Ctx context.Context
 
-	// Конфигурация Yggdrasil; nil → случайные ключи
+	// Конфигурация Yggdrasil; nil → случайные ключи.
+	// Config.Peers должен быть пустым если задан Peers.
 	Config *config.NodeConfig
 
 	// Логгер; nil → логи отбрасываются
@@ -24,6 +27,11 @@ type ConfigObj struct {
 
 	// Таймаут core.Stop(); 0 → без ограничения
 	CoreStopTimeout time.Duration
+
+	// Peers запускает менеджер пиров вместо стандартного механизма Yggdrasil.
+	// nil → пиры берутся из Config.Peers как обычно.
+	// Не nil + Config.Peers непустой → ошибка при New().
+	Peers *peermgr.ConfigObj
 }
 
 // //

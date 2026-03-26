@@ -17,6 +17,7 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
+	"github.com/voluminor/ratatoskr/mod/peermgr"
 )
 
 // // // // // // // // // //
@@ -41,7 +42,6 @@ func main() {
 
 	nodeCfg := yggconfig.GenerateConfig()
 	nodeCfg.AdminListen = "none"
-	nodeCfg.Peers = cfg.Peers
 	if cfg.PrivateKey != "" {
 		key, err := hex.DecodeString(cfg.PrivateKey)
 		if err != nil || len(key) != 64 {
@@ -61,6 +61,7 @@ func main() {
 		Config:          nodeCfg,
 		CoreStopTimeout: shutdownTimeout,
 		Logger:          logger,
+		Peers:           &peermgr.ConfigObj{Peers: cfg.Peers},
 	})
 	if err != nil {
 		fmt.Println("Error: start yggdrasil:", err)

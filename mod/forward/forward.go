@@ -8,7 +8,7 @@ import (
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
-	"github.com/yggdrasil-network/ratatoskr/mod/core"
+	"github.com/voluminor/ratatoskr/mod/core"
 )
 
 // // // // // // // // // //
