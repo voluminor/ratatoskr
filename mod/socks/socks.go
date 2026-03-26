@@ -95,10 +95,11 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 
 	s.logger.Infof("[socks] started on %s", cfg.Addr)
 
+	ln := s.listener
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		_ = server.Serve(s.listener)
+		_ = server.Serve(ln)
 	}()
 
 	return nil
