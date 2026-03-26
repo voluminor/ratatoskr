@@ -59,7 +59,11 @@ func New(cfg ConfigObj) (*Obj, error) {
 		if pCfg.Logger == nil {
 			pCfg.Logger = cfg.Logger
 		}
-		mgr := peermgr.New(coreNode, pCfg)
+		mgr, err := peermgr.New(coreNode, pCfg)
+		if err != nil {
+			_ = coreNode.Close()
+			return nil, fmt.Errorf("peer manager: %w", err)
+		}
 		if err := mgr.Start(); err != nil {
 			_ = coreNode.Close()
 			return nil, fmt.Errorf("peer manager: %w", err)

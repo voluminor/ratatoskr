@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -14,9 +15,21 @@ import (
 
 type udpSessionObj struct {
 	conn         net.Conn
-	lastActivity int64
+	lastActivity atomic.Int64
 	cancel       context.CancelFunc
 	closeOnce    sync.Once
+	counter      *atomic.Int64
+}
+
+// close закрывает сессию ровно один раз и декрементирует счётчик.
+func (s *udpSessionObj) close() {
+	s.closeOnce.Do(func() {
+		s.cancel()
+		_ = s.conn.Close()
+		if s.counter != nil {
+			s.counter.Add(-1)
+		}
+	})
 }
 
 // //
@@ -41,7 +54,7 @@ func (m *ManagerObj) startLocalUDP(ctx context.Context) {
 
 			RunUDPLoop(ctx, m.log, m.node.MTU(), conn, func() (net.Conn, error) {
 				return m.node.DialContext(ctx, "udp", fmt.Sprintf("[%s]:%d", mp.Mapped.IP, mp.Mapped.Port))
-			}, m.timeout)
+			}, m.timeout, m.maxUDPSessions)
 		}(mapping)
 	}
 }
@@ -67,7 +80,7 @@ func (m *ManagerObj) startRemoteUDP(ctx context.Context) {
 
 			RunUDPLoop(ctx, m.log, m.node.MTU(), conn, func() (net.Conn, error) {
 				return net.DialUDP("udp", nil, mp.Mapped)
-			}, m.timeout)
+			}, m.timeout, m.maxUDPSessions)
 		}(mapping)
 	}
 }
@@ -76,7 +89,9 @@ func (m *ManagerObj) startRemoteUDP(ctx context.Context) {
 
 // RunUDPLoop читает пакеты из listenConn, маршрутизирует по remoteAddr,
 // создаёт сессии через dialFn и очищает их по timeout неактивности.
-func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn net.PacketConn, dialFn func() (net.Conn, error), timeout time.Duration) {
+// maxSessions — максимум одновременных сессий (0 = без ограничений).
+func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn net.PacketConn, dialFn func() (net.Conn, error), timeout time.Duration, maxSessions int) {
+	var sessionCount atomic.Int64
 	sessions := sync.Map{}
 
 	// Очистка неактивных сессий
@@ -87,11 +102,7 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 			select {
 			case <-ctx.Done():
 				sessions.Range(func(_, v any) bool {
-					s := v.(*udpSessionObj)
-					s.closeOnce.Do(func() {
-						s.cancel()
-						_ = s.conn.Close()
-					})
+					v.(*udpSessionObj).close()
 					return true
 				})
 				return
@@ -99,12 +110,9 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 				now := time.Now().UnixMilli()
 				sessions.Range(func(k, v any) bool {
 					s := v.(*udpSessionObj)
-					if now-s.lastActivity > timeout.Milliseconds() {
+					if now-s.lastActivity.Load() > timeout.Milliseconds() {
 						log.Debugf("Cleaning up inactive UDP session %s", k)
-						s.closeOnce.Do(func() {
-							s.cancel()
-							_ = s.conn.Close()
-						})
+						s.close()
 						sessions.Delete(k)
 					}
 					return true
@@ -130,6 +138,10 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 		key := remoteAddr.String()
 		val, ok := sessions.Load(key)
 		if !ok {
+			if maxSessions > 0 && sessionCount.Load() >= int64(maxSessions) {
+				log.Warnf("UDP session limit reached (%d), dropping packet from %s", maxSessions, remoteAddr)
+				continue
+			}
 			fwdConn, err := dialFn()
 			if err != nil {
 				log.Errorf("Failed to connect to upstream: %s", err)
@@ -137,23 +149,22 @@ func RunUDPLoop(ctx context.Context, log yggcore.Logger, mtu uint64, listenConn 
 			}
 			sessCtx, sessCancel := context.WithCancel(ctx)
 			session := &udpSessionObj{
-				conn:         fwdConn,
-				lastActivity: time.Now().UnixMilli(),
-				cancel:       sessCancel,
+				conn:    fwdConn,
+				cancel:  sessCancel,
+				counter: &sessionCount,
 			}
+			session.lastActivity.Store(time.Now().UnixMilli())
+			sessionCount.Add(1)
 			sessions.Store(key, session)
 			go ReverseProxyUDP(sessCtx, mtu, listenConn, remoteAddr, fwdConn)
 			val = session
 		}
 
 		session := val.(*udpSessionObj)
-		session.lastActivity = time.Now().UnixMilli()
+		session.lastActivity.Store(time.Now().UnixMilli())
 		if _, err = session.conn.Write(buf[:n]); err != nil {
 			log.Debugf("Session write error: %s", err)
-			session.closeOnce.Do(func() {
-				session.cancel()
-				_ = session.conn.Close()
-			})
+			session.close()
 			sessions.Delete(key)
 		}
 	}

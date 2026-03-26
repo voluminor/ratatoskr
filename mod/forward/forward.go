@@ -37,6 +37,7 @@ type ManagerObj struct {
 	node            core.Interface
 	timeout         time.Duration
 	tcpCloseTimeout time.Duration
+	maxUDPSessions  int
 	wg              sync.WaitGroup
 
 	localTCPs  []TCPMappingObj
@@ -81,6 +82,12 @@ func (m *ManagerObj) SetTimeout(d time.Duration) {
 // По умолчанию DefaultTCPCloseTimeout. Должен вызываться до Start().
 func (m *ManagerObj) SetTCPCloseTimeout(d time.Duration) {
 	m.tcpCloseTimeout = d
+}
+
+// SetMaxUDPSessions задаёт максимальное число одновременных UDP-сессий на маппинг (0 = без ограничений).
+// Должен вызываться до Start().
+func (m *ManagerObj) SetMaxUDPSessions(n int) {
+	m.maxUDPSessions = n
 }
 
 // ClearLocal сбрасывает все локальные маппинги (TCP и UDP). Должен вызываться до Start().

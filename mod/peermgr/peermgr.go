@@ -34,8 +34,12 @@ type ConfigObj struct {
 	//              при RefreshInterval > 0 список переподключается целиком
 	MaxPerProto int
 
-	// Логгер; nil → без логирования
+	// Логгер; обязателен
 	Logger yggcore.Logger
+
+	// OnNoReachablePeers вызывается после пробинга, если ни один пир не ответил.
+	// Вызывается из горутины менеджера; не должен блокировать.
+	OnNoReachablePeers func()
 }
 
 // // // // // // // // // //
@@ -52,14 +56,17 @@ type Obj struct {
 }
 
 // New создаёт менеджер; пиры не добавляются до Start()
-func New(node core.Interface, cfg ConfigObj) *Obj {
+func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
+	if cfg.Logger == nil {
+		return nil, fmt.Errorf("peermgr: logger is required")
+	}
 	if cfg.MaxPerProto == 0 {
 		cfg.MaxPerProto = 1
 	}
 	if cfg.ProbeTimeout <= 0 {
 		cfg.ProbeTimeout = defaultProbeTimeout
 	}
-	return &Obj{cfg: cfg, node: node}
+	return &Obj{cfg: cfg, node: node}, nil
 }
 
 // // // // // // // // // //
@@ -77,7 +84,7 @@ func (m *Obj) Start() error {
 	m.cancel = cancel
 	m.mu.Unlock()
 
-	m.logf("info", "starting, %d candidates, MaxPerProto=%d", len(m.cfg.Peers), m.cfg.MaxPerProto)
+	m.cfg.Logger.Infof("[peermgr] starting, %d candidates, MaxPerProto=%d", len(m.cfg.Peers), m.cfg.MaxPerProto)
 
 	m.wg.Add(1)
 	go func() {
@@ -109,7 +116,7 @@ func (m *Obj) Stop() {
 	for _, uri := range active {
 		_ = m.node.RemovePeer(uri)
 	}
-	m.logf("info", "stopped, removed %d peers", len(active))
+	m.cfg.Logger.Infof("[peermgr] stopped, removed %d peers", len(active))
 }
 
 // Active возвращает копию текущего списка активных пиров
@@ -165,7 +172,7 @@ func (m *Obj) optimize(ctx context.Context) error {
 func (m *Obj) optimizeActive(ctx context.Context) error {
 	for _, uri := range m.cfg.Peers {
 		if err := m.node.AddPeer(uri); err != nil {
-			m.logf("debug", "AddPeer %s: %v", uri, err)
+			m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", uri, err)
 		}
 	}
 
@@ -186,7 +193,7 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 	for _, uri := range m.cfg.Peers {
 		if !selectedSet[uri] {
 			if err := m.node.RemovePeer(uri); err != nil {
-				m.logf("debug", "RemovePeer %s: %v", uri, err)
+				m.cfg.Logger.Debugf("[peermgr] RemovePeer %s: %v", uri, err)
 			}
 		}
 	}
@@ -196,9 +203,12 @@ func (m *Obj) optimizeActive(ctx context.Context) error {
 	m.mu.Unlock()
 
 	if len(selected) == 0 {
-		m.logf("warn", "no reachable peers after probe")
+		m.cfg.Logger.Warnf("[peermgr] no reachable peers after probe")
+		if m.cfg.OnNoReachablePeers != nil {
+			m.cfg.OnNoReachablePeers()
+		}
 	} else {
-		m.logf("info", "active peers: %v", selected)
+		m.cfg.Logger.Infof("[peermgr] active peers: %v", selected)
 	}
 	return nil
 }
@@ -209,7 +219,7 @@ func (m *Obj) optimizePassive() error {
 	for _, uri := range m.cfg.Peers {
 		_ = m.node.RemovePeer(uri)
 		if err := m.node.AddPeer(uri); err != nil {
-			m.logf("debug", "AddPeer %s: %v", uri, err)
+			m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", uri, err)
 		}
 	}
 
@@ -217,19 +227,6 @@ func (m *Obj) optimizePassive() error {
 	m.active = append([]string(nil), m.cfg.Peers...)
 	m.mu.Unlock()
 
-	m.logf("info", "passive mode, added %d peers", len(m.cfg.Peers))
+	m.cfg.Logger.Infof("[peermgr] passive mode, added %d peers", len(m.cfg.Peers))
 	return nil
-}
-
-// // // // // // // // // //
-
-func (m *Obj) logf(level, format string, args ...any) {
-	switch level {
-	case "debug":
-		m.cfg.Logger.Debugf("[peermgr] "+format, args...)
-	case "warn":
-		m.cfg.Logger.Warnf("[peermgr] "+format, args...)
-	default:
-		m.cfg.Logger.Infof("[peermgr] "+format, args...)
-	}
 }
