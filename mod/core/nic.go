@@ -1,6 +1,7 @@
 package core
 
 import (
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -65,7 +66,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 				select {
 				case <-nic.done:
 				default:
-					nic.logger.Println(err)
+					nic.logger.Warnf("ipv6rwc read error: %v", err)
 				}
 				return
 			}
@@ -186,7 +187,7 @@ func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
 	defer func() {
 		if r := recover(); r != nil {
-			e.logger.Println("WritePackets panic:", r)
+			e.logger.Errorf("WritePackets panic: %v", r)
 		}
 	}()
 	for i, pkt := range list.AsSlice() {
@@ -218,7 +219,7 @@ func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	select {
 	case old := <-e.rstPackets:
 		old.DecRef()
-		e.logger.Debugf("RST packet evicted from full queue")
+		e.logger.Traceln("RST packet evicted from full queue")
 	default:
 	}
 	select {
@@ -226,7 +227,7 @@ func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	default:
 		pkt.DecRef()
 		e.rstDropped.Add(1)
-		e.logger.Debugf("RST packet dropped, queue full (total dropped: %d)", e.rstDropped.Load())
+		e.logger.Traceln(fmt.Sprintf("RST packet dropped, queue full (total dropped: %d)", e.rstDropped.Load()))
 	}
 }
 

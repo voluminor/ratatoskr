@@ -20,5 +20,4 @@ func (noopLoggerObj) Errorf(string, ...interface{}) {}
 func (noopLoggerObj) Errorln(...interface{})        {}
 func (noopLoggerObj) Debugf(string, ...interface{}) {}
 func (noopLoggerObj) Debugln(...interface{})        {}
-func (noopLoggerObj) Tracef(string, ...interface{}) {}
 func (noopLoggerObj) Traceln(...interface{})        {}

@@ -77,6 +77,8 @@ func (m *Obj) Start() error {
 	m.cancel = cancel
 	m.mu.Unlock()
 
+	m.logf("info", "starting, %d candidates, MaxPerProto=%d", len(m.cfg.Peers), m.cfg.MaxPerProto)
+
 	m.wg.Add(1)
 	go func() {
 		defer m.wg.Done()
@@ -107,6 +109,7 @@ func (m *Obj) Stop() {
 	for _, uri := range active {
 		_ = m.node.RemovePeer(uri)
 	}
+	m.logf("info", "stopped, removed %d peers", len(active))
 }
 
 // Active возвращает копию текущего списка активных пиров
@@ -221,13 +224,12 @@ func (m *Obj) optimizePassive() error {
 // // // // // // // // // //
 
 func (m *Obj) logf(level, format string, args ...any) {
-	msg := fmt.Sprintf("[peermgr] "+format, args...)
 	switch level {
 	case "debug":
-		m.cfg.Logger.Debugf("%s", msg)
+		m.cfg.Logger.Debugf("[peermgr] "+format, args...)
 	case "warn":
-		m.cfg.Logger.Warnf("%s", msg)
+		m.cfg.Logger.Warnf("[peermgr] "+format, args...)
 	default:
-		m.cfg.Logger.Infof("%s", msg)
+		m.cfg.Logger.Infof("[peermgr] "+format, args...)
 	}
 }

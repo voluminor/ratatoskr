@@ -90,7 +90,6 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 		s.listener = &limitedListenerObj{
 			Listener: s.listener,
 			sem:      make(chan struct{}, cfg.MaxConnections),
-			logger:   s.logger,
 		}
 	}
 
@@ -204,8 +203,7 @@ func isAddrInUse(err error) bool {
 // limitedListenerObj ограничивает число одновременных соединений через семафор
 type limitedListenerObj struct {
 	net.Listener
-	sem    chan struct{}
-	logger yggcore.Logger
+	sem chan struct{}
 }
 
 func (l *limitedListenerObj) Accept() (net.Conn, error) {
