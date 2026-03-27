@@ -31,7 +31,7 @@ jobs:
       - uses: ./.github/actions/tidy-all-and-generate
 
       - name: 📦 Upload source
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: src-gen
           path: .
@@ -53,11 +53,11 @@ jobs:
           fetch-depth: 1
 
       - name: 📥 Download source
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           name: src-gen
           path: .
-          overwrite: true
+
 
       - uses: ./.github/actions/init-go
         with:
@@ -107,11 +107,11 @@ jobs:
           fetch-depth: 1
 
       - name: 📥 Download source
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           name: src-gen
           path: .
-          overwrite: true
+
 
       - uses: ./.github/actions/init-go
         with:
@@ -163,7 +163,7 @@ jobs:
       - uses: ./.github/actions/generate-build-env
 
       - name: 📦 Upload bumped source
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: src-bumped
           path: .
@@ -182,11 +182,11 @@ jobs:
           fetch-depth: 0
 
       - name: 📥 Download bumped source
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v4
         with:
           name: src-bumped
           path: .
-          overwrite: true
+
 
       - name: 🗒️ Source env
         shell: bash
