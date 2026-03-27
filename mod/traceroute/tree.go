@@ -16,14 +16,15 @@ func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj
 		return nil, ErrTreeEmpty
 	}
 
+	nodes := make([]NodeObj, len(entries))
 	index := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(entries))
-	for _, e := range entries {
-		k := toKeyArray(e.Key)
-		index[k] = &NodeObj{
+	for i, e := range entries {
+		nodes[i] = NodeObj{
 			Key:      e.Key,
 			Parent:   e.Parent,
 			Sequence: e.Sequence,
 		}
+		index[toKeyArray(e.Key)] = &nodes[i]
 	}
 
 	orphans := 0

@@ -116,9 +116,6 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 			if graceTicks > 0 {
 				graceTicks--
 			} else if graceTicks == 0 {
-				if result == nil {
-					result = o.collect(key)
-				}
 				if result != nil {
 					return result, nil
 				}

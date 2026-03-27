@@ -41,11 +41,16 @@ func (n *NodeObj) Flatten() []*NodeObj {
 	if n == nil {
 		return nil
 	}
-	out := []*NodeObj{n}
-	for _, ch := range n.Children {
-		out = append(out, ch.Flatten()...)
-	}
+	var out []*NodeObj
+	n.flattenInto(&out)
 	return out
+}
+
+func (n *NodeObj) flattenInto(out *[]*NodeObj) {
+	*out = append(*out, n)
+	for _, ch := range n.Children {
+		ch.flattenInto(out)
+	}
 }
 
 // PathTo returns the node chain from the current node (root) to the target key.
@@ -54,15 +59,26 @@ func (n *NodeObj) PathTo(key ed25519.PublicKey) []*NodeObj {
 	if n == nil {
 		return nil
 	}
-	if n.Key.Equal(key) {
-		return []*NodeObj{n}
-	}
-	for _, ch := range n.Children {
-		if tail := ch.PathTo(key); tail != nil {
-			return append([]*NodeObj{n}, tail...)
-		}
+	var path []*NodeObj
+	if n.pathTo(key, &path) {
+		return path
 	}
 	return nil
+}
+
+func (n *NodeObj) pathTo(key ed25519.PublicKey, out *[]*NodeObj) bool {
+	idx := len(*out)
+	*out = append(*out, n)
+	if n.Key.Equal(key) {
+		return true
+	}
+	for _, ch := range n.Children {
+		if ch.pathTo(key, out) {
+			return true
+		}
+	}
+	*out = (*out)[:idx]
+	return false
 }
 
 // //

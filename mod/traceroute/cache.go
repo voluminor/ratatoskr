@@ -92,6 +92,9 @@ func (c *peerCacheObj) cleanup() {
 			}
 		}
 		empty := len(c.entries) == 0
+		if empty {
+			c.entries = make(map[[ed25519.PublicKeySize]byte]peerCacheEntryObj)
+		}
 		c.mu.Unlock()
 
 		if empty {
