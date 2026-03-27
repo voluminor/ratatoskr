@@ -109,7 +109,7 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 	// Level 1: active direct peers only.
 	var currentLevel []*NodeObj
 	for _, p := range o.core.GetPeers() {
-		if !p.Up {
+		if !p.Up || len(p.Key) != ed25519.PublicKeySize {
 			continue
 		}
 		k := toKeyArray(p.Key)
@@ -190,6 +190,9 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 			continue
 		}
 		for _, peerKey := range r.peers {
+			if len(peerKey) != ed25519.PublicKeySize {
+				continue
+			}
 			k := toKeyArray(peerKey)
 			if _, seen := visited[k]; seen {
 				continue

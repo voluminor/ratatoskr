@@ -40,6 +40,9 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 	if o.remotePeers == nil {
 		return nil, ErrRemotePeersDisabled
 	}
+	if len(key) != ed25519.PublicKeySize {
+		return nil, ErrInvalidKeyLength
+	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
