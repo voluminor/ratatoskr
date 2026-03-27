@@ -49,11 +49,18 @@ jobs:
         os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest ]
 
     steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
       - name: 📥 Download source
         uses: actions/download-artifact@v5
         with:
           name: src-gen
           path: .
+          overwrite: true
 
       - uses: ./.github/actions/init-go
         with:
