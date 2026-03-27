@@ -201,7 +201,7 @@ jobs:
           ORIG_SHA=$(git rev-parse HEAD)
 
           git add -f target
-          git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli gen.go go.work .gitignore
+          git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli cmd gen.go go.work .gitignore
 
           git commit -m "release(${BUILD_VER}): strip heavy assets"
           git tag -a "${BUILD_VER}" -m "Release ${BUILD_VER}"
