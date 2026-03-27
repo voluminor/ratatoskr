@@ -69,6 +69,24 @@
         </div>
 
         <div class="card">
+            <h2>Traceroute</h2>
+            <div class="trace-input-row">
+                <input id="trace-key" type="text" placeholder="Public key (hex, 64 chars)"
+                       maxlength="64" spellcheck="false" autocomplete="off">
+                <button id="trace-btn" onclick="doTrace()">Trace</button>
+            </div>
+            <div id="trace-error" class="trace-error hidden"></div>
+            <div id="trace-result" class="hidden">
+                <div id="trace-duration" class="trace-duration"></div>
+                <h3 class="trace-subtitle">Hops <span class="trace-hint">(pathfinder)</span></h3>
+                <div id="trace-hops" class="trace-path"></div>
+                <h3 class="trace-subtitle">Tree path <span class="trace-hint">(spanning tree)</span></h3>
+                <div id="trace-path" class="trace-path"></div>
+                <pre id="trace-tree" class="trace-tree hidden"></pre>
+            </div>
+        </div>
+
+        <div class="card">
             <h2>Peers</h2>
             <div id="peers-list"></div>
         </div>

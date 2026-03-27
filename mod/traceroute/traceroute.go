@@ -1,8 +1,10 @@
 package traceroute
 
 import (
+	"context"
 	"crypto/ed25519"
 	"fmt"
+	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -83,6 +85,128 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 func (o *Obj) Lookup(key ed25519.PublicKey) {
 	o.core.PacketConn.PacketConn.SendLookup(key)
 }
+
+// Trace — комбинированный метод: ищет ключ в обоих источниках данных.
+// 1) Spanning tree (GetTree) — parent→child цепочка до ключа.
+// 2) Pathfinder (GetPaths) — port-based маршрут после SendLookup.
+//
+// Стратегия минимальной нагрузки:
+// - Если оба источника уже имеют данные — возвращает мгновенно, без lookup.
+// - Если tree есть, а hops нет — один SendLookup + короткое ожидание (до 2 сек).
+// - Если ничего нет — SendLookup + полный poll до таймаута ctx.
+// Повторный lookup отправляется не чаще раза в секунду.
+func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
+	result := o.collect(key)
+
+	// оба источника уже есть — мгновенный возврат
+	if result != nil && result.TreePath != nil && result.Hops != nil {
+		return result, nil
+	}
+
+	// хотя бы один источник пуст — нужен lookup для дообогащения
+	o.Lookup(key)
+
+	if result != nil {
+		// tree уже есть, ждём только hops — короткий таймаут
+		enriched := o.pollHops(ctx, key, 2*time.Second)
+		if enriched != nil {
+			result.Hops = enriched
+		}
+		return result, nil
+	}
+
+	// ничего нет — полный poll обоих источников
+	o.logger.Infof("[traceroute] lookup started for %x", key[:8])
+	return o.pollFull(ctx, key)
+}
+
+// //
+
+// pollHops — ждёт появления hops до deadline. Один повторный lookup через секунду.
+// Возвращает nil если не дождались.
+func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.Duration) []HopObj {
+	deadline := time.Now().Add(maxWait)
+	ticker := time.NewTicker(150 * time.Millisecond)
+	defer ticker.Stop()
+
+	retried := false
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case t := <-ticker.C:
+			if t.After(deadline) {
+				// последняя попытка
+				hops, _ := o.Hops(key)
+				return hops
+			}
+			if hops, err := o.Hops(key); err == nil {
+				return hops
+			}
+			// один повторный lookup через ~1 сек
+			if !retried && time.Since(deadline.Add(-maxWait)) > time.Second {
+				o.Lookup(key)
+				retried = true
+			}
+		}
+	}
+}
+
+// pollFull — полный poll: ищем и tree, и hops. Повтор lookup раз в секунду.
+func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	lastLookup := time.Now()
+
+	for {
+		select {
+		case <-ctx.Done():
+			if result := o.collect(key); result != nil {
+				return result, nil
+			}
+			return nil, fmt.Errorf("traceroute: lookup timed out for key %x", key[:8])
+		case <-ticker.C:
+			if result := o.collect(key); result != nil {
+				// нашли хотя бы один источник — дообогащаем второй коротко
+				if result.Hops == nil {
+					o.Lookup(key)
+					enriched := o.pollHops(ctx, key, 2*time.Second)
+					if enriched != nil {
+						result.Hops = enriched
+					}
+				}
+				return result, nil
+			}
+			if time.Since(lastLookup) >= time.Second {
+				o.Lookup(key)
+				lastLookup = time.Now()
+			}
+		}
+	}
+}
+
+// //
+
+// collect — пробует собрать данные из обоих источников.
+// Возвращает nil если ключ не найден ни в tree, ни в paths.
+func (o *Obj) collect(key ed25519.PublicKey) *TraceResultObj {
+	var result TraceResultObj
+
+	if path, err := o.Path(key); err == nil {
+		result.TreePath = path
+	}
+	if hops, err := o.Hops(key); err == nil {
+		result.Hops = hops
+	}
+
+	if result.TreePath != nil || result.Hops != nil {
+		return &result
+	}
+	return nil
+}
+
+// //
 
 // Peers — текущий список пиров из ядра
 func (o *Obj) Peers() []yggcore.PeerInfo {

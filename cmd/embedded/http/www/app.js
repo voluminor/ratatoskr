@@ -179,5 +179,98 @@ async function fetchInfo() {
     }
 }
 
+// // // // // // // // // //
+
+// Traceroute
+
+async function doTrace() {
+    const keyInput = document.getElementById('trace-key');
+    const btn = document.getElementById('trace-btn');
+    const errorEl = document.getElementById('trace-error');
+    const resultEl = document.getElementById('trace-result');
+
+    const key = keyInput.value.trim();
+    if (!key || key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
+        errorEl.textContent = 'Enter a valid 64-char hex public key';
+        errorEl.classList.remove('hidden');
+        resultEl.classList.add('hidden');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '…';
+    errorEl.classList.add('hidden');
+    resultEl.classList.add('hidden');
+
+    try {
+        const resp = await fetch('/traceroute.json?key=' + key);
+        const data = await resp.json();
+
+        if (data.error) {
+            errorEl.textContent = data.error;
+            errorEl.classList.remove('hidden');
+            return;
+        }
+
+        document.getElementById('trace-duration').textContent =
+            'Resolved in ' + data.duration_ms.toFixed(1) + ' ms';
+
+        renderTraceHops(data.hops || []);
+        renderTracePath(data.path || []);
+        renderTraceSubtree(data.subtree);
+        resultEl.classList.remove('hidden');
+    } catch (e) {
+        errorEl.textContent = 'Request failed: ' + e.message;
+        errorEl.classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Trace';
+    }
+}
+
+function renderTraceHops(hops) {
+    const el = document.getElementById('trace-hops');
+    if (hops.length === 0) {
+        el.innerHTML = '<span class="trace-muted">No pathfinder route</span>';
+        return;
+    }
+    el.innerHTML = hops.map((h, i) => {
+        const label = h.key ? h.key.substring(0, 12) + '…' : 'port:' + h.port;
+        const title = h.key || ('port ' + h.port);
+        const arrow = i < hops.length - 1 ? ' <span class="trace-arrow">→</span> ' : '';
+        return `<span class="trace-hop" title="${title}"><span class="trace-depth">${h.depth}</span>${label}</span>${arrow}`;
+    }).join('');
+}
+
+function renderTracePath(path) {
+    const el = document.getElementById('trace-path');
+    if (path.length === 0) {
+        el.innerHTML = '<span class="trace-muted">Not in spanning tree</span>';
+        return;
+    }
+    el.innerHTML = path.map((n, i) => {
+        const shortKey = n.key.substring(0, 12) + '…';
+        const arrow = i < path.length - 1 ? ' <span class="trace-arrow">→</span> ' : '';
+        return `<span class="trace-hop" title="${n.key}"><span class="trace-depth">${n.depth}</span>${shortKey}</span>${arrow}`;
+    }).join('');
+}
+
+function renderTraceSubtree(tree) {
+    const el = document.getElementById('trace-tree');
+    if (!tree || !tree.children || tree.children.length === 0) {
+        el.classList.add('hidden');
+        return;
+    }
+    el.textContent = JSON.stringify(tree, null, 2);
+    el.classList.remove('hidden');
+}
+
+// Enter key triggers trace
+document.getElementById('trace-key').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') doTrace();
+});
+
+// //
+
 fetchInfo();
 setInterval(fetchInfo, REFRESH_MS);

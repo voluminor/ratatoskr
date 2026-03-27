@@ -17,7 +17,9 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
+	"github.com/voluminor/ratatoskr/mod/core"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
+	"github.com/voluminor/ratatoskr/mod/traceroute"
 )
 
 // // // // // // // // // //
@@ -79,6 +81,14 @@ func main() {
 
 	info := newInfoHandler(node, cfg, logger)
 
+	coreNode := node.Interface.(*core.Obj)
+	tr, err := traceroute.New(coreNode.UnsafeCore(), logger)
+	if err != nil {
+		fmt.Println("Error: traceroute:", err)
+		os.Exit(1)
+	}
+	traceHandler := newTraceHandler(tr)
+
 	yggAddr := node.Address().String()
 	qrURL := fmt.Sprintf("http://[%s]:%d/", yggAddr, cfg.YggPorts[0])
 	qrHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -100,7 +110,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, false, qrHandler),
+			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -116,7 +126,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, true, qrHandler),
+			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -128,10 +138,11 @@ func main() {
 
 // //
 
-func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr http.Handler) *http.ServeMux {
+func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr http.Handler, trace http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/yggdrasil-server.json", info.Handler(isYgg))
 	mux.Handle("/ygg-qr.png", qr)
+	mux.Handle("/traceroute.json", trace)
 	if isYgg {
 		mux.Handle("/", newYggFileHandler(wwwPath))
 	} else {

@@ -71,8 +71,23 @@ func (n *NodeObj) PathTo(key ed25519.PublicKey) []*NodeObj {
 // HopObj — один хоп в маршруте на уровне портов.
 // Получается из PathEntryInfo.Path ([]uint64) с резолвом портов в ключи.
 // Key может быть nil если порт не удалось сопоставить с известным пиром.
+// HopObj — один хоп в маршруте на уровне портов.
+// Получается из PathEntryInfo.Path ([]uint64) с резолвом портов в ключи.
+// Key может быть nil если порт не удалось сопоставить с известным пиром.
 type HopObj struct {
 	Key   ed25519.PublicKey // публичный ключ узла (nil если не удалось резолвить)
 	Port  uint64            // номер порта в spanning tree
 	Depth int               // порядковый номер хопа (0 = первый)
+}
+
+// //
+
+// TraceResultObj — результат Trace().
+// Содержит данные из двух источников — spanning tree и pathfinder.
+// TreePath заполняется если ключ найден в дереве (parent→child цепочка).
+// Hops заполняется если pathfinder нашёл маршрут (port-based).
+// Оба поля могут быть заполнены одновременно.
+type TraceResultObj struct {
+	TreePath []*NodeObj // путь по spanning tree: [root, ..., target] (nil если не в дереве)
+	Hops     []HopObj   // маршрут из pathfinder: port→key (nil если нет active path)
 }
