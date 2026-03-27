@@ -83,12 +83,29 @@ type HopObj struct {
 
 // //
 
-// TraceResultObj — результат Trace().
-// Содержит данные из двух источников — spanning tree и pathfinder.
-// TreePath заполняется если ключ найден в дереве (parent→child цепочка).
-// Hops заполняется если pathfinder нашёл маршрут (port-based).
-// Оба поля могут быть заполнены одновременно.
+// TraceResultObj — result of Trace().
+// Both fields may be populated simultaneously.
+// TreePath: path through spanning tree [root, ..., target]; nil if not in tree.
+// Hops: pathfinder route port→key; nil if no active path.
 type TraceResultObj struct {
-	TreePath []*NodeObj // путь по spanning tree: [root, ..., target] (nil если не в дереве)
-	Hops     []HopObj   // маршрут из pathfinder: port→key (nil если нет active path)
+	TreePath []*NodeObj
+	Hops     []HopObj
+}
+
+// //
+
+// TreeResultObj — result of Tree() and TreeChan().
+type TreeResultObj struct {
+	Root  *NodeObj
+	Total int // total nodes found, excluding the root itself
+}
+
+// TreeProgressObj — progress update emitted after each BFS depth level.
+// Done=true marks the final message; TreeChan returns immediately after sending it.
+// The channel is not closed by TreeChan.
+type TreeProgressObj struct {
+	Depth int
+	Found int  // nodes discovered at this depth level
+	Total int  // cumulative total across all levels so far
+	Done  bool // true on the last message — scan complete
 }

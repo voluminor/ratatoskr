@@ -508,6 +508,16 @@ canvas {
     opacity: 0.85;
 }
 
+.modal-refresh-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+.modal-controls input[type="range"]:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
 .modal-close {
     background: none;
     border: none;
@@ -533,6 +543,11 @@ canvas {
 .tn-stats {
     font-size: 0.75rem;
     color: var(--muted);
+    margin-bottom: 4px;
+}
+
+.tn-scanning {
+    color: var(--accent);
     margin-bottom: 10px;
 }
 

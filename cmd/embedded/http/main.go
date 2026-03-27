@@ -89,6 +89,7 @@ func main() {
 	info := newInfoHandler(node, tr, cfg, logger)
 	traceHandler := newTraceHandler(tr)
 	treeHandler := newTreeHandler(tr)
+	treeWSHandler := newTreeWSHandler(tr)
 
 	yggAddr := node.Address().String()
 	qrURL := fmt.Sprintf("http://[%s]:%d/", yggAddr, cfg.YggPorts[0])
@@ -111,7 +112,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler),
+			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler, treeWSHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -127,7 +128,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler),
+			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler, treeWSHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -139,12 +140,13 @@ func main() {
 
 // //
 
-func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree http.Handler) *http.ServeMux {
+func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree, treeWS http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/yggdrasil-server.json", info.Handler(isYgg))
 	mux.Handle("/ygg-qr.png", qr)
 	mux.Handle("/traceroute.json", trace)
 	mux.Handle("/tree.json", tree)
+	mux.Handle("/tree-ws", treeWS)
 	if isYgg {
 		mux.Handle("/", newYggFileHandler(wwwPath))
 	} else {

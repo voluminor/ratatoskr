@@ -214,37 +214,90 @@ function setSessionList(sessions) {
 
 // // // // // // // // // //
 
-// Tree modal
+// Tree modal — uses a persistent WebSocket for the lifetime of the modal.
+// One connection is opened when the modal opens and closed when it closes.
+// Each Refresh sends a new scan request over the same connection.
 
-async function openTreeModal() {
-    const modal = document.getElementById('tree-modal');
-    modal.classList.remove('hidden');
-    await refreshTree();
+let treeWS = null;
+
+function openTreeModal() {
+    document.getElementById('tree-modal').classList.remove('hidden');
+    const slider = document.getElementById('tree-depth');
+    document.getElementById('tree-depth-val').textContent = slider.value;
+    if (!treeWS || treeWS.readyState > WebSocket.OPEN) {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        treeWS = new WebSocket(proto + '//' + location.host + '/tree-ws');
+        treeWS.onmessage = onTreeMessage;
+        treeWS.onclose = () => {
+            treeWS = null;
+        };
+        treeWS.onerror = () => {
+            document.getElementById('tree-modal-body').textContent = 'WebSocket error';
+        };
+        treeWS.onopen = () => sendTreeScan();
+    } else {
+        sendTreeScan();
+    }
 }
 
-async function refreshTree() {
-    const body = document.getElementById('tree-modal-body');
-    const depth = document.getElementById('tree-depth').value;
-    body.innerHTML = '<span style="color:var(--muted)">Loading...</span>';
-
-    try {
-        const resp = await fetch('/tree.json?depth=' + depth);
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        const tree = await resp.json();
-        if (tree.error) {
-            body.textContent = tree.error;
-            return;
-        }
-        body.innerHTML = '';
-        buildAccordionTree(body, tree);
-    } catch (e) {
-        body.textContent = 'Failed: ' + e.message;
+function refreshTree() {
+    if (!treeWS || treeWS.readyState !== WebSocket.OPEN) {
+        openTreeModal();
+        return;
     }
+    sendTreeScan();
 }
 
 function closeTreeModal(e) {
     if (e && e.target !== e.currentTarget) return;
     document.getElementById('tree-modal').classList.add('hidden');
+    if (treeWS) {
+        treeWS.close();
+        treeWS = null;
+    }
+}
+
+function sendTreeScan() {
+    const depth = parseInt(document.getElementById('tree-depth').value, 10);
+    document.getElementById('tree-modal-body').innerHTML = '';
+    document.querySelector('.modal-refresh-btn').disabled = true;
+    document.getElementById('tree-depth').disabled = true;
+    treeWS.send(JSON.stringify({depth}));
+}
+
+function onTreeMessage(ev) {
+    const msg = JSON.parse(ev.data);
+    const body = document.getElementById('tree-modal-body');
+    const btn = document.querySelector('.modal-refresh-btn');
+    const slider = document.getElementById('tree-depth');
+
+    if (msg.type === 'ack') {
+        body.innerHTML =
+            '<div id="tree-progress"></div>' +
+            '<div id="tree-current" class="tn-stats tn-scanning">Scanning depth 1\u2026</div>';
+    } else if (msg.type === 'progress') {
+        const prog = document.getElementById('tree-progress');
+        const cur = document.getElementById('tree-current');
+        if (prog) {
+            const line = document.createElement('div');
+            line.className = 'tn-stats';
+            line.textContent = 'Depth ' + msg.depth + ': +' + msg.found +
+                ' nodes (total: ' + msg.total + ')';
+            prog.appendChild(line);
+        }
+        if (cur) {
+            cur.textContent = 'Scanning depth ' + (msg.depth + 1) + '\u2026';
+        }
+    } else if (msg.type === 'result') {
+        body.innerHTML = '';
+        buildAccordionTree(body, msg.root);
+        btn.disabled = false;
+        slider.disabled = false;
+    } else if (msg.type === 'error') {
+        body.textContent = msg.message;
+        btn.disabled = false;
+        slider.disabled = false;
+    }
 }
 
 document.addEventListener('keydown', function (e) {

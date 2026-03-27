@@ -157,8 +157,8 @@ func newTreeHandler(tr *traceroute.Obj) http.Handler {
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
 
-		root, err := tr.Tree(ctx, uint16(depth), concurrency)
-		if err != nil || root == nil {
+		result, err := tr.Tree(ctx, uint16(depth), concurrency)
+		if err != nil || result == nil {
 			msg := "tree unavailable"
 			if err != nil {
 				msg = err.Error()
@@ -170,7 +170,7 @@ func newTreeHandler(tr *traceroute.Obj) http.Handler {
 			return
 		}
 
-		data, _ := json.Marshal(nodeToJSON(root))
+		data, _ := json.Marshal(nodeToJSON(result.Root))
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(data)

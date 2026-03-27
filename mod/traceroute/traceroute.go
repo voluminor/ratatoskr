@@ -61,26 +61,40 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 
 // // // // // // // // // //
 
-// Tree — строит дерево топологии сети методом BFS по пирам.
-// Корень — наш узел. Уровень 1 — наши прямые пиры из GetPeers().
-// Для каждого узла вызывает debug_remoteGetPeers чтобы узнать его пиров.
-// maxDepth > 0 обязателен. concurrency <= 0 заменяется на 4.
-// Узлы не ответившие на запрос помечаются Unreachable = true.
-func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*NodeObj, error) {
+// Tree — builds a network topology tree via BFS.
+// Root is our node; depth 1 is direct active peers from GetPeers().
+// maxDepth > 0 required. concurrency <= 0 defaults to 16.
+// Nodes that do not respond to peer queries are marked Unreachable.
+func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*TreeResultObj, error) {
+	return o.treeBFS(ctx, maxDepth, concurrency, nil)
+}
+
+// TreeChan — same as Tree but sends a TreeProgressObj to ch after each depth level.
+// Done=true on the last message. ch is not closed by TreeChan.
+func (o *Obj) TreeChan(ctx context.Context, maxDepth uint16, concurrency int, ch chan<- TreeProgressObj) (*TreeResultObj, error) {
+	return o.treeBFS(ctx, maxDepth, concurrency, ch)
+}
+
+// //
+
+// treeBFS — shared BFS implementation used by Tree and TreeChan.
+// progress is nil-safe: no messages are sent when nil.
+func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, progress chan<- TreeProgressObj) (*TreeResultObj, error) {
 	if maxDepth == 0 {
 		return nil, fmt.Errorf("traceroute: maxDepth must be > 0")
 	}
 	if concurrency <= 0 {
-		concurrency = 4
+		concurrency = 16
 	}
 
 	selfKey := o.core.PublicKey()
 	root := &NodeObj{Key: selfKey, Depth: 0}
+	total := 0
 
 	visited := make(map[[ed25519.PublicKeySize]byte]bool)
 	visited[toKeyArray(selfKey)] = true
 
-	// первый уровень — только активные прямые пиры
+	// Level 1: active direct peers only.
 	var currentLevel []*NodeObj
 	for _, p := range o.core.GetPeers() {
 		if !p.Up {
@@ -95,13 +109,28 @@ func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*Node
 		root.Children = append(root.Children, child)
 		currentLevel = append(currentLevel, child)
 	}
-
-	// BFS по уровням до maxDepth
-	for depth := uint16(1); depth < maxDepth && len(currentLevel) > 0; depth++ {
-		currentLevel = o.scanLevel(ctx, currentLevel, visited, concurrency, int(depth)+1)
+	total += len(currentLevel)
+	if progress != nil && len(currentLevel) > 0 {
+		progress <- TreeProgressObj{Depth: 1, Found: len(currentLevel), Total: total}
 	}
 
-	return root, nil
+	// BFS levels 2..maxDepth.
+	for depth := uint16(1); depth < maxDepth && len(currentLevel) > 0; depth++ {
+		if ctx.Err() != nil {
+			break
+		}
+		currentLevel = o.scanLevel(ctx, currentLevel, visited, concurrency, int(depth)+1)
+		total += len(currentLevel)
+		if progress != nil && len(currentLevel) > 0 {
+			progress <- TreeProgressObj{Depth: int(depth) + 1, Found: len(currentLevel), Total: total}
+		}
+	}
+
+	if progress != nil {
+		progress <- TreeProgressObj{Done: true, Total: total}
+	}
+
+	return &TreeResultObj{Root: root, Total: total}, nil
 }
 
 // //
