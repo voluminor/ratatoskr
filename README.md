@@ -69,6 +69,20 @@ go get github.com/voluminor/ratatoskr
 
 Minimum Go version: **1.24**.
 
+### Supported platforms
+
+Tests run on Linux (amd64, arm64), macOS (arm64), and Windows (amd64).
+Cross-compilation is verified on every PR for **25 targets**:
+
+| OS      | Architectures                                                                                   |
+|---------|-------------------------------------------------------------------------------------------------|
+| Linux   | amd64, arm64, armv7, armv6, 386, riscv64, mips64, mips64le, mips, mipsle, ppc64, ppc64le, s390x |
+| Windows | amd64, arm64, 386                                                                               |
+| macOS   | amd64, arm64                                                                                    |
+| FreeBSD | amd64, arm64, 386                                                                               |
+| OpenBSD | amd64, arm64                                                                                    |
+| NetBSD  | amd64, arm64                                                                                    |
+
 ## Quick start
 
 Create a node, connect to the network, and make an HTTP request:
