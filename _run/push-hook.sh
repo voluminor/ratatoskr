@@ -1,0 +1,13 @@
+#!/bin/bash
+echo "[HOOK]" "Push"
+
+run_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+values_dir="$run_dir/values"
+script_dir="$run_dir/scripts"
+root_path=$(cd "$run_dir/.." && pwd)
+
+#############################################################################
+
+#############################################################################
+exit 0
+

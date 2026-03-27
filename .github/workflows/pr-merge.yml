@@ -1,0 +1,102 @@
+name: "PR Merge → Patch"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr-merge-${{ github.ref_name }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types: [ closed ]
+    branches: [ main ]
+
+env:
+  GO_VERSION: "1.25"
+
+jobs:
+  prepare:
+    name: "🔧 Prepare"
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: ./.github/actions/tidy-all-and-generate
+
+      - name: 📦 Upload source
+        uses: actions/upload-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+  test:
+    name: "🧪 Test [${{ matrix.os }}]"
+    needs: [ prepare ]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest ]
+
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 1
+
+      - name: 📥 Download source
+        uses: actions/download-artifact@v4
+        with:
+          name: src-gen
+          path: .
+
+
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: ./.github/actions/run-tests
+        with:
+          run-benchmarks: 'false'
+
+  bump-version:
+    name: "📦 Patch version bump"
+    needs: [ test ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: ./.github/actions/github-setup-user
+
+      - name: 📦 Increment patch version
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          new_ver=$(./_run/scripts/sys.sh --increment --patch)
+          echo "New version: $new_ver"
+
+          git add _run/values/ver.txt
+          git commit -m "patch(${new_ver}): auto-bump on PR merge"
+          git push origin HEAD:main
+
+      - name: 🧹 Cleanup artifacts
+        if: always()
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: src-gen
+          failOnError: false

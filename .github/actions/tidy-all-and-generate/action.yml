@@ -1,0 +1,16 @@
+name: 'Initialization of all packages'
+description: 'Initialize all the modules and generate files'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 📥 go mod tidy-all
+      shell: bash
+      run: ./_run/scripts/go_tidy_all.sh
+
+    - name: 🛠️ go generate
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        mkdir -p target tmp
+        GOWORK=off GOFLAGS=-mod=mod go generate ./...

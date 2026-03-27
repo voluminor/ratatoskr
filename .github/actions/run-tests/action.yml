@@ -1,0 +1,23 @@
+name: 'Run tests and benchmarks'
+description: 'Run go test with race detector and benchmarks'
+inputs:
+  run-benchmarks:
+    description: 'Run benchmarks after tests (true/false)'
+    required: false
+    default: 'true'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: 🧪 Run tests
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        go test -race -v ./...
+
+    - name: 📊 Run benchmarks
+      if: inputs.run-benchmarks == 'true'
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        go test -bench=. -run=NONE -benchmem -v ./...
