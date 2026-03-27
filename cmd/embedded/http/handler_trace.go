@@ -81,7 +81,7 @@ func nodeToJSONFlat(n *traceroute.NodeObj) *traceNodeJSON {
 // //
 
 // newTraceHandler — трассировка до ключа.
-// GET ?key=<hex>. Возвращает path (spanning tree), hops (pathfinder), subtree.
+// GET ?key=<hex>. Возвращает path (spanning tree) с RTT, hops (pathfinder), subtree.
 func newTraceHandler(tr *traceroute.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyHex := r.URL.Query().Get("key")
@@ -104,35 +104,36 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 		result, err := tr.Trace(ctx, pubKey)
 		elapsed := time.Since(start)
 
-		if err != nil {
-			writeTraceError(w, err.Error())
-			return
-		}
-
 		resp := traceResponseJSON{
 			Target:   keyHex,
 			Duration: float64(elapsed.Microseconds()) / 1000.0,
 		}
 
-		if result.TreePath != nil {
-			resp.Path = make([]*traceNodeJSON, len(result.TreePath))
-			for i, n := range result.TreePath {
-				resp.Path[i] = nodeToJSONFlat(n)
-			}
-			last := result.TreePath[len(result.TreePath)-1]
-			if len(last.Children) > 0 {
-				resp.Subtree = nodeToJSON(last)
-			}
+		if err != nil {
+			resp.Error = err.Error()
 		}
 
-		if result.Hops != nil {
-			resp.Hops = make([]traceHopJSON, len(result.Hops))
-			for i, h := range result.Hops {
-				hop := traceHopJSON{Port: h.Port, Index: h.Index}
-				if len(h.Key) > 0 {
-					hop.Key = hex.EncodeToString(h.Key)
+		if result != nil {
+			if result.TreePath != nil {
+				resp.Path = make([]*traceNodeJSON, len(result.TreePath))
+				for i, n := range result.TreePath {
+					resp.Path[i] = nodeToJSONFlat(n)
 				}
-				resp.Hops[i] = hop
+				last := result.TreePath[len(result.TreePath)-1]
+				if len(last.Children) > 0 {
+					resp.Subtree = nodeToJSON(last)
+				}
+			}
+
+			if result.Hops != nil {
+				resp.Hops = make([]traceHopJSON, len(result.Hops))
+				for i, h := range result.Hops {
+					hop := traceHopJSON{Port: h.Port, Index: h.Index}
+					if len(h.Key) > 0 {
+						hop.Key = hex.EncodeToString(h.Key)
+					}
+					resp.Hops[i] = hop
+				}
 			}
 		}
 

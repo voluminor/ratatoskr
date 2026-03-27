@@ -34,6 +34,7 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 	result := o.collect(key)
 
 	if result != nil && result.TreePath != nil && result.Hops != nil {
+		o.enrichPath(ctx, result.TreePath)
 		return result, nil
 	}
 
@@ -46,11 +47,16 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 				result.Hops = enriched
 			}
 		}
+		o.enrichPath(ctx, result.TreePath)
 		return result, nil
 	}
 
 	o.logger.Infof("[traceroute] lookup started for %x", key[:8])
-	return o.pollFull(ctx, key)
+	result, err := o.pollFull(ctx, key)
+	if result != nil && result.TreePath != nil {
+		o.enrichPath(ctx, result.TreePath)
+	}
+	return result, err
 }
 
 // //
@@ -131,6 +137,34 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 }
 
 // //
+
+// enrichPath fills RTT on path nodes via callRemotePeers (cache-friendly, no children).
+// Skips root (index 0). Best-effort: errors are silently ignored.
+func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
+	if len(path) <= 1 {
+		return
+	}
+	targets := path[1:]
+	type rttResultObj struct {
+		idx int
+		rtt time.Duration
+	}
+	ch := make(chan rttResultObj, len(targets))
+	for i, n := range targets {
+		go func(idx int, k ed25519.PublicKey) {
+			_, rtt, _ := o.callRemotePeers(ctx, k)
+			ch <- rttResultObj{idx: idx, rtt: rtt}
+		}(i, n.Key)
+	}
+	for range len(targets) {
+		select {
+		case r := <-ch:
+			targets[r.idx].RTT = r.rtt
+		case <-ctx.Done():
+			return
+		}
+	}
+}
 
 // collect attempts to gather data from both tree and pathfinder sources.
 func (o *Obj) collect(key ed25519.PublicKey) *TraceResultObj {

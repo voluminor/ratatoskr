@@ -396,6 +396,12 @@ canvas {
     margin: 0 2px;
 }
 
+.trace-rtt {
+    font-size: 0.68rem;
+    color: var(--green);
+    margin-left: 4px;
+}
+
 .trace-muted {
     color: var(--muted);
     font-size: 0.82rem;

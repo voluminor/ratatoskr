@@ -418,7 +418,7 @@ async function doTrace() {
     }
 
     btn.disabled = true;
-    btn.textContent = '…';
+    btn.textContent = '\u2026';
     errorEl.classList.add('hidden');
     resultEl.classList.add('hidden');
 
@@ -435,9 +435,9 @@ async function doTrace() {
         document.getElementById('trace-duration').textContent =
             'Resolved in ' + data.duration_ms.toFixed(1) + ' ms';
 
-        renderTraceHops(data.hops || []);
-        renderTracePath(data.path || []);
-        renderTraceSubtree(data.subtree);
+        const sections = document.getElementById('trace-sections');
+        sections.innerHTML = '';
+        renderTraceMode(sections, data);
         resultEl.classList.remove('hidden');
     } catch (e) {
         errorEl.textContent = 'Request failed: ' + e.message;
@@ -448,42 +448,52 @@ async function doTrace() {
     }
 }
 
-function renderTraceHops(hops) {
-    const el = document.getElementById('trace-hops');
+// //
+
+function renderTraceMode(container, data) {
+    // Hops
+    const hopsTitle = document.createElement('h3');
+    hopsTitle.className = 'trace-subtitle';
+    hopsTitle.innerHTML = 'Hops <span class="trace-hint">(pathfinder)</span>';
+    container.appendChild(hopsTitle);
+
+    const hopsEl = document.createElement('div');
+    hopsEl.className = 'trace-path';
+    const hops = data.hops || [];
     if (hops.length === 0) {
-        el.innerHTML = '<span class="trace-muted">No pathfinder route</span>';
-        return;
+        hopsEl.innerHTML = '<span class="trace-muted">No pathfinder route</span>';
+    } else {
+        hopsEl.innerHTML = hops.map((h, i) => {
+            const label = h.key ? h.key.substring(0, 12) + '\u2026' : 'port:' + h.port;
+            const title = h.key || ('port ' + h.port);
+            const arrow = i < hops.length - 1 ? ' <span class="trace-arrow">\u2192</span> ' : '';
+            return `<span class="trace-hop" title="${title}"><span class="trace-depth">${h.index}</span>${label}</span>${arrow}`;
+        }).join('');
     }
-    el.innerHTML = hops.map((h, i) => {
-        const label = h.key ? h.key.substring(0, 12) + '…' : 'port:' + h.port;
-        const title = h.key || ('port ' + h.port);
-        const arrow = i < hops.length - 1 ? ' <span class="trace-arrow">→</span> ' : '';
-        return `<span class="trace-hop" title="${title}"><span class="trace-depth">${h.index}</span>${label}</span>${arrow}`;
-    }).join('');
-}
+    container.appendChild(hopsEl);
 
-function renderTracePath(path) {
-    const el = document.getElementById('trace-path');
+    // Tree path
+    const pathTitle = document.createElement('h3');
+    pathTitle.className = 'trace-subtitle';
+    pathTitle.innerHTML = 'Tree path <span class="trace-hint">(spanning tree)</span>';
+    container.appendChild(pathTitle);
+
+    const pathEl = document.createElement('div');
+    pathEl.className = 'trace-path';
+    const path = data.path || [];
     if (path.length === 0) {
-        el.innerHTML = '<span class="trace-muted">Not in spanning tree</span>';
-        return;
+        pathEl.innerHTML = '<span class="trace-muted">Not in spanning tree</span>';
+    } else {
+        pathEl.innerHTML = path.map((n, i) => {
+            const shortKey = n.key.substring(0, 12) + '\u2026';
+            const rtt = n.rtt_ms > 0 ? ` <span class="trace-rtt">${n.rtt_ms.toFixed(1)}ms</span>` : '';
+            const arrow = i < path.length - 1 ? ' <span class="trace-arrow">\u2192</span> ' : '';
+            return `<span class="trace-hop" title="${n.key}"><span class="trace-depth">${n.depth}</span>${shortKey}${rtt}</span>${arrow}`;
+        }).join('');
     }
-    el.innerHTML = path.map((n, i) => {
-        const shortKey = n.key.substring(0, 12) + '…';
-        const arrow = i < path.length - 1 ? ' <span class="trace-arrow">→</span> ' : '';
-        return `<span class="trace-hop" title="${n.key}"><span class="trace-depth">${n.depth}</span>${shortKey}</span>${arrow}`;
-    }).join('');
+    container.appendChild(pathEl);
 }
 
-function renderTraceSubtree(tree) {
-    const el = document.getElementById('trace-tree');
-    if (!tree || !tree.children || tree.children.length === 0) {
-        el.classList.add('hidden');
-        return;
-    }
-    el.textContent = JSON.stringify(tree, null, 2);
-    el.classList.remove('hidden');
-}
 
 // Enter key triggers trace
 document.getElementById('trace-key').addEventListener('keydown', function (e) {
