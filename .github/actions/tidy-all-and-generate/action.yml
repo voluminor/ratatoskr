@@ -10,9 +10,7 @@ runs:
 
     - name: 🛠️ go generate
       shell: bash
-      env:
-        GOFLAGS: -mod=mod
       run: |
         set -Eeuo pipefail
         mkdir -p target tmp
-        go generate ./...
+        GOWORK=off GOFLAGS=-mod=mod go generate ./...
