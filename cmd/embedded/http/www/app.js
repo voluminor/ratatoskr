@@ -257,209 +257,223 @@ document.addEventListener('keydown', function (e) {
 // //
 
 // Radial spanning tree on Canvas.
-// Uses even angular distribution with minimum gap so branches are always visible,
-// even when most nodes have only one child (common in Yggdrasil at low depth).
+// Single-child chains are condensed into annotated edges so only actual
+// branch points and leaves appear as nodes — this is the only correct way
+// to visualize chain-heavy trees without everything collapsing into rays.
 
 function drawRadialTree(canvas, root) {
-    const ringGap = 100;
-    const nodeR = 5;
-    const branchR = 8;
-    const minAngleGap = 0.04; // minimum radians between siblings
+    const edgeLen = 110;   // pixels per hop between rendered nodes
+    const nodeR = 6;
+    const branchR = 9;
+    const minSectorRad = 0.18; // minimum sector per child in radians
 
-    // Flatten tree into arrays.
-    const nodes = [];
-    const edges = [];
-    const childMap = {}; // parentIdx → [childIdx, ...]
-
-    function countDesc(n) {
+    // Condense single-child chains: collapse sequences of nodes that have
+    // exactly one child into a single edge annotated with hop count.
+    // Returns a condensed tree node:
+    //   { key, depth, hops (edge weight), children }
+    function condense(n, depth) {
         const ch = n.children || [];
-        if (ch.length === 0) return 1;
-        let s = 0;
-        for (const c of ch) s += countDesc(c);
-        return s;
+        if (ch.length !== 1) {
+            return {key: n.key, depth, hops: 1, children: ch.map(c => condense(c, depth + 1))};
+        }
+        // Follow the single-child chain.
+        let cur = n;
+        let hops = 1;
+        let d = depth;
+        while ((cur.children || []).length === 1) {
+            cur = cur.children[0];
+            hops++;
+            d++;
+        }
+        const tail = condense(cur, d);
+        tail.hops = hops;
+        return {key: n.key, depth, hops: 1, children: [tail]};
     }
 
-    function collect(n, depth, parentIdx) {
+    const ctree = condense(root, 0);
+
+    // Flatten condensed tree into node/edge arrays.
+    const nodes = [];
+    const edges = []; // {pi, ci, hops}
+    const childMap = {};
+
+    function collect(n, parentIdx) {
         const idx = nodes.length;
-        const desc = countDesc(n);
-        const childCount = (n.children || []).length;
-        nodes.push({key: n.key, depth, desc, childCount, angle: 0, x: 0, y: 0});
+        nodes.push({key: n.key, depth: n.depth, angle: 0, x: 0, y: 0});
         if (parentIdx >= 0) {
-            edges.push([parentIdx, idx]);
+            edges.push({pi: parentIdx, ci: idx, hops: n.hops});
             if (!childMap[parentIdx]) childMap[parentIdx] = [];
             childMap[parentIdx].push(idx);
         }
-        for (const c of (n.children || [])) collect(c, depth + 1, idx);
+        for (const c of (n.children || [])) collect(c, idx);
     }
 
-    collect(root, 0, -1);
+    collect(ctree, -1);
 
-    // Assign angles: each leaf gets equal share of 2π, branches accumulate.
-    // This ensures every fork is visible regardless of subtree size.
-    let leafCounter = 0;
-    const totalLeaves = nodes.filter(n => !childMap[n.key] && !(childMap[nodes.indexOf(n)])).length;
-
-    // Count actual leaves (nodes with no children in our edges).
-    let leafCount = 0;
+    // Count leaves (condensed nodes with no children).
     const hasChildren = new Set();
-    for (const [pi] of edges) hasChildren.add(pi);
+    for (const {pi} of edges) hasChildren.add(pi);
+    let leafCount = 0;
     for (let i = 0; i < nodes.length; i++) {
         if (!hasChildren.has(i)) leafCount++;
     }
 
-    // Assign angular position via DFS: leaves get sequential slots.
-    const leafAngle = (Math.PI * 2) / Math.max(leafCount, 1);
+    // Assign angles: leaves get equal shares of 2π, parents get midpoint
+    // of their children's range. Enforces minimum sector per branch.
+    const leafAngleStep = (Math.PI * 2) / Math.max(leafCount, 1);
     let leafIdx = 0;
 
     function assignAngles(ni) {
         const ch = childMap[ni] || [];
         if (ch.length === 0) {
-            // Leaf: assign next slot.
-            nodes[ni].angle = leafIdx * leafAngle;
+            nodes[ni].angle = leafIdx * leafAngleStep;
             leafIdx++;
             return;
         }
-        // Recurse children first, then parent angle = midpoint of children's range.
+        // Recurse first (bottom-up).
         for (const ci of ch) assignAngles(ci);
-        const first = nodes[ch[0]].angle;
-        const last = nodes[ch[ch.length - 1]].angle;
-        nodes[ni].angle = (first + last) / 2;
-    }
 
-    assignAngles(0);
-
-    // Apply minimum angular gap: if siblings are too close, spread them.
-    function spreadSiblings(ni) {
-        const ch = childMap[ni] || [];
-        if (ch.length < 2) {
-            for (const ci of ch) spreadSiblings(ci);
-            return;
-        }
-        // Check gap between consecutive siblings.
-        for (let i = 1; i < ch.length; i++) {
-            const gap = nodes[ch[i]].angle - nodes[ch[i - 1]].angle;
-            if (gap < minAngleGap) {
-                // Spread all children evenly with minAngleGap.
-                const center = nodes[ni].angle;
-                const totalSpan = minAngleGap * (ch.length - 1);
-                const start = center - totalSpan / 2;
-                for (let j = 0; j < ch.length; j++) {
-                    nodes[ch[j]].angle = start + j * minAngleGap;
+        // Enforce minimum angular gap between siblings.
+        if (ch.length > 1) {
+            let prevAngle = nodes[ch[0]].angle;
+            for (let i = 1; i < ch.length; i++) {
+                if (nodes[ch[i]].angle - prevAngle < minSectorRad) {
+                    nodes[ch[i]].angle = prevAngle + minSectorRad;
                 }
-                break;
+                prevAngle = nodes[ch[i]].angle;
             }
         }
-        // Recalculate parent midpoint.
-        const first = nodes[ch[0]].angle;
-        const last = nodes[ch[ch.length - 1]].angle;
-        nodes[ni].angle = (first + last) / 2;
-        for (const ci of ch) spreadSiblings(ci);
+
+        // Parent angle = midpoint of first..last child.
+        nodes[ni].angle = (nodes[ch[0]].angle + nodes[ch[ch.length - 1]].angle) / 2;
+    }
+    assignAngles(0);
+
+    // Place nodes: root at origin, each child at edgeLen*hops from parent
+    // in its assigned angular direction.
+    function place(ni, px, py) {
+        nodes[ni].x = px;
+        nodes[ni].y = py;
+        for (const {pi, ci, hops} of edges) {
+            if (pi !== ni) continue;
+            const angle = nodes[ci].angle;
+            const dist = edgeLen * hops;
+            place(ci, px + dist * Math.cos(angle), py + dist * Math.sin(angle));
+        }
     }
 
-    spreadSiblings(0);
+    place(0, 0, 0);
 
-    // Convert polar to cartesian.
-    for (const n of nodes) {
-        n.x = n.depth * ringGap * Math.cos(n.angle);
-        n.y = n.depth * ringGap * Math.sin(n.angle);
-    }
-
-    // Canvas size.
-    const maxDepth = Math.max(...nodes.map(n => n.depth));
-    const totalRadius = (maxDepth + 1) * ringGap + 80;
-    const size = totalRadius * 2;
-    const cx = totalRadius;
-    const cy = totalRadius;
+    // Canvas bounds from actual node positions.
+    const xs = nodes.map(n => n.x);
+    const ys = nodes.map(n => n.y);
+    const pad = 60;
+    const minX = Math.min(...xs) - pad;
+    const maxX = Math.max(...xs) + pad;
+    const minY = Math.min(...ys) - pad;
+    const maxY = Math.max(...ys) + pad;
+    const w = maxX - minX;
+    const h = maxY - minY;
+    const cx = -minX;
+    const cy = -minY;
 
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = size * dpr;
-    canvas.height = size * dpr;
-    canvas.style.width = size + 'px';
-    canvas.style.height = size + 'px';
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
 
     const ctx = canvas.getContext('2d');
     ctx.scale(dpr, dpr);
 
-    // Depth ring guides.
-    ctx.strokeStyle = 'rgba(42, 45, 62, 0.3)';
-    ctx.lineWidth = 0.5;
-    for (let d = 1; d <= maxDepth; d++) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, d * ringGap, 0, Math.PI * 2);
-        ctx.stroke();
-    }
-
-    // Edges — curved bezier to separate overlapping paths.
-    for (const [pi, ci] of edges) {
+    // Edges.
+    for (const {pi, ci, hops} of edges) {
         const p = nodes[pi];
         const c = nodes[ci];
         const px = cx + p.x, py = cy + p.y;
         const ex = cx + c.x, ey = cy + c.y;
+        const isChain = hops > 1;
 
-        // Control point: midpoint pushed outward from center.
-        const mx = (px + ex) / 2;
-        const my = (py + ey) / 2;
-        const mdist = Math.sqrt((mx - cx) ** 2 + (my - cy) ** 2) || 1;
-        const pushOut = ringGap * 0.15;
-        const cpx = mx + ((mx - cx) / mdist) * pushOut;
-        const cpy = my + ((my - cy) / mdist) * pushOut;
+        if (isChain) {
+            // Dashed line for condensed chains.
+            ctx.setLineDash([5, 4]);
+            ctx.strokeStyle = '#4a4d6e';
+            ctx.lineWidth = 1.5;
+        } else {
+            ctx.setLineDash([]);
+            ctx.strokeStyle = hasChildren.has(ci) ? '#5a5d7e' : '#3a3d5e';
+            ctx.lineWidth = hasChildren.has(ci) ? 1.5 : 1;
+        }
 
-        ctx.strokeStyle = hasChildren.has(ci) ? '#4a4d6e' : '#2a2d3e';
-        ctx.lineWidth = hasChildren.has(ci) ? 1.5 : 0.8;
         ctx.beginPath();
         ctx.moveTo(px, py);
-        ctx.quadraticCurveTo(cpx, cpy, ex, ey);
+        ctx.lineTo(ex, ey);
         ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Chain hop count label on the edge midpoint.
+        if (isChain) {
+            const mx = (px + ex) / 2;
+            const my = (py + ey) / 2;
+            ctx.fillStyle = '#1e2030';
+            ctx.beginPath();
+            ctx.arc(mx, my, 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#94a3b8';
+            ctx.font = 'bold 9px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(hops, mx, my);
+        }
     }
 
     // Nodes.
     const colors = ['#6366f1', '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee',
         '#2dd4bf', '#34d399', '#4ade80', '#a3e635', '#facc15'];
 
-    ctx.textBaseline = 'middle';
-
     for (let i = 0; i < nodes.length; i++) {
         const n = nodes[i];
         const nx = cx + n.x;
         const ny = cy + n.y;
         const isBranch = hasChildren.has(i) && (childMap[i] || []).length > 1;
-        const r = i === 0 ? branchR + 2 : (isBranch ? branchR : nodeR);
-
-        // Node circle.
+        const r = i === 0 ? branchR + 3 : (isBranch ? branchR : nodeR);
         const color = colors[n.depth % colors.length];
+
         ctx.fillStyle = color;
         ctx.beginPath();
         ctx.arc(nx, ny, r, 0, Math.PI * 2);
         ctx.fill();
 
-        // Branch highlight ring.
-        if (isBranch) {
-            ctx.strokeStyle = '#fff';
+        // White ring on branch nodes to make forks visible.
+        if (isBranch || i === 0) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
             ctx.lineWidth = 1.5;
             ctx.beginPath();
             ctx.arc(nx, ny, r + 2, 0, Math.PI * 2);
             ctx.stroke();
         }
 
-        // Label.
+        // Labels.
         const shortKey = n.key.substring(0, 8);
-        ctx.fillStyle = '#e2e8f0';
-        ctx.font = '9px monospace';
+        ctx.textBaseline = 'middle';
 
         if (i === 0) {
+            ctx.fillStyle = '#e2e8f0';
+            ctx.font = '9px monospace';
             ctx.textAlign = 'center';
-            ctx.fillText('root', nx, ny - r - 6);
-            ctx.fillText(shortKey, nx, ny - r - 16);
+            ctx.fillText('root', nx, ny - r - 8);
+            ctx.fillText(shortKey, nx, ny - r - 18);
         } else {
-            const dist = Math.sqrt(n.x * n.x + n.y * n.y) || 1;
-            const dx = n.x / dist;
-            const dy = n.y / dist;
-            const lx = nx + dx * 12;
-            const ly = ny + dy * 12;
-            ctx.textAlign = dx >= 0 ? 'left' : 'right';
-            ctx.fillText(shortKey, lx, ly);
+            const dx = n.x - nodes[edges.find(e => e.ci === i)?.pi ?? 0].x;
+            const dy = n.y - nodes[edges.find(e => e.ci === i)?.pi ?? 0].y;
+            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+            const ux = dx / dist;
+            const uy = dy / dist;
+            ctx.fillStyle = '#cbd5e1';
+            ctx.font = '9px monospace';
+            ctx.textAlign = ux >= 0 ? 'left' : 'right';
+            ctx.fillText(shortKey, nx + ux * (r + 5), ny + uy * (r + 5));
 
-            // Show child count for branch nodes.
             if (isBranch) {
                 ctx.fillStyle = '#facc15';
                 ctx.font = 'bold 8px sans-serif';
@@ -469,12 +483,15 @@ function drawRadialTree(canvas, root) {
         }
     }
 
-    // Stats.
-    ctx.fillStyle = '#64748b';
+    // Stats footer.
+    ctx.fillStyle = '#475569';
     ctx.font = '11px sans-serif';
     ctx.textAlign = 'left';
-    ctx.fillText(nodes.length + ' nodes, ' + maxDepth + ' levels, ' +
-        leafCount + ' leaves', 10, size - 10);
+    ctx.textBaseline = 'alphabetic';
+    const totalNodes = (function countAll(n) {
+        return 1 + (n.children || []).reduce((s, c) => s + countAll(c), 0);
+    })(root);
+    ctx.fillText(totalNodes + ' nodes total, ' + nodes.length + ' branch/leaf points shown', 10, h - 6);
 }
 
 // // // // // // // // // //
