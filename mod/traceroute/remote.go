@@ -38,7 +38,7 @@ type remoteCallResultObj struct {
 // this is a bounded goroutine leak; the buffered channel prevents it from blocking.
 func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, error) {
 	if o.remotePeers == nil {
-		return nil, fmt.Errorf("traceroute: debug_remoteGetPeers unavailable")
+		return nil, ErrRemotePeersDisabled
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -47,7 +47,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 	k := toKeyArray(key)
 	if cached, ok := o.cache.get(k); ok {
 		if cached == nil {
-			return nil, fmt.Errorf("traceroute: node unreachable (cached)")
+			return nil, ErrNodeUnreachable
 		}
 		return cached, nil
 	}
@@ -70,6 +70,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 		return nil, ctx.Err()
 	case r := <-ch:
 		if r.err != nil {
+			o.logger.Debugf("[traceroute] remoteGetPeers failed for %x: %v", key[:8], r.err)
 			o.cache.set(k, nil)
 			return nil, r.err
 		}
@@ -82,18 +83,18 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 
 // parseRemotePeersResponse parses the debug_remoteGetPeers response.
 // Format: {"<ipv6>": {"keys": ["hex1", "hex2", ...]}}
-// Uses JSON roundtrip because the raw type from yggdrasil is not guaranteed to be map[string]interface{}.
+// Uses JSON roundtrip because the raw type from yggdrasil is not guaranteed.
 func parseRemotePeersResponse(raw interface{}) ([]ed25519.PublicKey, error) {
 	js, err := json.Marshal(raw)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("traceroute: marshal remote peers: %w", err)
 	}
 
 	var outer map[string]struct {
 		Keys []string `json:"keys"`
 	}
 	if err := json.Unmarshal(js, &outer); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("traceroute: unmarshal remote peers: %w", err)
 	}
 
 	var peers []ed25519.PublicKey

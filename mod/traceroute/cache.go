@@ -24,6 +24,7 @@ type peerCacheObj struct {
 	entries map[[ed25519.PublicKeySize]byte]peerCacheEntryObj
 	running atomic.Int32
 	idle    atomic.Int32
+	done    chan struct{}
 }
 
 // // // // // // // // // //
@@ -31,7 +32,14 @@ type peerCacheObj struct {
 func newPeerCache() *peerCacheObj {
 	return &peerCacheObj{
 		entries: make(map[[ed25519.PublicKeySize]byte]peerCacheEntryObj),
+		done:    make(chan struct{}),
 	}
+}
+
+// //
+
+func (c *peerCacheObj) close() {
+	close(c.done)
 }
 
 // //
@@ -63,13 +71,19 @@ func (c *peerCacheObj) set(key [ed25519.PublicKeySize]byte, peers []ed25519.Publ
 // //
 
 // cleanup removes expired entries every CacheTTL/2.
-// Exits after 10 consecutive iterations with an empty cache.
+// Exits after 10 consecutive iterations with an empty cache or when done is closed.
 func (c *peerCacheObj) cleanup() {
 	ticker := time.NewTicker(CacheTTL / 2)
 	defer ticker.Stop()
 	defer c.running.Store(0)
 
-	for range ticker.C {
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-ticker.C:
+		}
+
 		now := time.Now()
 		c.mu.Lock()
 		for k, e := range c.entries {

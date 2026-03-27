@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -25,27 +26,46 @@ type Obj struct {
 
 const defaultPoolSize = 16
 
+// MaxPeersPerNode limits how many peers are accepted from a single remote node.
+// If a node reports more peers than this limit, it is marked as Unreachable.
+var MaxPeersPerNode = 65535
+
 // //
 
 // New creates a traceroute module.
 // Captures debug_remoteGetPeers via core.SetAdmin without starting an admin socket.
 func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 	if core == nil {
-		return nil, fmt.Errorf("traceroute: core is required")
+		return nil, ErrCoreRequired
 	}
 	if logger == nil {
-		return nil, fmt.Errorf("traceroute: logger is required")
+		return nil, ErrLoggerRequired
+	}
+	if CacheTTL < time.Second {
+		return nil, ErrInvalidCacheTTL
 	}
 
 	capture := &adminCapture{handlers: make(map[string]yggcore.AddHandlerFunc)}
 	_ = core.SetAdmin(capture)
 
+	remotePeers := capture.handlers["debug_remoteGetPeers"]
+	if remotePeers == nil {
+		return nil, ErrRemotePeersNotCapture
+	}
+
 	return &Obj{
 		core:        core,
 		logger:      logger,
-		remotePeers: capture.handlers["debug_remoteGetPeers"],
+		remotePeers: remotePeers,
 		cache:       newPeerCache(),
 	}, nil
+}
+
+// //
+
+// Close stops the cache cleanup goroutine and releases resources.
+func (o *Obj) Close() {
+	o.cache.close()
 }
 
 // // // // // // // // // //
@@ -70,7 +90,7 @@ func (o *Obj) TreeChan(ctx context.Context, maxDepth uint16, concurrency int, ch
 // progress is nil-safe: no messages are sent when nil.
 func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, progress chan<- TreeProgressObj) (*TreeResultObj, error) {
 	if maxDepth == 0 {
-		return nil, fmt.Errorf("traceroute: maxDepth must be > 0")
+		return nil, ErrMaxDepthRequired
 	}
 	if concurrency <= 0 {
 		concurrency = defaultPoolSize
@@ -103,7 +123,11 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 	}
 	total += len(currentLevel)
 	if progress != nil && len(currentLevel) > 0 {
-		progress <- TreeProgressObj{Depth: 1, Found: len(currentLevel), Total: total}
+		select {
+		case progress <- TreeProgressObj{Depth: 1, Found: len(currentLevel), Total: total}:
+		case <-ctx.Done():
+			return &TreeResultObj{Root: root, Total: total}, nil
+		}
 	}
 
 	// BFS levels 2..maxDepth.
@@ -114,12 +138,19 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 		currentLevel = o.scanLevel(ctx, pool, currentLevel, visited, int(depth)+1)
 		total += len(currentLevel)
 		if progress != nil && len(currentLevel) > 0 {
-			progress <- TreeProgressObj{Depth: int(depth) + 1, Found: len(currentLevel), Total: total}
+			select {
+			case progress <- TreeProgressObj{Depth: int(depth) + 1, Found: len(currentLevel), Total: total}:
+			case <-ctx.Done():
+				return &TreeResultObj{Root: root, Total: total}, nil
+			}
 		}
 	}
 
 	if progress != nil {
-		progress <- TreeProgressObj{Done: true, Total: total}
+		select {
+		case progress <- TreeProgressObj{Done: true, Total: total}:
+		case <-ctx.Done():
+		}
 	}
 
 	return &TreeResultObj{Root: root, Total: total}, nil
@@ -145,11 +176,17 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 		collected = append(collected, <-results)
 	}
 
+	limit := MaxPeersPerNode
 	var nextLevel []*NodeObj
 	for _, r := range collected {
 		parent := nodeByKey[toKeyArray(r.key)]
 		if r.err != nil {
 			parent.Unreachable = true
+			continue
+		}
+		if limit > 0 && len(r.peers) > limit {
+			parent.Unreachable = true
+			o.logger.Warnf("[traceroute] node %x reported %d peers (limit %d), marked unreachable", r.key[:8], len(r.peers), limit)
 			continue
 		}
 		for _, peerKey := range r.peers {
@@ -170,7 +207,7 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 
 func validateKey(key ed25519.PublicKey) error {
 	if len(key) != ed25519.PublicKeySize {
-		return fmt.Errorf("traceroute: invalid key length %d, expected %d", len(key), ed25519.PublicKeySize)
+		return fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
 	}
 	return nil
 }
@@ -183,13 +220,13 @@ func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
-	root, err := buildTree(o.core.GetTree())
+	root, err := buildTree(o.core.GetTree(), o.logger)
 	if err != nil {
 		return nil, err
 	}
 	path := root.PathTo(key)
 	if path == nil {
-		return nil, fmt.Errorf("traceroute: key not found in tree")
+		return nil, ErrKeyNotInTree
 	}
 	return path, nil
 }
@@ -207,7 +244,7 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 			return resolveHops(p, o.core.GetPeers()), nil
 		}
 	}
-	return nil, fmt.Errorf("traceroute: no active path to key")
+	return nil, ErrNoActivePath
 }
 
 // Lookup initiates a path search to the key. Results appear in Hops() after some time.

@@ -90,9 +90,9 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 		select {
 		case <-ctx.Done():
 			if result := o.collect(key); result != nil {
-				return result, nil
+				return result, fmt.Errorf("%w: %w", ErrLookupTimedOut, ctx.Err())
 			}
-			return nil, fmt.Errorf("traceroute: lookup timed out for key %x", key[:8])
+			return nil, fmt.Errorf("%w for key %x: %w", ErrLookupTimedOut, key[:8], ctx.Err())
 		case <-ticker.C:
 			result := o.collect(key)
 

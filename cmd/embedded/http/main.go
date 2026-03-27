@@ -85,6 +85,7 @@ func main() {
 		fmt.Println("Error: traceroute:", err)
 		os.Exit(1)
 	}
+	defer tr.Close()
 
 	info := newInfoHandler(node, tr, cfg, logger)
 	traceHandler := newTraceHandler(tr)

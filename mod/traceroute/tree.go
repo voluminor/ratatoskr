@@ -2,7 +2,6 @@ package traceroute
 
 import (
 	"crypto/ed25519"
-	"fmt"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -12,9 +11,9 @@ import (
 // buildTree builds a tree from a flat list of TreeEntryInfo.
 // Root is the node where Parent == Key (self-parented).
 // Returns nil and an error if no self-rooted node is found.
-func buildTree(entries []yggcore.TreeEntryInfo) (*NodeObj, error) {
+func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj, error) {
 	if len(entries) == 0 {
-		return nil, fmt.Errorf("traceroute: tree entries are empty")
+		return nil, ErrTreeEmpty
 	}
 
 	index := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(entries))
@@ -27,6 +26,7 @@ func buildTree(entries []yggcore.TreeEntryInfo) (*NodeObj, error) {
 		}
 	}
 
+	orphans := 0
 	var root *NodeObj
 	for k, node := range index {
 		pk := toKeyArray(node.Parent)
@@ -36,10 +36,17 @@ func buildTree(entries []yggcore.TreeEntryInfo) (*NodeObj, error) {
 		}
 		if parent, ok := index[pk]; ok {
 			parent.Children = append(parent.Children, node)
+		} else {
+			orphans++
 		}
 	}
+
+	if orphans > 0 && logger != nil {
+		logger.Warnf("[traceroute] buildTree: %d orphan nodes (parent not in tree)", orphans)
+	}
+
 	if root == nil {
-		return nil, fmt.Errorf("traceroute: no self-rooted node in tree")
+		return nil, ErrNoRoot
 	}
 	setDepth(root, 0, 1024)
 	return root, nil
