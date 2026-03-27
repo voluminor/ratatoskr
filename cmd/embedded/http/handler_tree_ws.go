@@ -49,65 +49,85 @@ func newTreeWSHandler(tr *traceroute.Obj) http.Handler {
 
 // //
 
-// treeWSLoop — main read loop for a WebSocket connection.
-// Blocks on Receive; runs one BFS scan per request; repeats until disconnect.
+// treeWSLoop processes tree scan requests from the WebSocket connection.
+// A dedicated reader goroutine detects disconnect immediately and cancels ctx,
+// so in-flight BFS scans abort without waiting for the next progress Send.
 func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn, tr *traceroute.Obj) {
-	for {
-		var req treeWSReqJSON
-		if err := websocket.JSON.Receive(ws, &req); err != nil {
-			return // connection closed
-		}
-
-		if req.Depth <= 0 || req.Depth > 65535 {
-			_ = websocket.JSON.Send(ws, treeWSMsgJSON{Type: "error", Message: "depth must be between 1 and 65535"})
-			continue
-		}
-
-		if err := websocket.JSON.Send(ws, treeWSMsgJSON{Type: "ack"}); err != nil {
-			return
-		}
-
-		ch := make(chan traceroute.TreeProgressObj, 16)
-		start := time.Now()
-		done := make(chan struct{})
-
-		var result *traceroute.TreeResultObj
-		var scanErr error
-		go func() {
-			defer close(done)
-			result, scanErr = tr.TreeChan(ctx, uint16(req.Depth), 0, ch)
-		}()
-
-		if disconnected := streamTreeProgress(ws, ch, done, cancel); disconnected {
-			return
-		}
-
-		if scanErr != nil {
-			if err := websocket.JSON.Send(ws, treeWSMsgJSON{Type: "error", Message: scanErr.Error()}); err != nil {
+	requests := make(chan treeWSReqJSON, 1)
+	go func() {
+		defer cancel()
+		for {
+			var req treeWSReqJSON
+			if err := websocket.JSON.Receive(ws, &req); err != nil {
 				return
 			}
-			continue
+			select {
+			case requests <- req:
+			case <-ctx.Done():
+				return
+			}
 		}
+	}()
 
-		elapsed := time.Since(start)
-		if err := websocket.JSON.Send(ws, treeWSMsgJSON{
-			Type:     "result",
-			Root:     nodeToJSON(result.Root),
-			Total:    result.Total,
-			Duration: float64(elapsed.Microseconds()) / 1000.0,
-		}); err != nil {
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case req := <-requests:
+			if req.Depth <= 0 || req.Depth > 65535 {
+				_ = websocket.JSON.Send(ws, treeWSMsgJSON{Type: "error", Message: "depth must be between 1 and 65535"})
+				continue
+			}
+
+			if err := websocket.JSON.Send(ws, treeWSMsgJSON{Type: "ack"}); err != nil {
+				return
+			}
+
+			ch := make(chan traceroute.TreeProgressObj, 16)
+			start := time.Now()
+			done := make(chan struct{})
+
+			var result *traceroute.TreeResultObj
+			var scanErr error
+			go func() {
+				defer close(done)
+				result, scanErr = tr.TreeChan(ctx, uint16(req.Depth), 0, ch)
+			}()
+
+			if disconnected := streamTreeProgress(ws, ctx, ch, done); disconnected {
+				return
+			}
+
+			if scanErr != nil {
+				if err := websocket.JSON.Send(ws, treeWSMsgJSON{Type: "error", Message: scanErr.Error()}); err != nil {
+					return
+				}
+				continue
+			}
+
+			elapsed := time.Since(start)
+			if err := websocket.JSON.Send(ws, treeWSMsgJSON{
+				Type:     "result",
+				Root:     nodeToJSON(result.Root),
+				Total:    result.Total,
+				Duration: float64(elapsed.Microseconds()) / 1000.0,
+			}); err != nil {
+				return
+			}
 		}
 	}
 }
 
 // //
 
-// streamTreeProgress reads progress from ch until Done=true or the goroutine exits.
-// Returns true if the WebSocket connection dropped during streaming.
-func streamTreeProgress(ws *websocket.Conn, ch <-chan traceroute.TreeProgressObj, done <-chan struct{}, cancel context.CancelFunc) bool {
+// streamTreeProgress reads progress from ch until Done=true, ctx cancellation, or goroutine exit.
+// Returns true if the connection was lost (ctx cancelled by reader goroutine).
+func streamTreeProgress(ws *websocket.Conn, ctx context.Context, ch <-chan traceroute.TreeProgressObj, done <-chan struct{}) bool {
 	for {
 		select {
+		case <-ctx.Done():
+			<-done
+			return true
 		case p := <-ch:
 			if p.Found > 0 {
 				if err := websocket.JSON.Send(ws, treeWSMsgJSON{
@@ -116,7 +136,6 @@ func streamTreeProgress(ws *websocket.Conn, ch <-chan traceroute.TreeProgressObj
 					Found: p.Found,
 					Total: p.Total,
 				}); err != nil {
-					cancel()
 					<-done
 					return true
 				}
@@ -126,7 +145,6 @@ func streamTreeProgress(ws *websocket.Conn, ch <-chan traceroute.TreeProgressObj
 				return false
 			}
 		case <-done:
-			// Goroutine exited early (context cancelled or error before Done).
 			for len(ch) > 0 {
 				<-ch
 			}

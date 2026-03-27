@@ -2,21 +2,21 @@ package traceroute
 
 import (
 	"crypto/ed25519"
+	"fmt"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
 
-// buildTree — собирает дерево из плоского списка TreeEntryInfo.
-// Корень — узел у которого Parent == Key (сам себе родитель).
-// Используется в Path() и Hops() / Trace() для spanning tree навигации.
-func buildTree(entries []yggcore.TreeEntryInfo) *NodeObj {
+// buildTree builds a tree from a flat list of TreeEntryInfo.
+// Root is the node where Parent == Key (self-parented).
+// Returns nil and an error if no self-rooted node is found.
+func buildTree(entries []yggcore.TreeEntryInfo) (*NodeObj, error) {
 	if len(entries) == 0 {
-		return nil
+		return nil, fmt.Errorf("traceroute: tree entries are empty")
 	}
 
-	// индексируем все записи по ключу
 	index := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(entries))
 	for _, e := range entries {
 		k := toKeyArray(e.Key)
@@ -27,7 +27,6 @@ func buildTree(entries []yggcore.TreeEntryInfo) *NodeObj {
 		}
 	}
 
-	// привязываем узлы к родителям; узел с Parent == Key — корень
 	var root *NodeObj
 	for k, node := range index {
 		pk := toKeyArray(node.Parent)
@@ -37,34 +36,35 @@ func buildTree(entries []yggcore.TreeEntryInfo) *NodeObj {
 		}
 		if parent, ok := index[pk]; ok {
 			parent.Children = append(parent.Children, node)
-		} else {
-			// сирота — родитель не в наборе; кандидат в корень
-			if root == nil {
-				root = node
-			}
 		}
 	}
-	if root != nil {
-		setDepth(root, 0)
+	if root == nil {
+		return nil, fmt.Errorf("traceroute: no self-rooted node in tree")
 	}
-	return root
+	setDepth(root, 0, 1024)
+	return root, nil
 }
 
 // //
 
-// setDepth — рекурсивно проставляет глубину начиная с d
-func setDepth(n *NodeObj, d int) {
+// setDepth recursively assigns depth starting from d.
+// maxDepth guards against cycles or pathologically deep trees.
+func setDepth(n *NodeObj, d, maxDepth int) {
 	n.Depth = d
+	if d >= maxDepth {
+		n.Children = nil
+		return
+	}
 	for _, ch := range n.Children {
-		setDepth(ch, d+1)
+		setDepth(ch, d+1, maxDepth)
 	}
 }
 
 // // // // // // // // // //
 
-// resolveHops — преобразует PathEntryInfo в срез HopObj.
-// Порты резолвятся в ключи через GetPeers(); если порт не найден — Key остаётся nil.
-func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo, tree []yggcore.TreeEntryInfo) []HopObj {
+// resolveHops converts PathEntryInfo into a HopObj slice.
+// Ports are resolved to keys via GetPeers(); unresolved ports leave Key nil.
+func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj {
 	portToKey := make(map[uint64]ed25519.PublicKey, len(peers))
 	for _, p := range peers {
 		if p.Up && p.Port > 0 {
@@ -85,7 +85,7 @@ func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo, tree []yg
 
 // // // // // // // // // //
 
-// toKeyArray — конвертирует ed25519.PublicKey в массив фиксированной длины для map-ключей.
+// toKeyArray converts ed25519.PublicKey to a fixed-size array for use as map keys.
 func toKeyArray(key ed25519.PublicKey) [ed25519.PublicKeySize]byte {
 	var arr [ed25519.PublicKeySize]byte
 	copy(arr[:], key)

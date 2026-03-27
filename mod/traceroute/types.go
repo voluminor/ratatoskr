@@ -6,21 +6,20 @@ import (
 
 // // // // // // // // // //
 
-// NodeObj — узел в дереве топологии сети.
-// Используется в Tree() (BFS по пирам), Path() и Trace() (spanning tree).
-// Unreachable выставляется в true только в Tree() если нода не ответила на запрос пиров.
+// NodeObj is a node in the network topology tree.
+// Used by Tree() (BFS over peers), Path() and Trace() (spanning tree).
+// Unreachable is set to true only in Tree() if the node did not respond to a peer query.
 type NodeObj struct {
-	Key         ed25519.PublicKey // публичный ключ узла
-	Parent      ed25519.PublicKey // ключ родителя (только в spanning tree режиме)
-	Sequence    uint64            // sequence number (только в spanning tree режиме)
-	Port        uint64            // порт для достижения узла от родителя (устарел, оставлен для совместимости)
-	Depth       int               // глубина от корня (root = 0)
-	Unreachable bool              // нода не ответила на запрос пиров в Tree()
+	Key         ed25519.PublicKey // node public key
+	Parent      ed25519.PublicKey // parent key (spanning tree mode only)
+	Sequence    uint64            // sequence number (spanning tree mode only)
+	Depth       int               // depth from root (root = 0)
+	Unreachable bool              // node did not respond to peer query in Tree()
 	Children    []*NodeObj
 }
 
-// Find — рекурсивный поиск узла по ключу в поддереве.
-// Возвращает указатель на найденный узел или nil.
+// Find recursively searches for a node by key in the subtree.
+// Returns a pointer to the found node or nil.
 func (n *NodeObj) Find(key ed25519.PublicKey) *NodeObj {
 	if n == nil {
 		return nil
@@ -36,8 +35,8 @@ func (n *NodeObj) Find(key ed25519.PublicKey) *NodeObj {
 	return nil
 }
 
-// Flatten — обход дерева в глубину, возвращает плоский список всех узлов.
-// Порядок: сначала текущий узел, потом рекурсивно все потомки.
+// Flatten performs a depth-first traversal, returning a flat list of all nodes.
+// Order: current node first, then all descendants recursively.
 func (n *NodeObj) Flatten() []*NodeObj {
 	if n == nil {
 		return nil
@@ -49,9 +48,8 @@ func (n *NodeObj) Flatten() []*NodeObj {
 	return out
 }
 
-// PathTo — цепочка узлов от текущего (корня) до целевого ключа.
-// Возвращает срез [root, ..., target] или nil если ключ не найден.
-// Используется для получения маршрута через spanning tree.
+// PathTo returns the node chain from the current node (root) to the target key.
+// Returns [root, ..., target] or nil if the key is not found.
 func (n *NodeObj) PathTo(key ed25519.PublicKey) []*NodeObj {
 	if n == nil {
 		return nil
@@ -69,16 +67,12 @@ func (n *NodeObj) PathTo(key ed25519.PublicKey) []*NodeObj {
 
 // //
 
-// HopObj — один хоп в маршруте на уровне портов.
-// Получается из PathEntryInfo.Path ([]uint64) с резолвом портов в ключи.
-// Key может быть nil если порт не удалось сопоставить с известным пиром.
-// HopObj — один хоп в маршруте на уровне портов.
-// Получается из PathEntryInfo.Path ([]uint64) с резолвом портов в ключи.
-// Key может быть nil если порт не удалось сопоставить с известным пиром.
+// HopObj is a single hop in the port-level route.
+// Key may be nil if the port could not be resolved to a known peer.
 type HopObj struct {
-	Key   ed25519.PublicKey // публичный ключ узла (nil если не удалось резолвить)
-	Port  uint64            // номер порта в spanning tree
-	Depth int               // порядковый номер хопа (0 = первый)
+	Key   ed25519.PublicKey // node public key (nil if unresolvable)
+	Port  uint64            // port number in spanning tree
+	Depth int               // hop ordinal (0 = first)
 }
 
 // //

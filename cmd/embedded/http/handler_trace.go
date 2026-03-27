@@ -64,6 +64,17 @@ func nodeToJSON(n *traceroute.NodeObj) *traceNodeJSON {
 	return j
 }
 
+// nodeToJSONFlat converts a NodeObj to JSON without children or unreachable flag.
+// Used for path serialization where only the linear chain matters.
+func nodeToJSONFlat(n *traceroute.NodeObj) *traceNodeJSON {
+	return &traceNodeJSON{
+		Key:      hex.EncodeToString(n.Key),
+		Parent:   hex.EncodeToString(n.Parent),
+		Depth:    n.Depth,
+		Sequence: n.Sequence,
+	}
+}
+
 // //
 
 // newTraceHandler — трассировка до ключа.
@@ -103,12 +114,7 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 		if result.TreePath != nil {
 			resp.Path = make([]*traceNodeJSON, len(result.TreePath))
 			for i, n := range result.TreePath {
-				resp.Path[i] = &traceNodeJSON{
-					Key:      hex.EncodeToString(n.Key),
-					Parent:   hex.EncodeToString(n.Parent),
-					Depth:    n.Depth,
-					Sequence: n.Sequence,
-				}
+				resp.Path[i] = nodeToJSONFlat(n)
 			}
 			last := result.TreePath[len(result.TreePath)-1]
 			if len(last.Children) > 0 {
