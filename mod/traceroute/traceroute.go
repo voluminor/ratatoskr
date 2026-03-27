@@ -21,6 +21,7 @@ type Obj struct {
 	core        *yggcore.Core
 	logger      yggcore.Logger
 	remotePeers yggcore.AddHandlerFunc
+	cache       *peerCacheObj
 }
 
 // //
@@ -59,6 +60,7 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 		core:        core,
 		logger:      logger,
 		remotePeers: capture.handlers["debug_remoteGetPeers"],
+		cache:       newPeerCache(),
 	}, nil
 }
 
@@ -194,6 +196,14 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 		return nil, err
 	}
 
+	k := toKeyArray(key)
+	if cached, ok := o.cache.get(k); ok {
+		if cached == nil {
+			return nil, fmt.Errorf("traceroute: node unreachable (cached)")
+		}
+		return cached, nil
+	}
+
 	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key)})
 
 	type callResult struct {
@@ -216,7 +226,12 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case r := <-ch:
-		return r.peers, r.err
+		if r.err != nil {
+			o.cache.set(k, nil)
+			return nil, r.err
+		}
+		o.cache.set(k, r.peers)
+		return r.peers, nil
 	}
 }
 
