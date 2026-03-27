@@ -1,6 +1,0 @@
-/target/
-/tmp/
-*.bin
-*.exe
-.env
-go.sum
