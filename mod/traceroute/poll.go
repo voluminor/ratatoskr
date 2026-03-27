@@ -9,11 +9,18 @@ import (
 
 // // // // // // // // // //
 
-const (
-	pollInterval     = 200 * time.Millisecond
-	hopsGracePeriod  = 10 // ticks to wait for hops after tree is found
-	lookupRetryEvery = time.Second
+var (
+	// PollInterval controls how often Trace polls core for results.
+	PollInterval = 200 * time.Millisecond
+
+	// LookupRetryEvery controls how often SendLookup is retried during polling.
+	LookupRetryEvery = time.Second
+
+	// HopsWaitTimeout is how long Trace waits for hops when tree path is already found.
+	HopsWaitTimeout = 2 * time.Second
 )
+
+const hopsGracePeriod = 10
 
 // // // // // // // // // //
 
@@ -34,7 +41,7 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 
 	if result != nil {
 		if result.Hops == nil {
-			enriched := o.pollHops(ctx, key, 2*time.Second)
+			enriched := o.pollHops(ctx, key, HopsWaitTimeout)
 			if enriched != nil {
 				result.Hops = enriched
 			}
@@ -51,7 +58,7 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 // pollHops waits for hops to appear within maxWait. One retry lookup after ~1s.
 func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.Duration) []HopObj {
 	startTime := time.Now()
-	ticker := time.NewTicker(150 * time.Millisecond)
+	ticker := time.NewTicker(PollInterval)
 	defer ticker.Stop()
 
 	retried := false
@@ -80,7 +87,7 @@ func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.
 // pollFull polls for both tree path and hops until ctx expires.
 // Single flat loop: once tree is found, gives hopsGracePeriod extra ticks for hops.
 func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
-	ticker := time.NewTicker(pollInterval)
+	ticker := time.NewTicker(PollInterval)
 	defer ticker.Stop()
 
 	lastLookup := time.Now()
@@ -118,7 +125,7 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 				graceTicks = -1
 			}
 
-			if time.Since(lastLookup) >= lookupRetryEvery {
+			if time.Since(lastLookup) >= LookupRetryEvery {
 				o.Lookup(key)
 				lastLookup = time.Now()
 			}
