@@ -87,11 +87,39 @@
         </div>
 
         <div class="card">
+            <h2>Sessions</h2>
+            <div id="sessions-list"></div>
+        </div>
+
+        <div class="card">
             <h2>Peers</h2>
             <div id="peers-list"></div>
         </div>
+
+        <div class="card" style="text-align:center">
+            <button id="tree-btn" class="tree-open-btn" onclick="openTreeModal()">View Spanning Tree</button>
+        </div>
     </div>
 </div>
+
+<div id="tree-modal" class="modal-overlay hidden" onclick="closeTreeModal(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h2>Spanning Tree</h2>
+            <div class="modal-controls">
+                <label class="modal-label">Depth: <span id="tree-depth-val">4</span></label>
+                <input id="tree-depth" type="range" min="1" max="10" value="4"
+                       oninput="document.getElementById('tree-depth-val').textContent=this.value">
+                <button class="modal-refresh-btn" onclick="refreshTree()">Refresh</button>
+            </div>
+            <button class="modal-close" onclick="closeTreeModal()">&times;</button>
+        </div>
+        <div id="tree-modal-body" class="tree-modal-body">
+            Loading...
+        </div>
+    </div>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>

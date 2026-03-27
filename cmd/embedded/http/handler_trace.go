@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -135,6 +136,31 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 		data, _ := json.Marshal(resp)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "no-store")
+		_, _ = w.Write(data)
+	})
+}
+
+// //
+
+// newTreeHandler — отдаёт spanning tree целиком как JSON.
+// GET-параметр "depth" ограничивает глубину (0 = без ограничения, по умолчанию 0).
+func newTreeHandler(tr *traceroute.Obj) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		depth := 0
+		if d := r.URL.Query().Get("depth"); d != "" {
+			fmt.Sscanf(d, "%d", &depth)
+		}
+		root := tr.Tree(depth)
+		if root == nil {
+			data, _ := json.Marshal(map[string]string{"error": "tree is empty"})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write(data)
+			return
+		}
+		data, _ := json.Marshal(nodeToJSON(root))
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "max-age=10")
 		_, _ = w.Write(data)
 	})
 }
