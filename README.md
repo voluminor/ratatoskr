@@ -1,8 +1,130 @@
 # ratatoskr
 
-Go-библиотека для встраивания узла Yggdrasil в приложения. Предоставляет стандартные Go-сетевые примитивы
-(`DialContext`, `Listen`, `ListenPacket`) поверх userspace TCP/IP стека (gVisor netstack), без необходимости
-создавать TUN-интерфейс или получать root-права.
+Go-библиотека для встраивания узла Yggdrasil в приложение. Сетевой стек работает в userspace
+на базе gVisor netstack — не требуется TUN-интерфейс, root-доступ или внешние зависимости.
+
+- **Userspace-стек.** TCP/UDP поверх gVisor netstack, без привилегий ОС.
+- **Стандартные Go-интерфейсы.** `DialContext`, `Listen`, `ListenPacket` — совместимы с `net.Conn`,
+  `net.Listener`, `http.Transport` и т. д.
+- **`core.Interface` как контракт.** Пакеты `socks`, `peermgr`, корневой `ratatoskr` зависят от
+  интерфейса, а не от реализации `core.Obj`. Можно подставить собственную реализацию для тестов
+  или нестандартных транспортов.
+
+### ratatoskr vs yggstack
+
+[yggstack](https://github.com/yggdrasil-network/yggstack) — готовый бинарник для конечного
+пользователя (SOCKS-прокси, TCP/UDP-форвардинг через CLI-флаги). `ratatoskr` — библиотека для
+разработчика: узел создаётся вызовом `ratatoskr.New()`, всё управление — через Go API.
+
+### Из коробки
+
+- `core` — запуск узла, `DialContext`/`Listen`/`ListenPacket`, управление пирами, адрес, подсеть,
+  публичный ключ
+- Автоматический shutdown по `context.Context`
+- Потокобезопасность, идемпотентный `Close()`
+
+### Опционально
+
+- **SOCKS5-прокси** — `EnableSOCKS()` / `DisableSOCKS()`
+- **mDNS (multicast)** — `EnableMulticast()` / `DisableMulticast()`, обнаружение пиров в локальной сети
+- **Admin-сокет** — `EnableAdmin()` / `DisableAdmin()`, unix/tcp
+- **Peer manager** (`peermgr`) — ротация и оптимизация пиров; включается через `ConfigObj.Peers`
+- **Resolver** (`mod/resolver`) — резолвер `.pk.ygg`-адресов
+- **Forward** (`mod/forward`) — TCP/UDP-форвардинг
+
+### Примеры
+
+Готовые примеры — в [`cmd/embedded/`](cmd/embedded/):
+
+| Пример                                | Описание                      |
+|---------------------------------------|-------------------------------|
+| [`http`](cmd/embedded/http)           | HTTP-сервер в сети Yggdrasil  |
+| [`tiny-http`](cmd/embedded/tiny-http) | Минимальный HTTP-сервер       |
+| [`tiny-chat`](cmd/embedded/tiny-chat) | Чат через Yggdrasil           |
+| [`mobile`](cmd/embedded/mobile)       | Пример для мобильных платформ |
+
+Также в [`cmd/yggstack/`](cmd/yggstack/) — реализация yggstack на базе ratatoskr.
+
+## Содержание
+
+- [Установка](#установка)
+- [Быстрый старт](#быстрый-старт)
+- [Архитектура](#архитектура)
+- [Структура модуля](#структура-модуля)
+- [Пакеты](#пакеты)
+- [Конфигурация](#конфигурация)
+- [Примеры использования](#примеры-использования)
+- [Snapshot](#snapshot)
+- [Потокобезопасность](#потокобезопасность)
+- [Обработка ошибок](#обработка-ошибок)
+- [Жизненный цикл](#жизненный-цикл)
+
+## Установка
+
+```bash
+go get github.com/voluminor/ratatoskr
+```
+
+Минимальная версия Go: **1.24**.
+
+## Быстрый старт
+
+Создать узел, подключиться к сети и сделать HTTP-запрос:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net/http"
+
+	"github.com/voluminor/ratatoskr"
+	"github.com/voluminor/ratatoskr/mod/peermgr"
+)
+
+func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	node, err := ratatoskr.New(ratatoskr.ConfigObj{
+		// Ctx: при отмене контекста узел сам вызовет Close()
+		Ctx: ctx,
+		// Peers: менеджер пиров автоматически выберет лучшее подключение
+		Peers: &peermgr.ConfigObj{
+			Peers: []string{
+				"tls://peer1.example.com:17117",
+				"tls://peer2.example.com:17117",
+			},
+			MaxPerProto: 1, // один лучший пир на протокол
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	defer node.Close()
+
+	// IPv6-адрес узла в сети Yggdrasil (200::/7)
+	fmt.Println("Адрес в сети:", node.Address())
+
+	// Использовать узел как транспорт для стандартного http.Client
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: node.DialContext,
+		},
+	}
+
+	resp, err := client.Get("http://[200:abcd::1]:8080/api")
+	if err != nil {
+		panic(err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	fmt.Println(string(body))
+}
+```
 
 ## Архитектура
 
@@ -47,7 +169,7 @@ NIC -->|IPv6 - пакеты|YggCore
 Netstack --> gVisor
 ```
 
-## Путь пакета
+### Путь пакета
 
 Как данные проходят через стек — от приложения до Yggdrasil-сети и обратно:
 
@@ -68,7 +190,7 @@ sequenceDiagram
     NS ->> App: net.Conn.Read(data)
 ```
 
-## Внутренняя архитектура NIC
+### Внутренняя архитектура NIC
 
 NIC (`nicObj`) — мост между gVisor и Yggdrasil на уровне IPv6-пакетов.
 
@@ -267,27 +389,6 @@ stateDiagram-v2
     Created --> Created: Disable() → no-op
 ```
 
-## Snapshot
-
-`Snapshot()` — собирает полное состояние узла за один вызов. Возвращает `SnapshotObj` с JSON-тегами.
-
-| Поле          | Тип                 | Описание                                          |
-|---------------|---------------------|---------------------------------------------------|
-| `Address`     | `string`            | IPv6-адрес узла                                   |
-| `Subnet`      | `string`            | Подсеть `/64`                                     |
-| `PublicKey`   | `string`            | Публичный ключ ed25519 (hex)                      |
-| `MTU`         | `uint64`            | MTU стека                                         |
-| `RSTDropped`  | `int64`             | Счётчик отброшенных RST-пакетов                   |
-| `Peers`       | `[]PeerSnapshotObj` | Состояние каждого пира (URI, Up, Latency, трафик) |
-| `ActivePeers` | `[]string`          | Пиры, выбранные менеджером (`omitempty`)          |
-| `SOCKS`       | `SOCKSSnapshotObj`  | Состояние SOCKS5-прокси (Enabled, Addr, IsUnix)   |
-
-```go
-snap := node.Snapshot()
-data, _ := json.MarshalIndent(snap, "", "  ")
-fmt.Println(string(data))
-```
-
 ## Конфигурация
 
 ### ConfigObj (ratatoskr)
@@ -346,7 +447,7 @@ fmt.Println(string(data))
 | `Verbose`        | bool   | `false`      | Подробное логирование каждого SOCKS-соединения                                                                              |
 | `MaxConnections` | int    | `0`          | Максимум одновременных соединений. `0` — без ограничений. При достижении лимита новые соединения ожидают освобождения слота |
 
-## Валидация адресов
+### Валидация адресов
 
 Сетевые методы (`DialContext`, `Listen`, `ListenPacket`) принимают адреса в формате `"[ipv6]:port"` или `":port"`.
 
@@ -361,20 +462,336 @@ fmt.Println(string(data))
 
 Поддерживаемые сети: `tcp`, `tcp6` (для Dial/Listen), `udp`, `udp6` (для Dial/ListenPacket).
 
-## Rate limiting (SOCKS)
+## Примеры использования
 
-При установленном `MaxConnections > 0` прокси ограничивает число одновременных соединений через семафор:
+### HTTP-клиент через Yggdrasil
 
-```mermaid
-flowchart TD
-   ACCEPT[Accept соединение] --> SEM[Захват слота в семафоре]
-   SEM --> SERVE[Обслужить через SOCKS5]
-   SERVE --> CLOSE[Закрыть соединение] --> FREE[Освободить слот] --> ACCEPT
+Простейший способ — передать `node.DialContext` как транспорт. Все TCP-соединения пойдут через Yggdrasil.
+
+```go
+client := &http.Client{
+Transport: &http.Transport{
+// node.DialContext маршрутизирует соединения через оверлейную сеть
+DialContext: node.DialContext,
+},
+}
+
+// Обращение к сервису по IPv6-адресу в сети Yggdrasil
+resp, err := client.Get("http://[200:abcd::1]:8080/api/v1/status")
+if err != nil {
+log.Fatal(err)
+}
+defer resp.Body.Close()
 ```
 
-- `Accept` вызывается **до** захвата семафора — при shutdown `listener.Close()` корректно разблокирует ожидание
-- Семафор блокирует обработку при достижении лимита; соединение уже принято, но ждёт слота
-- Слот семафора освобождается ровно один раз при закрытии соединения (`sync.Once`)
+### TCP-сервер в сети Yggdrasil
+
+Узел становится виден в сети Yggdrasil по своему IPv6-адресу. `Listen` принимает соединения только из
+оверлейной сети — с внешним интернетом сервер не контактирует.
+
+```go
+// ":8080" — слушать на всех адресах узла (эквивалент [200:...]:8080)
+ln, err := node.Listen("tcp", ":8080")
+if err != nil {
+log.Fatal(err)
+}
+defer ln.Close()
+
+fmt.Printf("Сервер доступен по адресу: http://[%s]:8080/\n", node.Address())
+
+// Стандартный http.Serve работает с любым net.Listener
+http.Serve(ln, http.HandlerFunc(func (w http.ResponseWriter, r *http.Request) {
+fmt.Fprintf(w, "Hello from Yggdrasil node %s", node.Address())
+}))
+```
+
+### UDP в сети Yggdrasil
+
+```go
+pc, err := node.ListenPacket("udp", ":9000")
+if err != nil {
+log.Fatal(err)
+}
+defer pc.Close()
+
+buf := make([]byte, 1500)
+for {
+n, addr, err := pc.ReadFrom(buf)
+if err != nil {
+break
+}
+log.Printf("UDP от %s: %s", addr, buf[:n])
+// Ответить отправителю
+pc.WriteTo(buf[:n], addr)
+}
+```
+
+### SOCKS5-прокси с DNS через Yggdrasil
+
+SOCKS5-прокси позволяет использовать Yggdrasil из любого приложения, поддерживающего SOCKS5 (curl, браузер, git).
+`socks5h://` — режим с резолвингом имён на стороне прокси.
+
+```go
+err = node.EnableSOCKS(ratatoskr.SOCKSConfigObj{
+// Адрес, на котором будет слушать SOCKS5-прокси
+Addr: "127.0.0.1:1080",
+// DNS-сервер внутри сети Yggdrasil — имена резолвятся через оверлей
+Nameserver: "[200:abcd::1]:53",
+// Логировать каждое соединение (полезно для отладки)
+Verbose: true,
+// Максимум 128 одновременных соединений; 0 — без ограничений
+MaxConnections: 128,
+})
+if err != nil {
+log.Fatal(err)
+}
+defer node.DisableSOCKS()
+
+// Использование из терминала:
+// curl --proxy socks5h://127.0.0.1:1080 http://example.pk.ygg/
+// curl --proxy socks5h://127.0.0.1:1080 http://[200:abcd::1]:8080/
+```
+
+#### SOCKS5-прокси через Unix-сокет
+
+```go
+err = node.EnableSOCKS(ratatoskr.SOCKSConfigObj{
+// Путь, начинающийся с "/" — Unix-сокет (быстрее TCP для локального использования)
+Addr:       "/tmp/ygg-socks.sock",
+Nameserver: "[200:abcd::1]:53",
+})
+defer node.DisableSOCKS()
+
+// curl --proxy socks5h://unix:/tmp/ygg-socks.sock http://example.pk.ygg/
+```
+
+### Менеджер пиров
+
+#### Активный режим — выбор лучших
+
+Менеджер пробирует всех кандидатов и оставляет N лучших по протоколу. При `RefreshInterval > 0` пробинг
+повторяется периодически.
+
+```go
+node, err := ratatoskr.New(ratatoskr.ConfigObj{
+Ctx: ctx,
+Peers: &peermgr.ConfigObj{
+Peers: []string{
+"tls://peer1.example.com:17117",
+"tls://peer2.example.com:17117",
+"tls://peer3.example.com:17117",
+"quic://peer4.example.com:17117",
+},
+// Ждать подключения не более 10 секунд на батч
+ProbeTimeout: 10 * time.Second,
+// Перепробировать каждые 5 минут
+RefreshInterval: 5 * time.Minute,
+// Один лучший TLS-пир и один лучший QUIC-пир
+MaxPerProto: 1,
+// Скользящее окно: два кандидата за раз
+BatchSize: 2,
+// Вызвать при отсутствии достижимых пиров
+OnNoReachablePeers: func () {
+log.Println("Нет доступных пиров!")
+},
+},
+})
+
+// Получить текущие активные пиры (выбранные менеджером)
+active := node.PeerManagerActive()
+log.Println("Активные пиры:", active)
+
+// Инициировать внеплановую перепроверку (блокирует до завершения)
+if err := node.PeerManagerOptimize(); err != nil {
+log.Println("Оптимизация:", err)
+}
+```
+
+#### Пассивный режим — добавить всех без выбора
+
+Пассивный режим (`MaxPerProto: -1`) не выполняет пробинг и добавляет всех кандидатов сразу.
+Идентично поведению стандартного Yggdrasil с `Config.Peers`.
+
+```go
+Peers: &peermgr.ConfigObj{
+Peers: []string{
+"tls://peer1.example.com:17117",
+"tls://peer2.example.com:17117",
+},
+// -1 = пассивный режим, без пробинга
+MaxPerProto: -1,
+// Переподключать весь список каждые 10 минут
+RefreshInterval: 10 * time.Minute,
+},
+```
+
+#### Предварительная валидация списка пиров
+
+```go
+import "github.com/voluminor/ratatoskr/mod/peermgr"
+
+peers := []string{
+"tls://peer1.example.com:17117",
+"tls://peer1.example.com:17117", // дубликат
+"ftp://invalid:1234",            // неподдерживаемая схема
+"", // пустая строка, будет пропущена
+}
+
+valid, errs := peermgr.ValidatePeers(peers)
+for _, e := range errs {
+log.Println("Ошибка пира:", e)
+}
+log.Printf("Валидных пиров: %d", len(valid))
+```
+
+### Управление пирами в runtime
+
+```go
+// Добавить пир вручную (без менеджера)
+if err := node.AddPeer("tls://1.2.3.4:17117"); err != nil {
+log.Println("AddPeer:", err)
+}
+if err := node.AddPeer("quic://[200:abc::1]:17117"); err != nil {
+log.Println("AddPeer:", err)
+}
+
+// Удалить пир
+if err := node.RemovePeer("tls://1.2.3.4:17117"); err != nil {
+log.Println("RemovePeer:", err)
+}
+
+// Переподключить все отключённые пиры
+node.RetryPeers()
+```
+
+### Мониторинг через Snapshot
+
+`Snapshot()` собирает полное состояние узла за один атомарный вызов.
+
+```go
+snap := node.Snapshot()
+
+// Базовые параметры узла
+log.Printf("Адрес:      %s", snap.Address)
+log.Printf("Подсеть:    %s", snap.Subnet)
+log.Printf("Публ. ключ: %s", snap.PublicKey)
+log.Printf("MTU:        %d", snap.MTU)
+log.Printf("RST дропов: %d", snap.RSTDropped)
+
+// Состояние пиров
+for _, p := range snap.Peers {
+status := "DOWN"
+if p.Up {
+status = fmt.Sprintf("UP, latency=%.1fms", float64(p.Latency)/float64(time.Millisecond))
+}
+log.Printf("  Пир %s: %s, RX=%d TX=%d", p.URI, status, p.RXBytes, p.TXBytes)
+}
+
+// Пиры, выбранные менеджером
+if len(snap.ActivePeers) > 0 {
+log.Println("Активные (менеджер):", snap.ActivePeers)
+}
+
+// Состояние SOCKS
+if snap.SOCKS.Enabled {
+log.Printf("SOCKS5: %s (unix=%v)", snap.SOCKS.Addr, snap.SOCKS.IsUnix)
+}
+
+// Сериализовать в JSON для экспорта (например, в /metrics или /status)
+data, _ := json.MarshalIndent(snap, "", "  ")
+fmt.Println(string(data))
+```
+
+### Логирование
+
+`ratatoskr` принимает любой объект, реализующий `yggcore.Logger`. Пример адаптера для `log/slog`:
+
+```go
+import (
+"log/slog"
+"fmt"
+)
+
+type slogAdapter struct{ l *slog.Logger }
+
+func (a slogAdapter) Infof(f string, v ...interface{})  { a.l.Info(fmt.Sprintf(f, v...)) }
+func (a slogAdapter) Infoln(v ...interface{})           { a.l.Info(fmt.Sprint(v...)) }
+func (a slogAdapter) Warnf(f string, v ...interface{})  { a.l.Warn(fmt.Sprintf(f, v...)) }
+func (a slogAdapter) Warnln(v ...interface{})           { a.l.Warn(fmt.Sprint(v...)) }
+func (a slogAdapter) Errorf(f string, v ...interface{}) { a.l.Error(fmt.Sprintf(f, v...)) }
+func (a slogAdapter) Errorln(v ...interface{})          { a.l.Error(fmt.Sprint(v...)) }
+func (a slogAdapter) Debugf(f string, v ...interface{}) { a.l.Debug(fmt.Sprintf(f, v...)) }
+func (a slogAdapter) Debugln(v ...interface{})          { a.l.Debug(fmt.Sprint(v...)) }
+func (a slogAdapter) Printf(f string, v ...interface{}) { a.l.Info(fmt.Sprintf(f, v...)) }
+func (a slogAdapter) Println(v ...interface{})          { a.l.Info(fmt.Sprint(v...)) }
+func (a slogAdapter) Traceln(v ...interface{})          {}
+
+node, err := ratatoskr.New(ratatoskr.ConfigObj{
+Logger: slogAdapter{l: slog.Default()},
+})
+```
+
+### Multicast и Admin
+
+```go
+import (
+"os"
+golog "github.com/gologme/log"
+)
+
+// mDNS-обнаружение пиров в локальной сети.
+// Используемые интерфейсы задаются в NodeConfig.MulticastInterfaces.
+mcLogger := golog.New(os.Stderr, "[multicast] ", golog.LstdFlags)
+if err := node.EnableMulticast(mcLogger); err != nil {
+log.Fatal(err)
+}
+defer node.DisableMulticast()
+
+// Admin-сокет — JSON API для управления узлом.
+// Unix-сокет (рекомендуется для локального управления):
+if err := node.EnableAdmin("unix:///tmp/ygg-admin.sock"); err != nil {
+log.Fatal(err)
+}
+// Или TCP:
+// node.EnableAdmin("tcp://127.0.0.1:9001")
+defer node.DisableAdmin()
+```
+
+### Graceful shutdown
+
+Три способа завершить работу узла:
+
+```go
+// 1. Явный вызов Close() — идемпотентный, безопасен для повторного вызова
+defer node.Close()
+
+// 2. Через контекст — Close() вызывается автоматически при отмене
+ctx, cancel := context.WithCancel(context.Background())
+node, _ = ratatoskr.New(ratatoskr.ConfigObj{Ctx: ctx})
+// ...
+cancel() // → узел завершается самостоятельно
+
+// 3. По сигналу ОС
+ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+defer stop()
+node, _ = ratatoskr.New(ratatoskr.ConfigObj{Ctx: ctx})
+<-ctx.Done() // ждать сигнала; узел уже закрывается
+```
+
+## Snapshot
+
+`Snapshot()` — собирает полное состояние узла за один вызов. Возвращает `SnapshotObj` с JSON-тегами.
+
+| Поле          | Тип                 | Описание                                          |
+|---------------|---------------------|---------------------------------------------------|
+| `Address`     | `string`            | IPv6-адрес узла                                   |
+| `Subnet`      | `string`            | Подсеть `/64`                                     |
+| `PublicKey`   | `string`            | Публичный ключ ed25519 (hex)                      |
+| `MTU`         | `uint64`            | MTU стека                                         |
+| `RSTDropped`  | `int64`             | Счётчик отброшенных RST-пакетов                   |
+| `Peers`       | `[]PeerSnapshotObj` | Состояние каждого пира (URI, Up, Latency, трафик) |
+| `ActivePeers` | `[]string`          | Пиры, выбранные менеджером (`omitempty`)          |
+| `SOCKS`       | `SOCKSSnapshotObj`  | Состояние SOCKS5-прокси (Enabled, Addr, IsUnix)   |
 
 ## Потокобезопасность
 
@@ -419,6 +836,14 @@ flowchart TD
 
 Возвращается из `DialContext`, `Listen`, `ListenPacket` если netstack уже уничтожен (после `Close()`).
 
+```go
+conn, err := node.DialContext(ctx, "tcp", "[200:abc::1]:80")
+if errors.Is(err, ratatoskr.ErrNotAvailable) {
+// Узел уже закрыт — не пытаться переподключиться
+return
+}
+```
+
 ### Unix-сокет (SOCKS)
 
 При запуске на Unix-сокете обрабатывается случай устаревшего файла:
@@ -436,6 +861,21 @@ flowchart TD
     SYMLINK -->|Да| FAIL3[refusing to remove: is a symlink]
     SYMLINK -->|Нет| REMOVE[Удалить файл] --> RETRY[Повторный Listen]
 ```
+
+### Rate limiting (SOCKS)
+
+При установленном `MaxConnections > 0` прокси ограничивает число одновременных соединений через семафор:
+
+```mermaid
+flowchart TD
+    ACCEPT[Accept соединение] --> SEM[Захват слота в семафоре]
+    SEM --> SERVE[Обслужить через SOCKS5]
+    SERVE --> CLOSE[Закрыть соединение] --> FREE[Освободить слот] --> ACCEPT
+```
+
+- `Accept` вызывается **до** захвата семафора — при shutdown `listener.Close()` корректно разблокирует ожидание
+- Семафор блокирует обработку при достижении лимита; соединение уже принято, но ждёт слота
+- Слот семафора освобождается ровно один раз при закрытии соединения (`sync.Once`)
 
 ## Жизненный цикл
 
@@ -487,157 +927,3 @@ flowchart TD
 
 Если передан `Ctx` в `ConfigObj`, горутина слушает отмену контекста и вызывает `Close()` автоматически.
 При ручном `Close()` горутина завершается через канал `done`.
-
-## Быстрый старт
-
-```go
-package main
-
-import (
-    "context"
-    "fmt"
-    "net/http"
-
-    "github.com/voluminor/ratatoskr"
-)
-
-func main() {
-    node, err := ratatoskr.New(ratatoskr.ConfigObj{
-        Ctx: context.Background(),
-    })
-    if err != nil {
-        panic(err)
-    }
-    defer node.Close()
-
-    fmt.Println("Адрес:", node.Address())
-
-    client := &http.Client{
-        Transport: &http.Transport{
-            DialContext: node.DialContext,
-        },
-    }
-
-    resp, err := client.Get("http://[200:abcd::1]:8080/")
-    if err != nil {
-        panic(err)
-    }
-    defer resp.Body.Close()
-}
-```
-
-## Менеджер пиров
-
-```go
-import (
-"github.com/voluminor/ratatoskr"
-"github.com/voluminor/ratatoskr/mod/peermgr"
-)
-
-node, err := ratatoskr.New(ratatoskr.ConfigObj{
-Ctx: ctx,
-Peers: &peermgr.ConfigObj{
-Peers: []string{
-"tls://peer1.example.com:17117",
-"tls://peer2.example.com:17117",
-"quic://peer3.example.com:17117",
-},
-ProbeTimeout:    10 * time.Second, // ожидание при пробинге (на батч)
-RefreshInterval: 5 * time.Minute, // переперобировать каждые 5 минут
-MaxPerProto:     1, // один лучший пир на протокол
-BatchSize:       2, // скользящее окно по 2 кандидата
-},
-})
-
-// Текущие активные пиры (выбранные менеджером)
-active := node.PeerManagerActive()
-
-// Внеплановая перепроверка (блокирует)
-err = node.PeerManagerOptimize()
-```
-
-**Пассивный режим** (`MaxPerProto: -1`) — добавить всех кандидатов без выбора лучшего,
-поведение идентично стандартному Yggdrasil с `Config.Peers`:
-
-```go
-Peers: &peermgr.ConfigObj{
-Peers:           peers,
-MaxPerProto:     -1,
-RefreshInterval: 10 * time.Minute, // переподключать весь список целиком
-},
-```
-
-## Запуск с SOCKS5-прокси
-
-```go
-err = node.EnableSOCKS(ratatoskr.SOCKSConfigObj{
-Addr:           "127.0.0.1:1080",
-Nameserver:     "[200:abcd::1]:53",
-Verbose:        true,
-MaxConnections: 128,
-})
-if err != nil {
-panic(err)
-}
-defer node.DisableSOCKS()
-
-// curl --proxy socks5h://127.0.0.1:1080 http://example.pk.ygg/
-```
-
-## TCP-сервер в сети Yggdrasil
-
-```go
-ln, err := node.Listen("tcp", ":8080")
-if err != nil {
-panic(err)
-}
-defer ln.Close()
-
-fmt.Printf("Слушаю на http://[%s]:8080/\n", node.Address())
-http.Serve(ln, handler)
-```
-
-## UDP в сети Yggdrasil
-
-```go
-pc, err := node.ListenPacket("udp", ":9000")
-if err != nil {
-panic(err)
-}
-defer pc.Close()
-
-buf := make([]byte, 1500)
-n, addr, err := pc.ReadFrom(buf)
-```
-
-## Управление пирами в runtime
-
-```go
-// Добавить пир вручную (без менеджера)
-err = node.AddPeer("tcp://1.2.3.4:5678")
-err = node.AddPeer("quic://[200:abc::1]:5678")
-
-// Удалить пир
-err = node.RemovePeer("tcp://1.2.3.4:5678")
-
-// Инициировать переподключение ко всем отключённым пирам
-node.RetryPeers()
-```
-
-## Multicast и Admin
-
-```go
-import golog "github.com/gologme/log"
-
-// mDNS-обнаружение пиров в локальной сети
-// Интерфейсы берутся из NodeConfig.MulticastInterfaces
-mcLogger := golog.New(os.Stderr, "", golog.LstdFlags)
-err = node.EnableMulticast(mcLogger)
-defer node.DisableMulticast()
-
-// Admin-сокет (JSON API для управления)
-err = node.EnableAdmin("unix:///tmp/ygg-admin.sock")
-// или TCP:
-err = node.EnableAdmin("tcp://127.0.0.1:9001")
-defer node.DisableAdmin()
-```
