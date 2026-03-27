@@ -1,3 +1,9 @@
+[![Go Report Card](https://goreportcard.com/badge/github.com/voluminor/ratatoskr)](https://goreportcard.com/report/github.com/voluminor/ratatoskr)
+
+![GitHub repo file or directory count](https://img.shields.io/github/directory-file-count/voluminor/ratatoskr?color=orange)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/voluminor/ratatoskr?color=green)
+![GitHub repo size](https://img.shields.io/github/repo-size/voluminor/ratatoskr)
+
 # ratatoskr
 
 > **[Русская версия](README.RU.md)**
