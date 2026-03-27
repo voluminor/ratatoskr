@@ -85,23 +85,26 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 // //
 
 // parseRemotePeersResponse parses the debug_remoteGetPeers response.
-// Format: {"<ipv6>": {"keys": ["hex1", "hex2", ...]}}
-// Uses JSON roundtrip because the raw type from yggdrasil is not guaranteed.
+// Yggdrasil returns DebugGetPeersResponse (named map[string]interface{}) where
+// each value is a json.RawMessage with {"keys": ["hex1", "hex2", ...]}.
 func parseRemotePeersResponse(raw interface{}) ([]ed25519.PublicKey, error) {
-	js, err := json.Marshal(raw)
-	if err != nil {
-		return nil, fmt.Errorf("traceroute: marshal remote peers: %w", err)
-	}
-
-	var outer map[string]struct {
-		Keys []string `json:"keys"`
-	}
-	if err := json.Unmarshal(js, &outer); err != nil {
-		return nil, fmt.Errorf("traceroute: unmarshal remote peers: %w", err)
+	outer, ok := raw.(yggcore.DebugGetPeersResponse)
+	if !ok {
+		return nil, fmt.Errorf("traceroute: unexpected response type %T", raw)
 	}
 
 	var peers []ed25519.PublicKey
-	for _, inner := range outer {
+	for _, v := range outer {
+		msg, ok := v.(json.RawMessage)
+		if !ok {
+			continue
+		}
+		var inner struct {
+			Keys []string `json:"keys"`
+		}
+		if err := json.Unmarshal(msg, &inner); err != nil {
+			continue
+		}
 		for _, hexKey := range inner.Keys {
 			kbs, err := hex.DecodeString(hexKey)
 			if err != nil || len(kbs) != ed25519.PublicKeySize {
