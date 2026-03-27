@@ -21,6 +21,7 @@ type traceNodeJSON struct {
 	Parent      string           `json:"parent,omitempty"`
 	Depth       int              `json:"depth"`
 	Sequence    uint64           `json:"sequence,omitempty"`
+	RTT         float64          `json:"rtt_ms,omitempty"`
 	Unreachable bool             `json:"unreachable,omitempty"`
 	Children    []*traceNodeJSON `json:"children,omitempty"`
 }
@@ -53,6 +54,7 @@ func nodeToJSON(n *traceroute.NodeObj) *traceNodeJSON {
 		Parent:      hex.EncodeToString(n.Parent),
 		Depth:       n.Depth,
 		Sequence:    n.Sequence,
+		RTT:         float64(n.RTT.Microseconds()) / 1000.0,
 		Unreachable: n.Unreachable,
 	}
 	if len(n.Children) > 0 {
@@ -72,6 +74,7 @@ func nodeToJSONFlat(n *traceroute.NodeObj) *traceNodeJSON {
 		Parent:   hex.EncodeToString(n.Parent),
 		Depth:    n.Depth,
 		Sequence: n.Sequence,
+		RTT:      float64(n.RTT.Microseconds()) / 1000.0,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -27,6 +28,7 @@ func (a *adminCaptureObj) AddHandler(name, desc string, args []string, fn yggcor
 
 type remoteCallResultObj struct {
 	peers []ed25519.PublicKey
+	rtt   time.Duration
 	err   error
 }
 
@@ -36,49 +38,51 @@ type remoteCallResultObj struct {
 // Called from pool workers. Returns immediately on ctx cancellation.
 // The underlying o.remotePeers call (~6s yggdrasil timeout) may outlive the return —
 // this is a bounded goroutine leak; the buffered channel prevents it from blocking.
-func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, error) {
+func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error) {
 	if o.remotePeers == nil {
-		return nil, ErrRemotePeersDisabled
+		return nil, 0, ErrRemotePeersDisabled
 	}
 	if len(key) != ed25519.PublicKeySize {
-		return nil, ErrInvalidKeyLength
+		return nil, 0, ErrInvalidKeyLength
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	k := toKeyArray(key)
-	if cached, ok := o.cache.get(k); ok {
+	if cached, rtt, ok := o.cache.get(k); ok {
 		if cached == nil {
-			return nil, ErrNodeUnreachable
+			return nil, rtt, ErrNodeUnreachable
 		}
-		return cached, nil
+		return cached, rtt, nil
 	}
 
 	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key)})
 	ch := make(chan remoteCallResultObj, 1)
 
 	go func() {
+		start := time.Now()
 		raw, err := o.remotePeers(req)
+		rtt := time.Since(start)
 		if err != nil {
-			ch <- remoteCallResultObj{err: err}
+			ch <- remoteCallResultObj{rtt: rtt, err: err}
 			return
 		}
 		peers, err := parseRemotePeersResponse(raw)
-		ch <- remoteCallResultObj{peers: peers, err: err}
+		ch <- remoteCallResultObj{peers: peers, rtt: rtt, err: err}
 	}()
 
 	select {
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, 0, ctx.Err()
 	case r := <-ch:
 		if r.err != nil {
 			o.logger.Debugf("[traceroute] remoteGetPeers failed for %x: %v", key[:8], r.err)
-			o.cache.set(k, nil)
-			return nil, r.err
+			o.cache.set(k, nil, r.rtt)
+			return nil, r.rtt, r.err
 		}
-		o.cache.set(k, r.peers)
-		return r.peers, nil
+		o.cache.set(k, r.peers, r.rtt)
+		return r.peers, r.rtt, nil
 	}
 }
 

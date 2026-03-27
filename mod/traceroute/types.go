@@ -2,6 +2,7 @@ package traceroute
 
 import (
 	"crypto/ed25519"
+	"time"
 )
 
 // // // // // // // // // //
@@ -11,9 +12,10 @@ import (
 // Unreachable is set to true only in Tree() if the node did not respond to a peer query.
 type NodeObj struct {
 	Key         ed25519.PublicKey // node public key
-	Parent      ed25519.PublicKey // parent key (spanning tree mode only)
+	Parent      ed25519.PublicKey // parent key
 	Sequence    uint64            // sequence number (spanning tree mode only)
 	Depth       int               // depth from root (root = 0)
+	RTT         time.Duration     // remote peer query round-trip time (Tree() / BFS only)
 	Unreachable bool              // node did not respond to peer query in Tree()
 	Children    []*NodeObj
 }

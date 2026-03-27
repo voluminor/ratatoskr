@@ -608,6 +608,13 @@ canvas {
     flex-shrink: 0;
 }
 
+.tn-rtt {
+    font-size: 0.68rem;
+    font-family: var(--mono);
+    color: var(--green);
+    flex-shrink: 0;
+}
+
 .tn-unreachable {
     font-size: 0.65rem;
     color: var(--red);

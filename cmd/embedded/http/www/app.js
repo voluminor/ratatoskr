@@ -354,6 +354,13 @@ function buildAccordionTree(container, root) {
             row.appendChild(cnt);
         }
 
+        if (n.rtt_ms > 0) {
+            const rtt = document.createElement('span');
+            rtt.className = 'tn-rtt';
+            rtt.textContent = n.rtt_ms < 1 ? n.rtt_ms.toFixed(2) + ' ms' : n.rtt_ms.toFixed(1) + ' ms';
+            row.appendChild(rtt);
+        }
+
         if (n.unreachable) {
             const badge = document.createElement('span');
             badge.className = 'tn-unreachable';
@@ -451,7 +458,7 @@ function renderTraceHops(hops) {
         const label = h.key ? h.key.substring(0, 12) + '…' : 'port:' + h.port;
         const title = h.key || ('port ' + h.port);
         const arrow = i < hops.length - 1 ? ' <span class="trace-arrow">→</span> ' : '';
-        return `<span class="trace-hop" title="${title}"><span class="trace-depth">${h.depth}</span>${label}</span>${arrow}`;
+        return `<span class="trace-hop" title="${title}"><span class="trace-depth">${h.index}</span>${label}</span>${arrow}`;
     }).join('');
 }
 

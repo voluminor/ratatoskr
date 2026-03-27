@@ -122,7 +122,7 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 			continue
 		}
 		visited[k] = struct{}{}
-		child := &NodeObj{Key: p.Key, Depth: 1}
+		child := &NodeObj{Key: p.Key, Parent: selfKey, Depth: 1}
 		root.Children = append(root.Children, child)
 		currentLevel = append(currentLevel, child)
 	}
@@ -190,6 +190,7 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 	var nextLevel []*NodeObj
 	for _, r := range collected {
 		parent := nodeByKey[toKeyArray(r.key)]
+		parent.RTT = r.rtt
 		if r.err != nil {
 			parent.Unreachable = true
 			continue
@@ -208,7 +209,7 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 				continue
 			}
 			visited[k] = struct{}{}
-			child := &NodeObj{Key: peerKey, Depth: nextDepth}
+			child := &NodeObj{Key: peerKey, Parent: parent.Key, Depth: nextDepth}
 			parent.Children = append(parent.Children, child)
 			nextLevel = append(nextLevel, child)
 		}

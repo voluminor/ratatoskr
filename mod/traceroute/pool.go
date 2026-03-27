@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"sync"
+	"time"
 )
 
 // // // // // // // // // //
@@ -19,6 +20,7 @@ type peerTaskObj struct {
 type peerResultObj struct {
 	key   ed25519.PublicKey
 	peers []ed25519.PublicKey
+	rtt   time.Duration
 	err   error
 }
 
@@ -29,12 +31,12 @@ type peerResultObj struct {
 type workerPoolObj struct {
 	tasks chan peerTaskObj
 	wg    sync.WaitGroup
-	call  func(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, error)
+	call  func(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error)
 }
 
 // //
 
-func newWorkerPool(size int, call func(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, error)) *workerPoolObj {
+func newWorkerPool(size int, call func(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error)) *workerPoolObj {
 	p := &workerPoolObj{
 		tasks: make(chan peerTaskObj, size),
 		call:  call,
@@ -49,8 +51,8 @@ func newWorkerPool(size int, call func(ctx context.Context, key ed25519.PublicKe
 func (p *workerPoolObj) worker() {
 	defer p.wg.Done()
 	for t := range p.tasks {
-		peers, err := p.call(t.ctx, t.key)
-		t.result <- peerResultObj{key: t.key, peers: peers, err: err}
+		peers, rtt, err := p.call(t.ctx, t.key)
+		t.result <- peerResultObj{key: t.key, peers: peers, rtt: rtt, err: err}
 	}
 }
 
