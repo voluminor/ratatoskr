@@ -29,7 +29,7 @@ type traceNodeJSON struct {
 type traceHopJSON struct {
 	Key   string `json:"key,omitempty"`
 	Port  uint64 `json:"port"`
-	Depth int    `json:"depth"`
+	Index int    `json:"index"`
 }
 
 // traceResponseJSON — ответ /traceroute.json
@@ -125,7 +125,7 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 		if result.Hops != nil {
 			resp.Hops = make([]traceHopJSON, len(result.Hops))
 			for i, h := range result.Hops {
-				hop := traceHopJSON{Port: h.Port, Depth: h.Depth}
+				hop := traceHopJSON{Port: h.Port, Index: h.Index}
 				if len(h.Key) > 0 {
 					hop.Key = hex.EncodeToString(h.Key)
 				}

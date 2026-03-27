@@ -45,12 +45,12 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 		return nil, ErrInvalidCacheTTL
 	}
 
-	capture := &adminCapture{handlers: make(map[string]yggcore.AddHandlerFunc)}
+	capture := &adminCaptureObj{handlers: make(map[string]yggcore.AddHandlerFunc)}
 	_ = core.SetAdmin(capture)
 
 	remotePeers := capture.handlers["debug_remoteGetPeers"]
 	if remotePeers == nil {
-		return nil, ErrRemotePeersNotCapture
+		return nil, ErrRemotePeersNotCaptured
 	}
 
 	return &Obj{
@@ -66,6 +66,11 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 // Close stops the cache cleanup goroutine and releases resources.
 func (o *Obj) Close() {
 	o.cache.close()
+}
+
+// FlushCache drops all cached peer query results.
+func (o *Obj) FlushCache() {
+	o.cache.flush()
 }
 
 // // // // // // // // // //
@@ -173,7 +178,12 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 
 	collected := make([]peerResultObj, 0, len(nodes))
 	for range len(nodes) {
-		collected = append(collected, <-results)
+		select {
+		case r := <-results:
+			collected = append(collected, r)
+		case <-ctx.Done():
+			return nil
+		}
 	}
 
 	limit := MaxPeersPerNode

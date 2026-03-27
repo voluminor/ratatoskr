@@ -20,11 +20,12 @@ type peerCacheEntryObj struct {
 }
 
 type peerCacheObj struct {
-	mu      sync.RWMutex
-	entries map[[ed25519.PublicKeySize]byte]peerCacheEntryObj
-	running atomic.Int32
-	idle    atomic.Int32
-	done    chan struct{}
+	mu        sync.RWMutex
+	entries   map[[ed25519.PublicKeySize]byte]peerCacheEntryObj
+	running   atomic.Int32
+	idle      atomic.Int32
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 // // // // // // // // // //
@@ -39,7 +40,7 @@ func newPeerCache() *peerCacheObj {
 // //
 
 func (c *peerCacheObj) close() {
-	close(c.done)
+	c.closeOnce.Do(func() { close(c.done) })
 }
 
 // //
@@ -54,6 +55,13 @@ func (c *peerCacheObj) get(key [ed25519.PublicKeySize]byte) ([]ed25519.PublicKey
 		return nil, false
 	}
 	return e.peers, true
+}
+
+// flush drops all cached entries.
+func (c *peerCacheObj) flush() {
+	c.mu.Lock()
+	c.entries = make(map[[ed25519.PublicKeySize]byte]peerCacheEntryObj)
+	c.mu.Unlock()
 }
 
 // set stores a peer list (or nil for unreachable) and ensures the cleanup goroutine is running.

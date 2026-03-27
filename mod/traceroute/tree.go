@@ -82,7 +82,7 @@ func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj 
 
 	hops := make([]HopObj, 0, len(path.Path))
 	for i, port := range path.Path {
-		hop := HopObj{Port: port, Depth: i}
+		hop := HopObj{Port: port, Index: i}
 		if key, ok := portToKey[port]; ok {
 			hop.Key = key
 		}

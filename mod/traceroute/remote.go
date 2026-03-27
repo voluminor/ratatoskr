@@ -12,13 +12,13 @@ import (
 
 // // // // // // // // // //
 
-// adminCapture implements AddHandler to intercept handlers from core.SetAdmin.
+// adminCaptureObj implements AddHandler to intercept handlers from core.SetAdmin.
 // No real admin socket needed — just stores functions in a map.
-type adminCapture struct {
+type adminCaptureObj struct {
 	handlers map[string]yggcore.AddHandlerFunc
 }
 
-func (a *adminCapture) AddHandler(name, desc string, args []string, fn yggcore.AddHandlerFunc) error {
+func (a *adminCaptureObj) AddHandler(name, desc string, args []string, fn yggcore.AddHandlerFunc) error {
 	a.handlers[name] = fn
 	return nil
 }

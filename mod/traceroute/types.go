@@ -88,7 +88,7 @@ func (n *NodeObj) pathTo(key ed25519.PublicKey, out *[]*NodeObj) bool {
 type HopObj struct {
 	Key   ed25519.PublicKey // node public key (nil if unresolvable)
 	Port  uint64            // port number in spanning tree
-	Depth int               // hop ordinal (0 = first)
+	Index int               // hop ordinal (0 = first)
 }
 
 // //
