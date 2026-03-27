@@ -48,12 +48,6 @@ jobs:
         os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15, windows-latest ]
 
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 1
-
       - name: 📥 Download source
         uses: actions/download-artifact@v5
         with:
@@ -107,12 +101,6 @@ jobs:
           - { goos: netbsd, goarch: arm64 }
 
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.head_ref }}
-          fetch-depth: 1
-
       - name: 📥 Download source
         uses: actions/download-artifact@v5
         with:
