@@ -33,4 +33,4 @@ runs:
         [[ -n "$GOARM" ]]  && tag="${tag}v${GOARM}"
         [[ -n "$GOMIPS" ]] && tag="${tag}/${GOMIPS}"
         echo "→ ${tag}"
-        go build ./...
+        cd cmd/embedded/http && go build .
