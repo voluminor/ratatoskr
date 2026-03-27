@@ -407,19 +407,6 @@ canvas {
     font-size: 0.82rem;
 }
 
-.trace-tree {
-    background: var(--bg);
-    border-radius: 6px;
-    padding: 12px;
-    font-family: var(--mono);
-    font-size: 0.75rem;
-    line-height: 1.5;
-    overflow-x: auto;
-    max-height: 400px;
-    overflow-y: auto;
-    color: var(--text);
-}
-
 /* sessions */
 .key-cell {
     max-width: 180px;

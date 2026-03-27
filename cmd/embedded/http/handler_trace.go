@@ -14,8 +14,8 @@ import (
 
 // // // // // // // // // //
 
-// traceNodeJSON — рекурсивное JSON-представление NodeObj.
-// Unreachable = true если нода не ответила на запрос пиров в Tree().
+// traceNodeJSON is a recursive JSON representation of NodeObj.
+// Unreachable is true when the node did not respond to a peer query in Tree().
 type traceNodeJSON struct {
 	Key         string           `json:"key"`
 	Parent      string           `json:"parent,omitempty"`
@@ -26,19 +26,18 @@ type traceNodeJSON struct {
 	Children    []*traceNodeJSON `json:"children,omitempty"`
 }
 
-// traceHopJSON — один хоп из pathfinder
+// traceHopJSON is a single pathfinder hop.
 type traceHopJSON struct {
 	Key   string `json:"key,omitempty"`
 	Port  uint64 `json:"port"`
 	Index int    `json:"index"`
 }
 
-// traceResponseJSON — ответ /traceroute.json
+// traceResponseJSON is the /traceroute.json response.
 type traceResponseJSON struct {
 	Target   string           `json:"target"`
 	Path     []*traceNodeJSON `json:"path,omitempty"`
 	Hops     []traceHopJSON   `json:"hops,omitempty"`
-	Subtree  *traceNodeJSON   `json:"subtree,omitempty"`
 	Duration float64          `json:"duration_ms"`
 	Error    string           `json:"error,omitempty"`
 }
@@ -80,8 +79,8 @@ func nodeToJSONFlat(n *traceroute.NodeObj) *traceNodeJSON {
 
 // //
 
-// newTraceHandler — трассировка до ключа.
-// GET ?key=<hex>. Возвращает path (spanning tree) с RTT, hops (pathfinder), subtree.
+// newTraceHandler traces a route to the given key.
+// GET ?key=<hex>. Returns path (spanning tree) with RTT, hops (pathfinder), subtree.
 func newTraceHandler(tr *traceroute.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyHex := r.URL.Query().Get("key")
@@ -119,10 +118,6 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 				for i, n := range result.TreePath {
 					resp.Path[i] = nodeToJSONFlat(n)
 				}
-				last := result.TreePath[len(result.TreePath)-1]
-				if len(last.Children) > 0 {
-					resp.Subtree = nodeToJSON(last)
-				}
 			}
 
 			if result.Hops != nil {
@@ -146,9 +141,9 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 
 // //
 
-// newTreeHandler — BFS дерево пиров сети.
-// GET ?depth=N&concurrency=N. depth обязателен и > 0.
-// Таймаут 30 сек — BFS может занять время на больших сетях.
+// newTreeHandler returns the BFS peer topology tree.
+// GET ?depth=N&concurrency=N. depth is required and must be > 0.
+// 30s timeout — BFS can take a while on large networks.
 func newTreeHandler(tr *traceroute.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var depth int

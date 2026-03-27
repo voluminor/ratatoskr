@@ -131,7 +131,7 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 			peers[i] = entry
 		}
 
-		// сессии из traceroute модуля (кешируются вместе с остальным)
+		// Sessions from the traceroute module.
 		rawSessions := h.tr.Sessions()
 		sessions := make([]sessionJSON, len(rawSessions))
 		for i, s := range rawSessions {
@@ -158,6 +158,6 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 		data, _ := json.Marshal(resp)
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "max-age=10")
-		w.Write(data)
+		_, _ = w.Write(data)
 	})
 }

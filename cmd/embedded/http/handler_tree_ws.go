@@ -11,12 +11,12 @@ import (
 
 // // // // // // // // // //
 
-// treeWSReqJSON — client request: start a new tree scan on the existing connection.
+// treeWSReqJSON is a client request to start a new tree scan.
 type treeWSReqJSON struct {
 	Depth int `json:"depth"`
 }
 
-// treeWSMsgJSON — server message: ack, progress, result, or error.
+// treeWSMsgJSON is a server message: ack, progress, result, or error.
 type treeWSMsgJSON struct {
 	Type     string         `json:"type"`
 	Depth    int            `json:"depth,omitempty"`
@@ -29,7 +29,7 @@ type treeWSMsgJSON struct {
 
 // // // // // // // // // //
 
-// newTreeWSHandler — persistent WebSocket handler for tree scans.
+// newTreeWSHandler creates a persistent WebSocket handler for tree scans.
 // One connection per modal session; closed when the modal closes.
 // Each Refresh sends a new scan request over the same connection.
 func newTreeWSHandler(tr *traceroute.Obj) http.Handler {
