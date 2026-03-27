@@ -33,7 +33,7 @@ jobs:
       - uses: ./.github/actions/tidy-all-and-generate
 
       - name: 📦 Upload source
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: src-gen
           path: .
@@ -45,7 +45,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest ]
+        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15, windows-latest ]
 
     steps:
       - name: 🛎️ Checkout
@@ -55,7 +55,7 @@ jobs:
           fetch-depth: 1
 
       - name: 📥 Download source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: src-gen
           path: .
@@ -114,7 +114,7 @@ jobs:
           fetch-depth: 1
 
       - name: 📥 Download source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: src-gen
           path: .

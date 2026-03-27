@@ -31,7 +31,7 @@ jobs:
       - uses: ./.github/actions/tidy-all-and-generate
 
       - name: 📦 Upload source
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: src-gen
           path: .
@@ -43,7 +43,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-13, windows-latest ]
+        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15, windows-latest ]
 
     steps:
       - name: 🛎️ Checkout
@@ -53,7 +53,7 @@ jobs:
           fetch-depth: 1
 
       - name: 📥 Download source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: src-gen
           path: .
@@ -106,7 +106,7 @@ jobs:
           fetch-depth: 1
 
       - name: 📥 Download source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: src-gen
           path: .
@@ -152,18 +152,16 @@ jobs:
 
       - name: 🛠️ Regenerate with new version
         shell: bash
-        env:
-          GOFLAGS: -mod=mod
         run: |
           set -Eeuo pipefail
           ./_run/scripts/go_tidy_all.sh
           mkdir -p target tmp
-          go generate ./...
+          GOWORK=off GOFLAGS=-mod=mod go generate ./...
 
       - uses: ./.github/actions/generate-build-env
 
       - name: 📦 Upload bumped source
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: src-bumped
           path: .
@@ -182,7 +180,7 @@ jobs:
           fetch-depth: 0
 
       - name: 📥 Download bumped source
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: src-bumped
           path: .
@@ -195,8 +193,6 @@ jobs:
 
       - name: 🏷️ Create stripped commit and tag ${{ env.BUILD_VER }}
         shell: bash
-        env:
-          GOFLAGS: -mod=mod
         run: |
           set -Eeuo pipefail
           ORIG_SHA=$(git rev-parse HEAD)
