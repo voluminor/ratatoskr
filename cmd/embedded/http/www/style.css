@@ -529,8 +529,83 @@ canvas {
     color: var(--text);
 }
 
-#tree-canvas {
-    display: block;
+/* accordion tree */
+.tn-stats {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 10px;
+}
+
+.tn-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.tn-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.tn-row.tn-leaf {
+    cursor: default;
+}
+
+.tn-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.tn-toggle {
+    width: 12px;
+    font-size: 0.65rem;
+    color: var(--muted);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.tn-key {
+    font-family: var(--mono);
+    font-size: 0.78rem;
+    color: var(--text);
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.tn-key-unreachable {
+    color: var(--muted);
+}
+
+.tn-cnt {
+    font-size: 0.68rem;
+    color: var(--muted);
+    background: var(--bg);
+    padding: 1px 6px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.tn-unreachable {
+    font-size: 0.65rem;
+    color: var(--red);
+    background: rgba(239, 68, 68, 0.12);
+    padding: 1px 5px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.tn-children {
+    margin-left: 16px;
+    border-left: 1px solid var(--border);
+    padding-left: 8px;
 }
 
 /* misc */

@@ -3,7 +3,10 @@ package traceroute
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"sync"
 	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -12,15 +15,32 @@ import (
 // // // // // // // // // //
 
 // Obj — модуль исследования топологии сети Yggdrasil.
-// Работает напрямую с ядром yggdrasil (Core), без admin socket.
-// Все методы синхронные — каждый вызов запрашивает актуальные данные из ядра.
+// Работает напрямую с ядром, без admin socket.
+// Tree() делает BFS по пирам через debug_remoteGetPeers.
+// Path(), Hops(), Trace() работают с локальными данными ядра.
 type Obj struct {
-	core   *yggcore.Core  // ядро yggdrasil, передаётся при инициализации
-	logger yggcore.Logger // логгер, обязателен
+	core        *yggcore.Core
+	logger      yggcore.Logger
+	remotePeers yggcore.AddHandlerFunc // debug_remoteGetPeers, захваченный через SetAdmin
 }
 
+// //
+
+// adminCapture реализует AddHandler для перехвата обработчиков из core.SetAdmin.
+// Не требует реального admin socket — просто сохраняет функции в map.
+type adminCapture struct {
+	handlers map[string]yggcore.AddHandlerFunc
+}
+
+func (a *adminCapture) AddHandler(name, desc string, args []string, fn yggcore.AddHandlerFunc) error {
+	a.handlers[name] = fn
+	return nil
+}
+
+// // // // // // // // // //
+
 // New — создаёт модуль traceroute.
-// Принимает указатель на ядро yggdrasil и логгер, оба обязательны.
+// Захватывает debug_remoteGetPeers через core.SetAdmin без поднятия admin socket.
 func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 	if core == nil {
 		return nil, fmt.Errorf("traceroute: core is required")
@@ -28,30 +48,180 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 	if logger == nil {
 		return nil, fmt.Errorf("traceroute: logger is required")
 	}
-	return &Obj{core: core, logger: logger}, nil
+
+	capture := &adminCapture{handlers: make(map[string]yggcore.AddHandlerFunc)}
+	_ = core.SetAdmin(capture)
+
+	return &Obj{
+		core:        core,
+		logger:      logger,
+		remotePeers: capture.handlers["debug_remoteGetPeers"],
+	}, nil
 }
 
 // // // // // // // // // //
 
-// Tree — возвращает spanning tree сети, известное данной ноде.
-// maxDepth ограничивает глубину дерева (0 = без ограничения).
-// Дерево строится из GetTree() — плоского списка parent→child связей.
-// Корень — узел, у которого Parent == Key.
-func (o *Obj) Tree(maxDepth int) *NodeObj {
-	root := buildTree(o.core.GetTree())
-	if root == nil {
-		return nil
+// Tree — строит дерево топологии сети методом BFS по пирам.
+// Корень — наш узел. Уровень 1 — наши прямые пиры из GetPeers().
+// Для каждого узла вызывает debug_remoteGetPeers чтобы узнать его пиров.
+// maxDepth > 0 обязателен. concurrency <= 0 заменяется на 4.
+// Узлы не ответившие на запрос помечаются Unreachable = true.
+func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*NodeObj, error) {
+	if maxDepth == 0 {
+		return nil, fmt.Errorf("traceroute: maxDepth must be > 0")
 	}
-	if maxDepth > 0 {
-		return trimDepth(root, maxDepth)
+	if concurrency <= 0 {
+		concurrency = 4
 	}
-	return root
+
+	selfKey := o.core.PublicKey()
+	root := &NodeObj{Key: selfKey, Depth: 0}
+
+	visited := make(map[[ed25519.PublicKeySize]byte]bool)
+	visited[toKeyArray(selfKey)] = true
+
+	// первый уровень — только активные прямые пиры
+	var currentLevel []*NodeObj
+	for _, p := range o.core.GetPeers() {
+		if !p.Up {
+			continue
+		}
+		k := toKeyArray(p.Key)
+		if visited[k] {
+			continue
+		}
+		visited[k] = true
+		child := &NodeObj{Key: p.Key, Depth: 1}
+		root.Children = append(root.Children, child)
+		currentLevel = append(currentLevel, child)
+	}
+
+	// BFS по уровням до maxDepth
+	for depth := uint16(1); depth < maxDepth && len(currentLevel) > 0; depth++ {
+		currentLevel = o.scanLevel(ctx, currentLevel, visited, concurrency, int(depth)+1)
+	}
+
+	return root, nil
 }
 
-// Path — возвращает цепочку узлов от корня spanning tree до целевого ключа.
-// Результат: [root, ..., промежуточные узлы, ..., target].
-// Использует дерево из GetTree(), не raw-порты из GetPaths().
-// Если ключ не найден в дереве — ошибка.
+// //
+
+// scanLevel — параллельно запрашивает пиров у всех узлов текущего уровня.
+// Горутины ограничены семафором concurrency. visited обновляется последовательно
+// после того как все горутины завершены — это безопасно без мьютекса.
+func (o *Obj) scanLevel(ctx context.Context, nodes []*NodeObj, visited map[[ed25519.PublicKeySize]byte]bool, concurrency, nextDepth int) []*NodeObj {
+	type result struct {
+		node  *NodeObj
+		peers []ed25519.PublicKey
+		err   error
+	}
+
+	results := make([]result, len(nodes))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+
+	for i, node := range nodes {
+		wg.Add(1)
+		go func(i int, node *NodeObj) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			peers, err := o.callRemotePeers(ctx, node.Key)
+			results[i] = result{node: node, peers: peers, err: err}
+		}(i, node)
+	}
+	wg.Wait()
+
+	// последовательная обработка — visited без гонок
+	var nextLevel []*NodeObj
+	for _, r := range results {
+		if r.err != nil {
+			r.node.Unreachable = true
+			continue
+		}
+		for _, peerKey := range r.peers {
+			k := toKeyArray(peerKey)
+			if visited[k] {
+				continue
+			}
+			visited[k] = true
+			child := &NodeObj{Key: peerKey, Depth: nextDepth}
+			r.node.Children = append(r.node.Children, child)
+			nextLevel = append(nextLevel, child)
+		}
+	}
+	return nextLevel
+}
+
+// //
+
+// callRemotePeers — запрашивает список пиров у удалённой ноды через debug_remoteGetPeers.
+// Внутри yggdrasil таймаут 6 сек; если ctx истекает раньше — возвращаем ctx.Err().
+func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, error) {
+	if o.remotePeers == nil {
+		return nil, fmt.Errorf("traceroute: debug_remoteGetPeers unavailable")
+	}
+
+	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key)})
+
+	type callResult struct {
+		peers []ed25519.PublicKey
+		err   error
+	}
+	ch := make(chan callResult, 1)
+
+	go func() {
+		raw, err := o.remotePeers(req)
+		if err != nil {
+			ch <- callResult{err: err}
+			return
+		}
+		peers, err := parseRemotePeersResponse(raw)
+		ch <- callResult{peers: peers, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		return r.peers, r.err
+	}
+}
+
+// //
+
+// parseRemotePeersResponse — разбирает ответ debug_remoteGetPeers.
+// Формат ответа: {"<ipv6>": {"keys": ["hex1", "hex2", ...]}}
+func parseRemotePeersResponse(raw interface{}) ([]ed25519.PublicKey, error) {
+	js, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+
+	var outer map[string]struct {
+		Keys []string `json:"keys"`
+	}
+	if err := json.Unmarshal(js, &outer); err != nil {
+		return nil, err
+	}
+
+	var peers []ed25519.PublicKey
+	for _, inner := range outer {
+		for _, hexKey := range inner.Keys {
+			kbs, err := hex.DecodeString(hexKey)
+			if err != nil || len(kbs) != ed25519.PublicKeySize {
+				continue
+			}
+			peers = append(peers, ed25519.PublicKey(kbs))
+		}
+	}
+	return peers, nil
+}
+
+// // // // // // // // // //
+
+// Path — цепочка узлов от корня spanning tree до целевого ключа.
+// Результат: [root, ..., target]. Использует локальный GetTree().
 func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	root := buildTree(o.core.GetTree())
 	if root == nil {
@@ -64,10 +234,8 @@ func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	return path, nil
 }
 
-// Hops — возвращает маршрут до целевого ключа на уровне портов.
-// Данные берутся из GetPaths() (активные маршруты ядра).
-// Каждый порт резолвится в публичный ключ через GetPeers().
-// Если активного пути нет — ошибка; вызови Lookup() сначала.
+// Hops — маршрут до ключа на уровне портов из GetPaths().
+// Каждый порт резолвится в ключ через GetPeers(). Требует предварительного Lookup().
 func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 	paths := o.core.GetPaths()
 	target := toKeyArray(key)
@@ -79,35 +247,26 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 	return nil, fmt.Errorf("traceroute: no active path to key")
 }
 
-// Lookup — запускает поиск пути до указанного ключа.
-// Результат (маршрут) станет доступен через Hops() после завершения lookup.
-// Это асинхронная операция на уровне ядра — мгновенного ответа не будет.
+// Lookup — инициирует поиск пути до ключа. Результат появится в Hops() через некоторое время.
 func (o *Obj) Lookup(key ed25519.PublicKey) {
 	o.core.PacketConn.PacketConn.SendLookup(key)
 }
 
-// Trace — комбинированный метод: ищет ключ в обоих источниках данных.
-// 1) Spanning tree (GetTree) — parent→child цепочка до ключа.
-// 2) Pathfinder (GetPaths) — port-based маршрут после SendLookup.
-//
+// Trace — ищет ключ в spanning tree и pathfinder одновременно.
 // Стратегия минимальной нагрузки:
-// - Если оба источника уже имеют данные — возвращает мгновенно, без lookup.
-// - Если tree есть, а hops нет — один SendLookup + короткое ожидание (до 2 сек).
-// - Если ничего нет — SendLookup + полный poll до таймаута ctx.
-// Повторный lookup отправляется не чаще раза в секунду.
+// - оба источника есть → возврат сразу
+// - только tree → SendLookup + ожидание hops до 2 сек
+// - ничего → полный poll с повтором lookup раз в секунду
 func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
 	result := o.collect(key)
 
-	// оба источника уже есть — мгновенный возврат
 	if result != nil && result.TreePath != nil && result.Hops != nil {
 		return result, nil
 	}
 
-	// хотя бы один источник пуст — нужен lookup для дообогащения
 	o.Lookup(key)
 
 	if result != nil {
-		// tree уже есть, ждём только hops — короткий таймаут
 		enriched := o.pollHops(ctx, key, 2*time.Second)
 		if enriched != nil {
 			result.Hops = enriched
@@ -115,15 +274,13 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 		return result, nil
 	}
 
-	// ничего нет — полный poll обоих источников
 	o.logger.Infof("[traceroute] lookup started for %x", key[:8])
 	return o.pollFull(ctx, key)
 }
 
 // //
 
-// pollHops — ждёт появления hops до deadline. Один повторный lookup через секунду.
-// Возвращает nil если не дождались.
+// pollHops — ждёт появления hops до deadline. Один повторный lookup через ~1 сек.
 func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.Duration) []HopObj {
 	deadline := time.Now().Add(maxWait)
 	ticker := time.NewTicker(150 * time.Millisecond)
@@ -136,14 +293,12 @@ func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.
 			return nil
 		case t := <-ticker.C:
 			if t.After(deadline) {
-				// последняя попытка
 				hops, _ := o.Hops(key)
 				return hops
 			}
 			if hops, err := o.Hops(key); err == nil {
 				return hops
 			}
-			// один повторный lookup через ~1 сек
 			if !retried && time.Since(deadline.Add(-maxWait)) > time.Second {
 				o.Lookup(key)
 				retried = true
@@ -168,7 +323,6 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 			return nil, fmt.Errorf("traceroute: lookup timed out for key %x", key[:8])
 		case <-ticker.C:
 			if result := o.collect(key); result != nil {
-				// нашли хотя бы один источник — дообогащаем второй коротко
 				if result.Hops == nil {
 					o.Lookup(key)
 					enriched := o.pollHops(ctx, key, 2*time.Second)
@@ -189,26 +343,23 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 // //
 
 // collect — пробует собрать данные из обоих источников.
-// Возвращает nil если ключ не найден ни в tree, ни в paths.
 func (o *Obj) collect(key ed25519.PublicKey) *TraceResultObj {
 	var result TraceResultObj
-
 	if path, err := o.Path(key); err == nil {
 		result.TreePath = path
 	}
 	if hops, err := o.Hops(key); err == nil {
 		result.Hops = hops
 	}
-
 	if result.TreePath != nil || result.Hops != nil {
 		return &result
 	}
 	return nil
 }
 
-// //
+// // // // // // // // // //
 
-// Peers — текущий список пиров из ядра
+// Peers — прямые пиры из ядра
 func (o *Obj) Peers() []yggcore.PeerInfo {
 	return o.core.GetPeers()
 }

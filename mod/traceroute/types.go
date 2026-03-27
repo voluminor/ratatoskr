@@ -6,16 +6,17 @@ import (
 
 // // // // // // // // // //
 
-// NodeObj — узел в spanning tree сети.
-// Содержит публичный ключ, ссылку на родителя, и дочерние узлы.
-// Является основным типом для представления топологии — используется
-// как в полном дереве (Tree), так и в цепочке пути (Path).
+// NodeObj — узел в дереве топологии сети.
+// Используется в Tree() (BFS по пирам), Path() и Trace() (spanning tree).
+// Unreachable выставляется в true только в Tree() если нода не ответила на запрос пиров.
 type NodeObj struct {
-	Key      ed25519.PublicKey // публичный ключ узла
-	Parent   ed25519.PublicKey // публичный ключ родителя (у root совпадает с Key)
-	Sequence uint64            // sequence number из протокола (свежесть записи)
-	Depth    int               // глубина от корня дерева (root = 0)
-	Children []*NodeObj        // дочерние узлы в spanning tree
+	Key         ed25519.PublicKey // публичный ключ узла
+	Parent      ed25519.PublicKey // ключ родителя (только в spanning tree режиме)
+	Sequence    uint64            // sequence number (только в spanning tree режиме)
+	Port        uint64            // порт для достижения узла от родителя (устарел, оставлен для совместимости)
+	Depth       int               // глубина от корня (root = 0)
+	Unreachable bool              // нода не ответила на запрос пиров в Tree()
+	Children    []*NodeObj
 }
 
 // Find — рекурсивный поиск узла по ключу в поддереве.

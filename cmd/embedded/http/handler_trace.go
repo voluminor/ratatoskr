@@ -14,23 +14,25 @@ import (
 
 // // // // // // // // // //
 
-// traceNodeJSON — JSON-представление узла spanning tree (рекурсивное)
+// traceNodeJSON — рекурсивное JSON-представление NodeObj.
+// Unreachable = true если нода не ответила на запрос пиров в Tree().
 type traceNodeJSON struct {
-	Key      string           `json:"key"`
-	Parent   string           `json:"parent"`
-	Depth    int              `json:"depth"`
-	Sequence uint64           `json:"sequence"`
-	Children []*traceNodeJSON `json:"children,omitempty"`
+	Key         string           `json:"key"`
+	Parent      string           `json:"parent,omitempty"`
+	Depth       int              `json:"depth"`
+	Sequence    uint64           `json:"sequence,omitempty"`
+	Unreachable bool             `json:"unreachable,omitempty"`
+	Children    []*traceNodeJSON `json:"children,omitempty"`
 }
 
-// traceHopJSON — JSON-представление одного хопа из pathfinder
+// traceHopJSON — один хоп из pathfinder
 type traceHopJSON struct {
 	Key   string `json:"key,omitempty"`
 	Port  uint64 `json:"port"`
 	Depth int    `json:"depth"`
 }
 
-// traceResponseJSON — ответ эндпоинта /traceroute.json
+// traceResponseJSON — ответ /traceroute.json
 type traceResponseJSON struct {
 	Target   string           `json:"target"`
 	Path     []*traceNodeJSON `json:"path,omitempty"`
@@ -47,10 +49,11 @@ func nodeToJSON(n *traceroute.NodeObj) *traceNodeJSON {
 		return nil
 	}
 	j := &traceNodeJSON{
-		Key:      hex.EncodeToString(n.Key),
-		Parent:   hex.EncodeToString(n.Parent),
-		Depth:    n.Depth,
-		Sequence: n.Sequence,
+		Key:         hex.EncodeToString(n.Key),
+		Parent:      hex.EncodeToString(n.Parent),
+		Depth:       n.Depth,
+		Sequence:    n.Sequence,
+		Unreachable: n.Unreachable,
 	}
 	if len(n.Children) > 0 {
 		j.Children = make([]*traceNodeJSON, len(n.Children))
@@ -63,12 +66,8 @@ func nodeToJSON(n *traceroute.NodeObj) *traceNodeJSON {
 
 // //
 
-// newTraceHandler — создаёт HTTP-хендлер для трассировки.
-// Принимает GET-параметр "key" (hex-публичный ключ целевой ноды).
-// Возвращает JSON с данными из двух источников:
-// - path: цепочка по spanning tree (если ключ найден в дереве)
-// - hops: маршрут из pathfinder (port→key, после lookup)
-// - subtree: поддерево целевой ноды (если есть children)
+// newTraceHandler — трассировка до ключа.
+// GET ?key=<hex>. Возвращает path (spanning tree), hops (pathfinder), subtree.
 func newTraceHandler(tr *traceroute.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyHex := r.URL.Query().Get("key")
@@ -85,8 +84,6 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 		pubKey := ed25519.PublicKey(keyBytes)
 
 		start := time.Now()
-
-		// Trace: пробует tree + paths, если не найдено — SendLookup + poll до 6 секунд
 		ctx, cancel := context.WithTimeout(r.Context(), 6*time.Second)
 		defer cancel()
 
@@ -103,7 +100,6 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 			Duration: float64(elapsed.Microseconds()) / 1000.0,
 		}
 
-		// spanning tree path
 		if result.TreePath != nil {
 			resp.Path = make([]*traceNodeJSON, len(result.TreePath))
 			for i, n := range result.TreePath {
@@ -114,14 +110,12 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 					Sequence: n.Sequence,
 				}
 			}
-			// поддерево последнего узла (целевого)
 			last := result.TreePath[len(result.TreePath)-1]
 			if len(last.Children) > 0 {
 				resp.Subtree = nodeToJSON(last)
 			}
 		}
 
-		// pathfinder hops
 		if result.Hops != nil {
 			resp.Hops = make([]traceHopJSON, len(result.Hops))
 			for i, h := range result.Hops {
@@ -142,25 +136,43 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 
 // //
 
-// newTreeHandler — отдаёт spanning tree целиком как JSON.
-// GET-параметр "depth" ограничивает глубину (0 = без ограничения, по умолчанию 0).
+// newTreeHandler — BFS дерево пиров сети.
+// GET ?depth=N&concurrency=N. depth обязателен и > 0.
+// Таймаут 30 сек — BFS может занять время на больших сетях.
 func newTreeHandler(tr *traceroute.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		depth := 0
-		if d := r.URL.Query().Get("depth"); d != "" {
-			fmt.Sscanf(d, "%d", &depth)
+		var depth int
+		var concurrency int
+		fmt.Sscanf(r.URL.Query().Get("depth"), "%d", &depth)
+		fmt.Sscanf(r.URL.Query().Get("concurrency"), "%d", &concurrency)
+
+		if depth <= 0 || depth > 65535 {
+			data, _ := json.Marshal(map[string]string{"error": "depth must be between 1 and 65535"})
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write(data)
+			return
 		}
-		root := tr.Tree(depth)
-		if root == nil {
-			data, _ := json.Marshal(map[string]string{"error": "tree is empty"})
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		root, err := tr.Tree(ctx, uint16(depth), concurrency)
+		if err != nil || root == nil {
+			msg := "tree unavailable"
+			if err != nil {
+				msg = err.Error()
+			}
+			data, _ := json.Marshal(map[string]string{"error": msg})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_, _ = w.Write(data)
 			return
 		}
+
 		data, _ := json.Marshal(nodeToJSON(root))
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=10")
+		w.Header().Set("Cache-Control", "no-store")
 		_, _ = w.Write(data)
 	})
 }

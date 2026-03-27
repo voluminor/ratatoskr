@@ -236,10 +236,7 @@ async function refreshTree() {
             return;
         }
         body.innerHTML = '';
-        const canvas = document.createElement('canvas');
-        canvas.id = 'tree-canvas';
-        body.appendChild(canvas);
-        drawRadialTree(canvas, tree);
+        buildAccordionTree(body, tree);
     } catch (e) {
         body.textContent = 'Failed: ' + e.message;
     }
@@ -256,242 +253,90 @@ document.addEventListener('keydown', function (e) {
 
 // //
 
-// Radial spanning tree on Canvas.
-// Single-child chains are condensed into annotated edges so only actual
-// branch points and leaves appear as nodes — this is the only correct way
-// to visualize chain-heavy trees without everything collapsing into rays.
+// Collapsible accordion tree rendered as DOM nodes.
+// Each row shows a color dot, toggle icon, key prefix, child count, and
+// an "unreachable" badge when the node did not respond to peer queries.
+// All nodes start expanded; clicking a row with children toggles them.
 
-function drawRadialTree(canvas, root) {
-    const edgeLen = 110;   // pixels per hop between rendered nodes
-    const nodeR = 6;
-    const branchR = 9;
-    const minSectorRad = 0.18; // minimum sector per child in radians
-
-    // Condense single-child chains: collapse sequences of nodes that have
-    // exactly one child into a single edge annotated with hop count.
-    // Returns a condensed tree node:
-    //   { key, depth, hops (edge weight), children }
-    function condense(n, depth) {
-        const ch = n.children || [];
-        if (ch.length !== 1) {
-            return {key: n.key, depth, hops: 1, children: ch.map(c => condense(c, depth + 1))};
-        }
-        // Follow the single-child chain.
-        let cur = n;
-        let hops = 1;
-        let d = depth;
-        while ((cur.children || []).length === 1) {
-            cur = cur.children[0];
-            hops++;
-            d++;
-        }
-        const tail = condense(cur, d);
-        tail.hops = hops;
-        return {key: n.key, depth, hops: 1, children: [tail]};
-    }
-
-    const ctree = condense(root, 0);
-
-    // Flatten condensed tree into node/edge arrays.
-    const nodes = [];
-    const edges = []; // {pi, ci, hops}
-    const childMap = {};
-
-    function collect(n, parentIdx) {
-        const idx = nodes.length;
-        nodes.push({key: n.key, depth: n.depth, angle: 0, x: 0, y: 0});
-        if (parentIdx >= 0) {
-            edges.push({pi: parentIdx, ci: idx, hops: n.hops});
-            if (!childMap[parentIdx]) childMap[parentIdx] = [];
-            childMap[parentIdx].push(idx);
-        }
-        for (const c of (n.children || [])) collect(c, idx);
-    }
-
-    collect(ctree, -1);
-
-    // Count leaves (condensed nodes with no children).
-    const hasChildren = new Set();
-    for (const {pi} of edges) hasChildren.add(pi);
-    let leafCount = 0;
-    for (let i = 0; i < nodes.length; i++) {
-        if (!hasChildren.has(i)) leafCount++;
-    }
-
-    // Assign angles: leaves get equal shares of 2π, parents get midpoint
-    // of their children's range. Enforces minimum sector per branch.
-    const leafAngleStep = (Math.PI * 2) / Math.max(leafCount, 1);
-    let leafIdx = 0;
-
-    function assignAngles(ni) {
-        const ch = childMap[ni] || [];
-        if (ch.length === 0) {
-            nodes[ni].angle = leafIdx * leafAngleStep;
-            leafIdx++;
-            return;
-        }
-        // Recurse first (bottom-up).
-        for (const ci of ch) assignAngles(ci);
-
-        // Enforce minimum angular gap between siblings.
-        if (ch.length > 1) {
-            let prevAngle = nodes[ch[0]].angle;
-            for (let i = 1; i < ch.length; i++) {
-                if (nodes[ch[i]].angle - prevAngle < minSectorRad) {
-                    nodes[ch[i]].angle = prevAngle + minSectorRad;
-                }
-                prevAngle = nodes[ch[i]].angle;
-            }
-        }
-
-        // Parent angle = midpoint of first..last child.
-        nodes[ni].angle = (nodes[ch[0]].angle + nodes[ch[ch.length - 1]].angle) / 2;
-    }
-    assignAngles(0);
-
-    // Place nodes: root at origin, each child at edgeLen*hops from parent
-    // in its assigned angular direction.
-    function place(ni, px, py) {
-        nodes[ni].x = px;
-        nodes[ni].y = py;
-        for (const {pi, ci, hops} of edges) {
-            if (pi !== ni) continue;
-            const angle = nodes[ci].angle;
-            const dist = edgeLen * hops;
-            place(ci, px + dist * Math.cos(angle), py + dist * Math.sin(angle));
-        }
-    }
-
-    place(0, 0, 0);
-
-    // Canvas bounds from actual node positions.
-    const xs = nodes.map(n => n.x);
-    const ys = nodes.map(n => n.y);
-    const pad = 60;
-    const minX = Math.min(...xs) - pad;
-    const maxX = Math.max(...xs) + pad;
-    const minY = Math.min(...ys) - pad;
-    const maxY = Math.max(...ys) + pad;
-    const w = maxX - minX;
-    const h = maxY - minY;
-    const cx = -minX;
-    const cy = -minY;
-
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = w * dpr;
-    canvas.height = h * dpr;
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
-
-    const ctx = canvas.getContext('2d');
-    ctx.scale(dpr, dpr);
-
-    // Edges.
-    for (const {pi, ci, hops} of edges) {
-        const p = nodes[pi];
-        const c = nodes[ci];
-        const px = cx + p.x, py = cy + p.y;
-        const ex = cx + c.x, ey = cy + c.y;
-        const isChain = hops > 1;
-
-        if (isChain) {
-            // Dashed line for condensed chains.
-            ctx.setLineDash([5, 4]);
-            ctx.strokeStyle = '#4a4d6e';
-            ctx.lineWidth = 1.5;
-        } else {
-            ctx.setLineDash([]);
-            ctx.strokeStyle = hasChildren.has(ci) ? '#5a5d7e' : '#3a3d5e';
-            ctx.lineWidth = hasChildren.has(ci) ? 1.5 : 1;
-        }
-
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        ctx.lineTo(ex, ey);
-        ctx.stroke();
-        ctx.setLineDash([]);
-
-        // Chain hop count label on the edge midpoint.
-        if (isChain) {
-            const mx = (px + ex) / 2;
-            const my = (py + ey) / 2;
-            ctx.fillStyle = '#1e2030';
-            ctx.beginPath();
-            ctx.arc(mx, my, 8, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#94a3b8';
-            ctx.font = 'bold 9px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(hops, mx, my);
-        }
-    }
-
-    // Nodes.
-    const colors = ['#6366f1', '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee',
+function buildAccordionTree(container, root) {
+    const depthColors = ['#6366f1', '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee',
         '#2dd4bf', '#34d399', '#4ade80', '#a3e635', '#facc15'];
 
-    for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i];
-        const nx = cx + n.x;
-        const ny = cy + n.y;
-        const isBranch = hasChildren.has(i) && (childMap[i] || []).length > 1;
-        const r = i === 0 ? branchR + 3 : (isBranch ? branchR : nodeR);
-        const color = colors[n.depth % colors.length];
+    function makeNode(n, isRoot) {
+        const ch = n.children || [];
+        const wrapper = document.createElement('div');
 
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(nx, ny, r, 0, Math.PI * 2);
-        ctx.fill();
+        const row = document.createElement('div');
+        row.className = 'tn-row' + (ch.length > 0 ? '' : ' tn-leaf');
 
-        // White ring on branch nodes to make forks visible.
-        if (isBranch || i === 0) {
-            ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.arc(nx, ny, r + 2, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-
-        // Labels.
-        const shortKey = n.key.substring(0, 8);
-        ctx.textBaseline = 'middle';
-
-        if (i === 0) {
-            ctx.fillStyle = '#e2e8f0';
-            ctx.font = '9px monospace';
-            ctx.textAlign = 'center';
-            ctx.fillText('root', nx, ny - r - 8);
-            ctx.fillText(shortKey, nx, ny - r - 18);
+        const dot = document.createElement('span');
+        dot.className = 'tn-dot';
+        if (n.unreachable) {
+            dot.style.cssText = 'background:#374151;border:1px dashed #6b7280';
         } else {
-            const dx = n.x - nodes[edges.find(e => e.ci === i)?.pi ?? 0].x;
-            const dy = n.y - nodes[edges.find(e => e.ci === i)?.pi ?? 0].y;
-            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-            const ux = dx / dist;
-            const uy = dy / dist;
-            ctx.fillStyle = '#cbd5e1';
-            ctx.font = '9px monospace';
-            ctx.textAlign = ux >= 0 ? 'left' : 'right';
-            ctx.fillText(shortKey, nx + ux * (r + 5), ny + uy * (r + 5));
-
-            if (isBranch) {
-                ctx.fillStyle = '#facc15';
-                ctx.font = 'bold 8px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText((childMap[i] || []).length, nx, ny);
-            }
+            dot.style.background = depthColors[n.depth % depthColors.length];
         }
+        row.appendChild(dot);
+
+        const toggle = document.createElement('span');
+        toggle.className = 'tn-toggle';
+        toggle.textContent = ch.length > 0 ? '▼' : (n.unreachable ? '✕' : '·');
+        row.appendChild(toggle);
+
+        const keySpan = document.createElement('span');
+        keySpan.className = 'tn-key' + (n.unreachable ? ' tn-key-unreachable' : '');
+        if (isRoot) {
+            keySpan.textContent = 'root';
+            keySpan.style.cssText = 'color:' + depthColors[0] + ';font-weight:700';
+        } else {
+            keySpan.textContent = n.key ? n.key.substring(0, 16) + '\u2026' : '?';
+        }
+        if (n.key) keySpan.title = n.key;
+        row.appendChild(keySpan);
+
+        if (ch.length > 0) {
+            const cnt = document.createElement('span');
+            cnt.className = 'tn-cnt';
+            cnt.textContent = ch.length;
+            row.appendChild(cnt);
+        }
+
+        if (n.unreachable) {
+            const badge = document.createElement('span');
+            badge.className = 'tn-unreachable';
+            badge.textContent = 'unreachable';
+            row.appendChild(badge);
+        }
+
+        wrapper.appendChild(row);
+
+        if (ch.length > 0) {
+            const childrenEl = document.createElement('div');
+            childrenEl.className = 'tn-children hidden';
+            for (const c of ch) childrenEl.appendChild(makeNode(c, false));
+            wrapper.appendChild(childrenEl);
+
+            toggle.textContent = '▶';
+            row.addEventListener('click', () => {
+                const closing = !childrenEl.classList.contains('hidden');
+                childrenEl.classList.toggle('hidden', closing);
+                toggle.textContent = closing ? '▶' : '▼';
+            });
+        }
+
+        return wrapper;
     }
 
-    // Stats footer.
-    ctx.fillStyle = '#475569';
-    ctx.font = '11px sans-serif';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
-    const totalNodes = (function countAll(n) {
-        return 1 + (n.children || []).reduce((s, c) => s + countAll(c), 0);
+    let total = 0;
+    (function count(n) {
+        total++;
+        (n.children || []).forEach(count);
     })(root);
-    ctx.fillText(totalNodes + ' nodes total, ' + nodes.length + ' branch/leaf points shown', 10, h - 6);
+    const stats = document.createElement('div');
+    stats.className = 'tn-stats';
+    stats.textContent = total + ' nodes';
+    container.appendChild(stats);
+    container.appendChild(makeNode(root, true));
 }
 
 // // // // // // // // // //
