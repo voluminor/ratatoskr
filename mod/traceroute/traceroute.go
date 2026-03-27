@@ -3,10 +3,7 @@ package traceroute
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -22,19 +19,6 @@ type Obj struct {
 	logger      yggcore.Logger
 	remotePeers yggcore.AddHandlerFunc
 	cache       *peerCacheObj
-}
-
-// //
-
-// adminCapture implements AddHandler to intercept handlers from core.SetAdmin.
-// No real admin socket needed — just stores functions in a map.
-type adminCapture struct {
-	handlers map[string]yggcore.AddHandlerFunc
-}
-
-func (a *adminCapture) AddHandler(name, desc string, args []string, fn yggcore.AddHandlerFunc) error {
-	a.handlers[name] = fn
-	return nil
 }
 
 // // // // // // // // // //
@@ -66,7 +50,7 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 
 // // // // // // // // // //
 
-// Tree — builds a network topology tree via BFS.
+// Tree builds a network topology tree via BFS.
 // Root is our node; depth 1 is direct active peers from GetPeers().
 // maxDepth > 0 required. concurrency <= 0 defaults to 16.
 // Nodes that do not respond to peer queries are marked Unreachable.
@@ -182,90 +166,6 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 	return nextLevel
 }
 
-// //
-
-// callRemotePeers queries a remote node's peers via debug_remoteGetPeers.
-// Called from pool workers. Returns immediately on ctx cancellation.
-// The underlying o.remotePeers call (~6s yggdrasil timeout) may outlive the return —
-// this is a bounded goroutine leak; the buffered channel prevents it from blocking.
-func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, error) {
-	if o.remotePeers == nil {
-		return nil, fmt.Errorf("traceroute: debug_remoteGetPeers unavailable")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
-	k := toKeyArray(key)
-	if cached, ok := o.cache.get(k); ok {
-		if cached == nil {
-			return nil, fmt.Errorf("traceroute: node unreachable (cached)")
-		}
-		return cached, nil
-	}
-
-	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key)})
-
-	type callResult struct {
-		peers []ed25519.PublicKey
-		err   error
-	}
-	ch := make(chan callResult, 1)
-
-	go func() {
-		raw, err := o.remotePeers(req)
-		if err != nil {
-			ch <- callResult{err: err}
-			return
-		}
-		peers, err := parseRemotePeersResponse(raw)
-		ch <- callResult{peers: peers, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-ch:
-		if r.err != nil {
-			o.cache.set(k, nil)
-			return nil, r.err
-		}
-		o.cache.set(k, r.peers)
-		return r.peers, nil
-	}
-}
-
-// //
-
-// parseRemotePeersResponse parses the debug_remoteGetPeers response.
-// Format: {"<ipv6>": {"keys": ["hex1", "hex2", ...]}}
-// Uses JSON roundtrip because the raw type from yggdrasil is not guaranteed to be map[string]interface{}.
-func parseRemotePeersResponse(raw interface{}) ([]ed25519.PublicKey, error) {
-	js, err := json.Marshal(raw)
-	if err != nil {
-		return nil, err
-	}
-
-	var outer map[string]struct {
-		Keys []string `json:"keys"`
-	}
-	if err := json.Unmarshal(js, &outer); err != nil {
-		return nil, err
-	}
-
-	var peers []ed25519.PublicKey
-	for _, inner := range outer {
-		for _, hexKey := range inner.Keys {
-			kbs, err := hex.DecodeString(hexKey)
-			if err != nil || len(kbs) != ed25519.PublicKeySize {
-				continue
-			}
-			peers = append(peers, ed25519.PublicKey(kbs))
-		}
-	}
-	return peers, nil
-}
-
 // // // // // // // // // //
 
 func validateKey(key ed25519.PublicKey) error {
@@ -313,136 +213,6 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 // Lookup initiates a path search to the key. Results appear in Hops() after some time.
 func (o *Obj) Lookup(key ed25519.PublicKey) {
 	o.core.PacketConn.PacketConn.SendLookup(key)
-}
-
-// Trace searches for the key in both spanning tree and pathfinder.
-// Strategy: both available → return immediately; tree only → Lookup + wait 2s for hops;
-// nothing → full poll with lookup retries every second until ctx expires.
-func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
-	if err := validateKey(key); err != nil {
-		return nil, err
-	}
-	result := o.collect(key)
-
-	if result != nil && result.TreePath != nil && result.Hops != nil {
-		return result, nil
-	}
-
-	o.Lookup(key)
-
-	if result != nil {
-		if result.Hops == nil {
-			enriched := o.pollHops(ctx, key, 2*time.Second)
-			if enriched != nil {
-				result.Hops = enriched
-			}
-		}
-		return result, nil
-	}
-
-	o.logger.Infof("[traceroute] lookup started for %x", key[:8])
-	return o.pollFull(ctx, key)
-}
-
-// //
-
-// pollHops waits for hops to appear within maxWait. One retry lookup after ~1s.
-func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.Duration) []HopObj {
-	startTime := time.Now()
-	ticker := time.NewTicker(150 * time.Millisecond)
-	defer ticker.Stop()
-
-	retried := false
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if time.Since(startTime) > maxWait {
-				hops, _ := o.Hops(key)
-				return hops
-			}
-			if hops, err := o.Hops(key); err == nil {
-				return hops
-			}
-			if !retried && time.Since(startTime) > time.Second {
-				o.Lookup(key)
-				retried = true
-			}
-		}
-	}
-}
-
-const (
-	pollInterval     = 200 * time.Millisecond
-	hopsGracePeriod  = 10 // ticks to wait for hops after tree is found
-	lookupRetryEvery = time.Second
-)
-
-// pollFull polls for both tree path and hops until ctx expires.
-// Single flat loop: once tree is found, gives hopsGracePeriod extra ticks for hops.
-func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	lastLookup := time.Now()
-	graceTicks := -1
-
-	for {
-		select {
-		case <-ctx.Done():
-			if result := o.collect(key); result != nil {
-				return result, nil
-			}
-			return nil, fmt.Errorf("traceroute: lookup timed out for key %x", key[:8])
-		case <-ticker.C:
-			result := o.collect(key)
-
-			if result != nil && result.TreePath != nil && result.Hops != nil {
-				return result, nil
-			}
-
-			if result != nil && result.TreePath != nil && graceTicks < 0 {
-				graceTicks = hopsGracePeriod
-				o.Lookup(key)
-				lastLookup = time.Now()
-			}
-
-			if graceTicks > 0 {
-				graceTicks--
-			} else if graceTicks == 0 {
-				if result == nil {
-					result = o.collect(key)
-				}
-				if result != nil {
-					return result, nil
-				}
-				graceTicks = -1
-			}
-
-			if time.Since(lastLookup) >= lookupRetryEvery {
-				o.Lookup(key)
-				lastLookup = time.Now()
-			}
-		}
-	}
-}
-
-// //
-
-// collect attempts to gather data from both tree and pathfinder sources.
-func (o *Obj) collect(key ed25519.PublicKey) *TraceResultObj {
-	var result TraceResultObj
-	if path, err := o.Path(key); err == nil {
-		result.TreePath = path
-	}
-	if hops, err := o.Hops(key); err == nil {
-		result.Hops = hops
-	}
-	if result.TreePath != nil || result.Hops != nil {
-		return &result
-	}
-	return nil
 }
 
 // // // // // // // // // //
