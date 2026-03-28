@@ -146,7 +146,7 @@ func waitForPeers(ctx context.Context, node *ratatoskr.Obj) error {
 	for {
 		select {
 		case <-ticker.C:
-			if len(node.GetPeers()) > 0 {
+			if hasUpPeer(node) {
 				clearLine()
 				return nil
 			}
@@ -158,6 +158,15 @@ func waitForPeers(ctx context.Context, node *ratatoskr.Obj) error {
 			return fmt.Errorf("timeout waiting for peer connection")
 		}
 	}
+}
+
+func hasUpPeer(node *ratatoskr.Obj) bool {
+	for _, p := range node.GetPeers() {
+		if p.Up {
+			return true
+		}
+	}
+	return false
 }
 
 // //
@@ -403,20 +412,3 @@ func outputTrace(target string, result *traceroute.TraceResultObj, format gsetti
 	}
 	return nil
 }
-
-// //
-
-// noopLoggerObj discards all log output.
-type noopLoggerObj struct{}
-
-func (noopLoggerObj) Printf(string, ...interface{}) {}
-func (noopLoggerObj) Println(...interface{})        {}
-func (noopLoggerObj) Infof(string, ...interface{})  {}
-func (noopLoggerObj) Infoln(...interface{})         {}
-func (noopLoggerObj) Warnf(string, ...interface{})  {}
-func (noopLoggerObj) Warnln(...interface{})         {}
-func (noopLoggerObj) Errorf(string, ...interface{}) {}
-func (noopLoggerObj) Errorln(...interface{})        {}
-func (noopLoggerObj) Debugf(string, ...interface{}) {}
-func (noopLoggerObj) Debugln(...interface{})        {}
-func (noopLoggerObj) Traceln(...interface{})        {}
