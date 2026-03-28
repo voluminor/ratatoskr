@@ -20,9 +20,75 @@ go:
   usage: "executable commands"
   trigger: true
 
-  keygen:
-    type: duration
-    usage: "mine a private key with max leading zeros for the given duration (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
+  key:
+    usage: "key utilities"
+    gen:
+      type: duration
+      usage: "mine a private key with max leading zeros for the given duration (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
+    addr:
+      type: string
+      usage: "show Yggdrasil IPv6 address and subnet for a given key (hex private 128 chars, hex public 64 chars, or PEM file path)"
+    to_pem:
+      type: string
+      usage: "convert hex private key (128 chars) to PEM file; value is output file path"
+    from_pem:
+      type: string
+      usage: "convert PEM file to hex private key; value is input file path"
+
+  conf:
+    usage: "configuration utilities"
+    generate:
+      usage: "generate a default ratatoskr config file"
+      path:
+        type: string
+        usage: "output file path (extension determines format: json/yml/yaml/hjson/conf)"
+      preset:
+        value: "basic"
+        usage: "config preset"
+        enum: [ basic, medium, full ]
+    import:
+      usage: "convert Yggdrasil config to ratatoskr format"
+      from:
+        type: string
+        usage: "input Yggdrasil config file path"
+      to:
+        type: string
+        usage: "output ratatoskr config file path"
+    export:
+      usage: "convert ratatoskr config to Yggdrasil format"
+      from:
+        type: string
+        usage: "input ratatoskr config file path"
+      to:
+        type: string
+        usage: "output Yggdrasil config file path (json)"
+
+  peer_info:
+    usage: "probe peers and report status"
+    url:
+      type: "[]string"
+      usage: "peer URIs to probe (e.g. tcp://1.2.3.4:5678)"
+    timeout:
+      type: duration
+      usage: "probe timeout per peer (default: 10s)"
+    format:
+      usage: "output format (default: text)"
+      enum: &output_format [ text, json ]
+
+  forward:
+    usage: "port forwarding through Yggdrasil"
+    from:
+      type: string
+      usage: "local listen address (e.g. 127.0.0.1:8080)"
+    to:
+      type: string
+      usage: "remote Yggdrasil address:port (e.g. [200:abc::1]:8080)"
+    proto:
+      usage: "protocol (default: tcp)"
+      enum: [ tcp, udp ]
+    peer:
+      type: string
+      usage: "yggdrasil peer URI to connect through (e.g. tcp://1.2.3.4:5678)"
 
   traceroute:
     scan:
@@ -31,6 +97,9 @@ go:
     trace:
       type: string
       usage: "traceroute to target public key (64-char hex)"
+    ping:
+      type: string
+      usage: "ping a node by public key and measure RTT (64-char hex)"
     peer:
       type: string
       usage: "yggdrasil peer URI to connect through (e.g. tcp://1.2.3.4:5678)"
@@ -43,9 +112,12 @@ go:
     concurrency:
       type: int
       usage: "parallel workers for scan (default: 64)"
+    count:
+      type: int
+      usage: "number of pings (default: 4)"
     format:
       usage: "output format (default: text)"
-      enum: [ text, json ]
+      enum: *output_format
 
 # ==== #
 
@@ -194,7 +266,7 @@ log:
   format:
     value: "text"
     usage: "console format"
-    enum: [ text, json ]
+    enum: *output_format
   level:
     usage: "log level thresholds"
     console:
