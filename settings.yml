@@ -48,6 +48,115 @@ go:
 
 # ==== #
 
+yggdrasil:
+  usage: "Yggdrasil network node configuration"
+
+  private_key:
+    type: string
+    usage: "hex-encoded Ed25519 private key (128 hex chars); empty → random"
+
+  private_key_path:
+    type: string
+    usage: "path to private key file in PEM format (alternative to private_key)"
+
+  listen:
+    type: "[]string"
+    usage: "listener addresses for incoming connections (e.g. tls://0.0.0.0:0)"
+
+  peers:
+    type: "[]string"
+    usage: "outbound peer URIs (e.g. tls://a.b.c.d:e, tcp://1.2.3.4:5678)"
+
+  allowed_public_keys:
+    type: "[]string"
+    usage: "hex-encoded public keys allowed for incoming peering; empty → allow all"
+
+  admin_listen:
+    type: string
+    value: "none"
+    usage: "admin socket listen address; 'none' to disable"
+
+  if_name:
+    type: string
+    value: "none"
+    usage: "TUN interface name; 'auto', 'none', or specific name"
+
+  if_mtu:
+    type: uint64
+    usage: "TUN interface MTU (min 1280; 0 → platform default)"
+
+  node_info_privacy:
+    type: bool
+    usage: "hide default nodeinfo (platform, architecture, version)"
+
+  log_lookups:
+    type: bool
+    usage: "log address lookups"
+
+  core_stop_timeout:
+    type: duration
+    usage: "core.Stop() timeout (0 → unlimited)"
+
+  rst_queue_size:
+    type: int
+    usage: "RST packet deferred queue size (0 → 100)"
+
+  multicast:
+    usage: "multicast peer discovery"
+    regex:
+      type: string
+      value: ".*"
+      usage: "interface name regex for multicast discovery"
+    beacon:
+      type: bool
+      value: true
+      usage: "advertise presence via multicast"
+    listen:
+      type: bool
+      value: true
+      usage: "listen for multicast advertisements"
+    port:
+      type: uint16
+      usage: "multicast port (0 → default)"
+    priority:
+      type: uint16
+      usage: "peer priority (lower = preferred)"
+    password:
+      type: string
+      usage: "multicast peering password"
+
+  peer_manager:
+    usage: "smart peer manager (replaces standard Yggdrasil peering)"
+    probe_timeout:
+      type: duration
+      usage: "probe connection timeout (default: 10s)"
+    refresh_interval:
+      type: duration
+      usage: "re-evaluation interval (0 → startup only)"
+    max_per_proto:
+      type: int
+      usage: "best peers per protocol (0/1 → one, -1 → passive mode)"
+    batch_size:
+      type: int
+      usage: "probing batch size (0/1 → all at once, ≥2 → sliding window)"
+
+  socks:
+    usage: "SOCKS5 proxy configuration"
+    addr:
+      type: string
+      usage: "listen address (TCP '127.0.0.1:1080' or Unix '/tmp/ygg.sock')"
+    nameserver:
+      type: string
+      usage: "DNS server for .ygg domains ([ipv6]:port); empty → pk.ygg only"
+    verbose:
+      type: bool
+      usage: "verbose SOCKS connection logging"
+    max_connections:
+      type: int
+      usage: "max simultaneous connections (0 → unlimited)"
+
+# ==== #
+
 log:
   usage: "logging configuration"
   compress:
