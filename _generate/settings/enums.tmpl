@@ -6,6 +6,7 @@ package settings
 import (
 "encoding/json"
 "fmt"
+"strings"
 
 "gopkg.in/yaml.v3"
 )
@@ -72,6 +73,7 @@ import (
     }
 
     func {{ .ParseFunc }}(s string) ({{ .TypeName }}, error) {
+    s = strings.TrimSpace(strings.ToLower(s))
     for i, name := range {{ .NamesVar }} {
     if name == s {
     return {{ .TypeName }}(i), nil

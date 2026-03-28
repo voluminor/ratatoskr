@@ -1,7 +1,7 @@
 # Supported types:
 #   scalar:  string, bool, int, int8, int16, int32, int64,
 #            uint, uint8, uint16, uint32, uint64,
-#            float32, float64, duration
+#            float (alias for float32), float32, float64, duration
 #   array:   []string, []bool, []int, []int64, []uint, []uint64,
 #            []float32, []float64, []duration
 #   enum:    add "enum: [val1, val2, ...]" — generates uint16 const type

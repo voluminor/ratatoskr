@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -199,6 +200,10 @@ func collectFlags(node map[string]any, prefix string) []FlagObj {
 			}
 			if hasEnum {
 				if enumSlice, ok := child["enum"].([]any); ok {
+					if len(enumSlice) == 0 {
+						fmt.Println("Empty enum:", fullKey)
+						return nil
+					}
 					for _, ev := range enumSlice {
 						f.Enum = append(f.Enum, fmt.Sprint(ev))
 					}
@@ -349,7 +354,11 @@ func goDefaultLiteral(f FlagObj, enumTypeName string) string {
 	case "float64":
 		return fmt.Sprint(f.Value)
 	case "duration":
-		return fmt.Sprint(f.Value)
+		s := fmt.Sprint(f.Value)
+		if d, err := time.ParseDuration(s); err == nil {
+			return fmt.Sprintf("time.Duration(%d)", int64(d))
+		}
+		return s
 	default:
 		return fmt.Sprint(f.Value)
 	}
@@ -522,25 +531,35 @@ func main() {
 	hasNonNativeScalarFlags := false
 	hasTriggerFlags := false
 
-	// Build enums first
+	// Build enums — deduplicate identical value sets
+	enumByValues := make(map[string]*EnumObj) // key: joined values
 	for i := range flags {
 		f := &flags[i]
-		if f.IsEnum {
-			typeName := buildEnumTypeName(f.Name)
-			consts := make([]string, 0, len(f.Enum))
-			for _, v := range f.Enum {
-				consts = append(consts, buildEnumConstName(typeName, v))
-			}
-			e := EnumObj{
-				TypeName:  typeName,
-				Values:    f.Enum,
-				GoConsts:  consts,
-				ParseFunc: "Parse" + typeName,
-				NamesVar:  lowerFirst(typeName) + "Names",
-			}
-			enums = append(enums, e)
-			enumMap[f.Name] = &enums[len(enums)-1]
+		if !f.IsEnum {
+			continue
 		}
+
+		valKey := strings.Join(f.Enum, "\x00")
+		if existing, ok := enumByValues[valKey]; ok {
+			enumMap[f.Name] = existing
+			continue
+		}
+
+		typeName := buildEnumTypeName(f.Name)
+		consts := make([]string, 0, len(f.Enum))
+		for _, v := range f.Enum {
+			consts = append(consts, buildEnumConstName(typeName, v))
+		}
+		e := EnumObj{
+			TypeName:  typeName,
+			Values:    slices.Clone(f.Enum),
+			GoConsts:  consts,
+			ParseFunc: "Parse" + typeName,
+			NamesVar:  lowerFirst(typeName) + "Names",
+		}
+		enums = append(enums, e)
+		enumByValues[valKey] = &enums[len(enums)-1]
+		enumMap[f.Name] = &enums[len(enums)-1]
 	}
 
 	// Resolve Go types and defaults
