@@ -449,8 +449,9 @@ func TestFormatExt(t *testing.T) {
 }
 
 func TestConfigPath(t *testing.T) {
-	got := msettings.ConfigPath("/tmp/out", gsettings.GoConfExportFormatJson)
-	want := "/tmp/out/" + target.GlobalName + ".json"
+	dir := t.TempDir()
+	got := msettings.ConfigPath(dir, gsettings.GoConfExportFormatJson)
+	want := filepath.Join(dir, target.GlobalName+".json")
 	if got != want {
 		t.Fatalf("ConfigPath: got %q, want %q", got, want)
 	}
