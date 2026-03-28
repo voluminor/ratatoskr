@@ -4,7 +4,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -14,18 +13,21 @@ import (
 
 // // // // // // // // // //
 
+const description = "Embeddable Yggdrasil network node library and tools"
+
+// //
+
 // New initializes settings and runs the application callback.
-// Handles help/info flags internally; on error prints to stderr and exits.
+// Returns nil on help/info, error on init failure.
 func New(run func(Interface) error) error {
 	obj, err := gsettings.Init(buildInfoText(), func(path string, obj *gsettings.Obj) error {
 		return ParseFile(path, obj)
 	})
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) || errors.Is(err, gsettings.ErrInfo) {
-			os.Exit(0)
+			return nil
 		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		return err
 	}
 
 	return run(obj)
@@ -44,7 +46,8 @@ func buildInfoText() string {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "%s %s\n", target.GlobalName, target.GlobalVersion)
-	b.WriteString("Embeddable Yggdrasil network node library and tools\n\n")
+	b.WriteString(description)
+	b.WriteString("\n\n")
 	b.WriteString("Dependencies:\n")
 
 	keys := make([]string, 0, len(target.GlobalDependenciesMap))

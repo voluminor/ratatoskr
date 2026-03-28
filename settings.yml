@@ -13,13 +13,8 @@ config:
   type: string
   usage: "path to config file (json/yaml/hjson)"
 
-gen_key:
+gen_private_key:
   usage: "generate new encryption key and exit"
-  trigger: true
-
-save_config:
-  type: string
-  usage: "save current settings to file and exit"
   trigger: true
 
 log:
@@ -61,22 +56,3 @@ log:
     value: "both"
     usage: "log output mode"
     enum: [ console, file, both ]
-
-ui:
-  usage: "user interface settings"
-  text_size:
-    type: float32
-    value: 1.0
-    usage: "text size multiplier (0.2-8.0)"
-  dark_mode:
-    type: bool
-    value: true
-    usage: "dark mode enabled"
-  tab_location:
-    value: "top"
-    usage: "tab position"
-    enum: [ top, bottom, leading, trailing ]
-  language:
-    type: string
-    value: "en"
-    usage: "UI language"
