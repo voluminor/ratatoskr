@@ -142,6 +142,27 @@ func buildComments(branchUsage map[string]string, flags []FlagObj) []CommentEntr
 
 // //
 
+// buildDurationKeys collects dotted paths for all non-trigger duration fields.
+func buildDurationKeys(flags []FlagObj) []string {
+	var keys []string
+	for _, f := range flags {
+		if f.IsTrigger {
+			continue
+		}
+		bt := f.Type
+		if f.IsArray {
+			bt = baseType(bt)
+		}
+		if bt == "duration" {
+			keys = append(keys, f.Name)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// //
+
 // goDefaultLiteral returns a Go source literal for the flag's default value.
 func goDefaultLiteral(f FlagObj, enumTypeName string) string {
 	if f.Value == nil {

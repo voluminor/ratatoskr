@@ -94,5 +94,7 @@ type TemplateObj struct {
 	HasCustomFlags  bool
 	HasEnums        bool
 	HasTriggerFlags bool
+	HasDurationKeys bool
+	DurationKeys    []string
 	HelpText        string
 }

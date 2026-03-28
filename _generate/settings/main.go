@@ -47,6 +47,9 @@ var commentsTmpl string
 //go:embed order.tmpl
 var orderTmpl string
 
+//go:embed durations.tmpl
+var durationsTmpl string
+
 // // // // // // // // // //
 
 func main() {
@@ -87,6 +90,8 @@ func main() {
 	propagateTrigger(resolved.Tree)
 	propagateGenInterface(resolved.Tree, walk.GenIfacePaths, "", false)
 
+	durationKeys := buildDurationKeys(resolved.Flags)
+
 	data := TemplateObj{
 		GenerationTime:  time.Now().Format(time.RFC3339),
 		Flags:           resolved.Flags,
@@ -101,6 +106,8 @@ func main() {
 		HasCustomFlags:  resolved.HasCustomFlags,
 		HasEnums:        len(resolved.Enums) > 0,
 		HasTriggerFlags: resolved.HasTriggerFlags,
+		HasDurationKeys: len(durationKeys) > 0,
+		DurationKeys:    durationKeys,
 		HelpText:        buildHelpText(resolved.Flags, resolved.Tree),
 	}
 
@@ -131,6 +138,7 @@ func main() {
 		{"help.go", helpTmpl, false},
 		{"comments.go", commentsTmpl, false},
 		{"order.go", orderTmpl, false},
+		{"durations.go", durationsTmpl, !data.HasDurationKeys},
 	}
 
 	for _, t := range templates {
