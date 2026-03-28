@@ -93,7 +93,7 @@ func (h *InfoHandlerObj) refreshMetrics() *cachedMetricsObj {
 func (h *InfoHandlerObj) getMetrics() *cachedMetricsObj {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cached == nil || time.Since(h.cached.at) >= 10*time.Second {
+	if h.cached == nil || time.Since(h.cached.at) >= time.Second {
 		h.cached = h.refreshMetrics()
 	}
 	return h.cached
@@ -157,7 +157,7 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 		}
 		data, _ := json.Marshal(resp)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=10")
+		w.Header().Set("Cache-Control", "max-age=1")
 		_, _ = w.Write(data)
 	})
 }

@@ -1,18 +1,23 @@
 const FETCH_TIMEOUT_MS = 3000;
-const REFRESH_MS = 10000;
-const HISTORY_LEN = 20;
+const REFRESH_MS = 1000;
+const CHART_TICK_MS = 1000;
+const HISTORY_LEN = 60;
 
 // // // // // // // // // //
 
 const bwHistory = {rx: [], tx: []};
 let chartCanvas = null;
+let prevData = null;
+let prevTime = 0;
+let lastRxRate = 0;
+let lastTxRate = 0;
 
 // //
 
 function formatBytes(b) {
-    if (b < 1024) return b + ' B';
-    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
-    if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
+    if (b < 1024) return Math.round(b) + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(2) + ' KB';
+    if (b < 1073741824) return (b / 1048576).toFixed(2) + ' MB';
     return (b / 1073741824).toFixed(2) + ' GB';
 }
 
@@ -77,13 +82,14 @@ function drawChart() {
 
 // //
 
-function setPeerList(peers) {
+function setPeerList(peers, peerRates) {
     const el = document.getElementById('peers-list');
     if (!peers || peers.length === 0) {
         el.innerHTML = '<p style="color:var(--muted);font-size:0.82rem">No peers connected</p>';
         return;
     }
     const rows = peers.map(p => {
+        const rates = (peerRates && peerRates[p.uri]) || {rx: 0, tx: 0};
         const errCell = (!p.up && p.last_error)
             ? `<span class="peer-error" title="${p.last_error}">${p.last_error}</span>`
             : '—';
@@ -91,9 +97,9 @@ function setPeerList(peers) {
     <tr>
       <td><span class="dot ${p.up ? 'up' : 'down'}"></span>${p.up ? 'Up' : 'Down'}</td>
       <td class="uri-cell" title="${p.uri}">${p.uri}</td>
-      <td>${p.up ? p.latency_ms.toFixed(1) + ' ms' : errCell}</td>
-      <td>${formatRate(p.rx_rate)}</td>
-      <td>${formatRate(p.tx_rate)}</td>
+      <td>${p.up ? p.latency_ms.toFixed(2) + ' ms' : errCell}</td>
+      <td>${formatRate(rates.rx)}</td>
+      <td>${formatRate(rates.tx)}</td>
     </tr>`;
     }).join('');
     el.innerHTML = `
@@ -132,21 +138,48 @@ function updateUI(data) {
     document.getElementById('sessions').textContent =
         (data.sessions && data.sessions.length) || 0;
 
-    // Bandwidth.
+    // Bandwidth — compute rates from cumulative byte deltas.
     const bw = data.bandwidth || {};
-    document.getElementById('rx-rate').textContent = formatRate(bw.rx_rate || 0);
-    document.getElementById('tx-rate').textContent = formatRate(bw.tx_rate || 0);
+    const now = Date.now();
+    let rxRate = 0, txRate = 0;
+    const peerRates = {};
+    if (prevData) {
+        const dt = (now - prevTime) / 1000;
+        if (dt > 0) {
+            const pb = prevData.bandwidth || {};
+            rxRate = Math.max(0, (bw.rx_bytes || 0) - (pb.rx_bytes || 0)) / dt;
+            txRate = Math.max(0, (bw.tx_bytes || 0) - (pb.tx_bytes || 0)) / dt;
+            if (prevData.peers) {
+                const pm = {};
+                for (const p of prevData.peers) pm[p.uri] = p;
+                for (const p of (data.peers || [])) {
+                    const prev = pm[p.uri];
+                    if (prev) {
+                        peerRates[p.uri] = {
+                            rx: Math.max(0, (p.rx_bytes - prev.rx_bytes)) / dt,
+                            tx: Math.max(0, (p.tx_bytes - prev.tx_bytes)) / dt,
+                        };
+                    }
+                }
+            }
+        }
+    }
+    prevData = data;
+    prevTime = now;
+
+    lastRxRate = rxRate;
+    lastTxRate = txRate;
+
+    document.getElementById('rx-rate').textContent = formatRate(rxRate);
+    document.getElementById('tx-rate').textContent = formatRate(txRate);
     document.getElementById('rx-total').textContent = formatBytes(bw.rx_bytes || 0);
     document.getElementById('tx-total').textContent = formatBytes(bw.tx_bytes || 0);
-
-    pushHistory(bw.rx_rate || 0, bw.tx_rate || 0);
-    drawChart();
 
     // Sessions.
     setSessionList(data.sessions);
 
     // Peers.
-    setPeerList(data.peers);
+    setPeerList(data.peers, peerRates);
 
     // Updated at — when the cached metrics snapshot was taken.
     const ts = new Date(data.cached_at);
@@ -309,7 +342,7 @@ document.addEventListener('keydown', function (e) {
 // Collapsible accordion tree rendered as DOM nodes.
 // Each row shows a color dot, toggle icon, key prefix, child count, and
 // an "unreachable" badge when the node did not respond to peer queries.
-// All nodes start expanded; clicking a row with children toggles them.
+// All nodes start collapsed; clicking a row with children toggles them.
 
 function buildAccordionTree(container, root) {
     const depthColors = ['#6366f1', '#818cf8', '#60a5fa', '#38bdf8', '#22d3ee',
@@ -357,7 +390,7 @@ function buildAccordionTree(container, root) {
         if (n.rtt_ms > 0) {
             const rtt = document.createElement('span');
             rtt.className = 'tn-rtt';
-            rtt.textContent = n.rtt_ms < 1 ? n.rtt_ms.toFixed(2) + ' ms' : n.rtt_ms.toFixed(1) + ' ms';
+            rtt.textContent = n.rtt_ms.toFixed(2) + ' ms';
             row.appendChild(rtt);
         }
 
@@ -429,11 +462,11 @@ async function doTrace() {
         if (data.error) {
             errorEl.textContent = data.error;
             errorEl.classList.remove('hidden');
-            return;
+            if (!data.path && !data.hops) return;
         }
 
         document.getElementById('trace-duration').textContent =
-            'Resolved in ' + data.duration_ms.toFixed(1) + ' ms';
+            'Resolved in ' + data.duration_ms.toFixed(2) + ' ms';
 
         const sections = document.getElementById('trace-sections');
         sections.innerHTML = '';
@@ -486,7 +519,7 @@ function renderTraceMode(container, data) {
     } else {
         pathEl.innerHTML = path.map((n, i) => {
             const shortKey = n.key.substring(0, 12) + '\u2026';
-            const rtt = n.rtt_ms > 0 ? ` <span class="trace-rtt">${n.rtt_ms.toFixed(1)}ms</span>` : '';
+            const rtt = n.rtt_ms > 0 ? ` <span class="trace-rtt">${n.rtt_ms.toFixed(2)}ms</span>` : '';
             const arrow = i < path.length - 1 ? ' <span class="trace-arrow">\u2192</span> ' : '';
             return `<span class="trace-hop" title="${n.key}"><span class="trace-depth">${n.depth}</span>${shortKey}${rtt}</span>${arrow}`;
         }).join('');
@@ -502,5 +535,11 @@ document.getElementById('trace-key').addEventListener('keydown', function (e) {
 
 // //
 
+function tickChart() {
+    pushHistory(lastRxRate, lastTxRate);
+    drawChart();
+}
+
 fetchInfo();
 setInterval(fetchInfo, REFRESH_MS);
+setInterval(tickChart, CHART_TICK_MS);
