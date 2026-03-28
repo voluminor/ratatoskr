@@ -9,11 +9,13 @@ package settings
 func NewDefault() *Obj {
 o := &Obj{}
 {{- range .Flags }}
-    {{- if ne .GoDefault "0" }}
-        {{- if ne .GoDefault "false" }}
-            {{- if ne .GoDefault `""` }}
-                {{- if ne .GoDefault "nil" }}
-                    o.{{ .FlagAccessor }} = {{ .GoDefault }}
+    {{- if not .IsTrigger }}
+        {{- if ne .GoDefault "0" }}
+            {{- if ne .GoDefault "false" }}
+                {{- if ne .GoDefault `""` }}
+                    {{- if ne .GoDefault "nil" }}
+                        o.{{ .FlagAccessor }} = {{ .GoDefault }}
+                    {{- end }}
                 {{- end }}
             {{- end }}
         {{- end }}

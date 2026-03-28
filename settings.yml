@@ -7,10 +7,20 @@
 #   enum:    add "enum: [val1, val2, ...]" — generates uint16 const type
 #            (type field is optional for enums)
 #   []enum:  array of enum values
+#   trigger: true — CLI-only bool flag, not saved/parsed from config files
 
 config:
   type: string
   usage: "path to config file (json/yaml/hjson)"
+
+gen_key:
+  usage: "generate new encryption key and exit"
+  trigger: true
+
+save_config:
+  type: string
+  usage: "save current settings to file and exit"
+  trigger: true
 
 log:
   usage: "logging configuration"

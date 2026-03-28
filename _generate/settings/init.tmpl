@@ -4,6 +4,7 @@
 package settings
 
 import (
+"errors"
 "flag"
 "os"
 )
@@ -12,10 +13,19 @@ import (
 
 // Init parses CLI flags and an optional config file, returning a fully resolved Obj.
 // Priority: defaults < config file < CLI flags.
-func Init() (*Obj, error) {
+// If infoText is non-empty, the -i/-info flag is registered.
+func Init(infoText string) (*Obj, error) {
 obj := NewDefault()
 
 fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+fs.Usage = printHelp
+
+var showInfo bool
+if infoText != "" {
+fs.BoolVar(&showInfo, "i", false, "show application info")
+fs.BoolVar(&showInfo, "info", false, "show application info")
+}
+
 {{- if .HasCustomFlags }}
     targets := &CustomFlagTargetsObj{}
     DefineFlags(fs, obj, targets)
@@ -24,7 +34,15 @@ fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 {{- end }}
 
 if err := fs.Parse(os.Args[1:]); err != nil {
+if errors.Is(err, flag.ErrHelp) {
 return nil, err
+}
+return nil, err
+}
+
+if showInfo && infoText != "" {
+printInfo(infoText)
+return nil, ErrInfo
 }
 
 // If a config file was specified, load it and re-apply CLI on top
@@ -39,6 +57,13 @@ obj.Config = configPath
 
 // Re-define flags pointing to the file-loaded obj, then re-parse
 fs = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+fs.Usage = printHelp
+
+if infoText != "" {
+fs.BoolVar(&showInfo, "i", false, "show application info")
+fs.BoolVar(&showInfo, "info", false, "show application info")
+}
+
 {{- if .HasCustomFlags }}
     targets = &CustomFlagTargetsObj{}
     DefineFlags(fs, obj, targets)
@@ -46,6 +71,9 @@ fs = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
     DefineFlags(fs, obj)
 {{- end }}
 if err := fs.Parse(os.Args[1:]); err != nil {
+if errors.Is(err, flag.ErrHelp) {
+return nil, err
+}
 return nil, err
 }
 }

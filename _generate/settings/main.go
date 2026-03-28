@@ -37,6 +37,9 @@ var saveTmpl string
 //go:embed init.tmpl
 var initTmpl string
 
+//go:embed help.tmpl
+var helpTmpl string
+
 // //
 
 type FlagObj struct {
@@ -53,6 +56,12 @@ type FlagObj struct {
 	GoDefault    string // Go literal for default value
 	FlagAccessor string // dot path into Obj: "Log.Format"
 	EnumType     string // "LogFormatEnum" if IsEnum, else ""
+
+	// Trigger: CLI-only bool, excluded from config file serialization
+	IsTrigger bool
+
+	// Help display fields
+	Group string // top-level branch key: "log", "ui", or "" for root-level flags
 }
 
 type EnumObj struct {
@@ -64,14 +73,15 @@ type EnumObj struct {
 }
 
 type TreeLeafObj struct {
-	Name     string
-	Type     string // Go type
-	Key      string // original YAML key
-	Usage    string // branch-level usage comment
-	Branch   map[string]*TreeLeafObj
-	IsEnum   bool
-	IsArray  bool
-	EnumType string // "LogFormatEnum" if enum
+	Name      string
+	Type      string // Go type
+	Key       string // original YAML key
+	Usage     string // branch-level usage comment
+	Branch    map[string]*TreeLeafObj
+	IsEnum    bool
+	IsArray   bool
+	IsTrigger bool
+	EnumType  string // "LogFormatEnum" if enum
 }
 
 type TemplateObj struct {
@@ -85,6 +95,8 @@ type TemplateObj struct {
 	HasEnums                bool
 	HasArrayFlags           bool
 	HasNonNativeScalarFlags bool
+	HasTriggerFlags         bool
+	HelpText                string
 }
 
 // //
@@ -170,8 +182,9 @@ func collectFlags(node map[string]any, prefix string) []FlagObj {
 
 		_, hasType := child["type"]
 		_, hasEnum := child["enum"]
+		_, hasTrigger := child["trigger"]
 
-		if hasType || hasEnum {
+		if hasType || hasEnum || hasTrigger {
 			f := FlagObj{
 				Name: fullKey,
 			}
@@ -190,6 +203,12 @@ func collectFlags(node map[string]any, prefix string) []FlagObj {
 						f.Enum = append(f.Enum, fmt.Sprint(ev))
 					}
 					f.IsEnum = true
+				}
+			}
+			if hasTrigger {
+				f.IsTrigger = true
+				if f.Type == "" {
+					f.Type = "bool"
 				}
 			}
 			f.IsArray = isArrayType(f.Type)
@@ -222,10 +241,11 @@ func collectBranchUsage(node map[string]any, prefix string) map[string]string {
 			fullKey = prefix + "." + k
 		}
 
-		// Branch node: no "type" and no "enum" key
+		// Branch node: no "type", no "enum", no "trigger" key
 		_, hasType := child["type"]
 		_, hasEnum := child["enum"]
-		if !hasType && !hasEnum {
+		_, hasTrig := child["trigger"]
+		if !hasType && !hasEnum && !hasTrig {
 			if usage, ok := child["usage"]; ok {
 				result[fullKey] = fmt.Sprint(usage)
 			}
@@ -350,6 +370,124 @@ func buildFlagAccessor(flagName string) string {
 
 // //
 
+func buildHelpText(flags []FlagObj, tree map[string]*TreeLeafObj) string {
+	var b strings.Builder
+
+	// Collect groups in sorted order
+	type groupObj struct {
+		key   string
+		title string
+		usage string
+		flags []FlagObj
+	}
+
+	groupMap := make(map[string]*groupObj)
+	var groupOrder []string
+
+	for _, f := range flags {
+		gk := f.Group
+		g, ok := groupMap[gk]
+		if !ok {
+			g = &groupObj{key: gk}
+			if gk == "" {
+				g.title = "General"
+			} else {
+				g.title = dep.GenGoName(gk)
+				if branch, ok := tree[gk]; ok && branch.Usage != "" {
+					g.usage = branch.Usage
+				}
+			}
+			groupMap[gk] = g
+			groupOrder = append(groupOrder, gk)
+		}
+		g.flags = append(g.flags, f)
+	}
+
+	// Sort groups: "" (General) first, then alphabetically
+	sort.SliceStable(groupOrder, func(i, j int) bool {
+		if groupOrder[i] == "" {
+			return true
+		}
+		if groupOrder[j] == "" {
+			return false
+		}
+		return groupOrder[i] < groupOrder[j]
+	})
+
+	// Find max flag name width for alignment
+	maxWidth := 0
+	for _, f := range flags {
+		w := len(f.Name) + 1 // "-" prefix
+		if w > maxWidth {
+			maxWidth = w
+		}
+	}
+	// Account for -h/-help and -i/-info
+	if w := len("-help"); w > maxWidth {
+		maxWidth = w
+	}
+
+	// Build help text
+	b.WriteString("Usage: <program> [flags]\n")
+
+	for gi, gk := range groupOrder {
+		g := groupMap[gk]
+
+		if gi > 0 {
+			b.WriteString("\n")
+		}
+
+		if g.usage != "" {
+			fmt.Fprintf(&b, "\n%s (%s):\n", g.title, g.usage)
+		} else {
+			fmt.Fprintf(&b, "\n%s:\n", g.title)
+		}
+
+		// Add built-in flags to General group
+		if gk == "" {
+			fmt.Fprintf(&b, "  -%-*s  show this help message\n", maxWidth, "h, -help")
+			fmt.Fprintf(&b, "  -%-*s  show application info\n", maxWidth, "i, -info")
+		}
+
+		// Regular flags first, then triggers
+		for _, f := range g.flags {
+			if f.IsTrigger {
+				continue
+			}
+			var line strings.Builder
+			fmt.Fprintf(&line, "  -%-*s  %s", maxWidth, f.Name, f.Usage)
+
+			if f.IsEnum && len(f.Enum) > 0 {
+				fmt.Fprintf(&line, " [%s]", strings.Join(f.Enum, ", "))
+			}
+
+			if f.Value != nil {
+				fmt.Fprintf(&line, " (default: %v)", f.Value)
+			}
+
+			b.WriteString(line.String())
+			b.WriteString("\n")
+		}
+
+		// Trigger flags with [trigger] marker
+		hasTriggers := false
+		for _, f := range g.flags {
+			if !f.IsTrigger {
+				continue
+			}
+			if !hasTriggers {
+				b.WriteString("  ---\n")
+				hasTriggers = true
+			}
+			fmt.Fprintf(&b, "  -%-*s  %s [trigger]\n", maxWidth, f.Name, f.Usage)
+		}
+	}
+
+	return b.String()
+}
+
+// //
+
 func main() {
 	flag.Parse()
 
@@ -382,6 +520,7 @@ func main() {
 	hasCustomFlags := false
 	hasArrayFlags := false
 	hasNonNativeScalarFlags := false
+	hasTriggerFlags := false
 
 	// Build enums first
 	for i := range flags {
@@ -416,6 +555,9 @@ func main() {
 		f.GoDefault = goDefaultLiteral(*f, enumTypeName)
 		f.FlagAccessor = buildFlagAccessor(f.Name)
 		f.EnumType = enumTypeName
+		if parts := strings.SplitN(f.Name, ".", 2); len(parts) > 1 {
+			f.Group = parts[0]
+		}
 
 		bt := f.Type
 		if f.IsArray {
@@ -429,6 +571,9 @@ func main() {
 		}
 		if f.IsArray {
 			hasArrayFlags = true
+		}
+		if f.IsTrigger {
+			hasTriggerFlags = true
 		}
 		if !f.IsEnum && !f.IsArray && !nativeFlagTypes[f.Type] {
 			hasNonNativeScalarFlags = true
@@ -444,12 +589,13 @@ func main() {
 		switch len(points) {
 		case 1:
 			tree[points[0]] = &TreeLeafObj{
-				Name:     dep.GenGoName(points[0]),
-				Type:     f.GoType,
-				Key:      points[0],
-				IsEnum:   f.IsEnum,
-				IsArray:  f.IsArray,
-				EnumType: enumTypeName,
+				Name:      dep.GenGoName(points[0]),
+				Type:      f.GoType,
+				Key:       points[0],
+				IsEnum:    f.IsEnum,
+				IsArray:   f.IsArray,
+				IsTrigger: f.IsTrigger,
+				EnumType:  enumTypeName,
 			}
 		case 2:
 			branch, ok := tree[points[0]]
@@ -464,12 +610,13 @@ func main() {
 				tree[points[0]] = branch
 			}
 			branch.Branch[points[1]] = &TreeLeafObj{
-				Name:     dep.GenGoName(points[1]),
-				Type:     f.GoType,
-				Key:      points[1],
-				IsEnum:   f.IsEnum,
-				IsArray:  f.IsArray,
-				EnumType: enumTypeName,
+				Name:      dep.GenGoName(points[1]),
+				Type:      f.GoType,
+				Key:       points[1],
+				IsEnum:    f.IsEnum,
+				IsArray:   f.IsArray,
+				IsTrigger: f.IsTrigger,
+				EnumType:  enumTypeName,
 			}
 		case 3:
 			branch, ok := tree[points[0]]
@@ -495,12 +642,13 @@ func main() {
 				branch.Branch[points[1]] = leaf
 			}
 			leaf.Branch[points[2]] = &TreeLeafObj{
-				Name:     dep.GenGoName(points[2]),
-				Type:     f.GoType,
-				Key:      points[2],
-				IsEnum:   f.IsEnum,
-				IsArray:  f.IsArray,
-				EnumType: enumTypeName,
+				Name:      dep.GenGoName(points[2]),
+				Type:      f.GoType,
+				Key:       points[2],
+				IsEnum:    f.IsEnum,
+				IsArray:   f.IsArray,
+				IsTrigger: f.IsTrigger,
+				EnumType:  enumTypeName,
 			}
 		default:
 			fmt.Println("The settings tree is too deep! Can't go deeper than 3\t", f.Name)
@@ -518,6 +666,8 @@ func main() {
 		HasEnums:                len(enums) > 0,
 		HasArrayFlags:           hasArrayFlags,
 		HasNonNativeScalarFlags: hasNonNativeScalarFlags,
+		HasTriggerFlags:         hasTriggerFlags,
+		HelpText:                buildHelpText(flags, tree),
 	}
 
 	outDir := filepath.Join("target", "settings")
@@ -543,6 +693,7 @@ func main() {
 		{"parse.go", parseTmpl, false},
 		{"save.go", saveTmpl, false},
 		{"init.go", initTmpl, false},
+		{"help.go", helpTmpl, false},
 	}
 
 	for _, t := range templates {

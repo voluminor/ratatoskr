@@ -34,6 +34,9 @@ func WriteFileFromTemplate(pathToFile string, textTemplate string, dataTemplate 
 		"baseArrayType": func(t string) string {
 			return strings.TrimPrefix(t, "[]")
 		},
+		"backtick": func() string {
+			return "`"
+		},
 	})
 
 	t, err := tmpl.New(fileName).Parse(textTemplate)

@@ -5,6 +5,8 @@
                 // {{ $leaf.Usage }}
             {{- end }}
             {{ $leaf.Name }} {{ $leaf.Type }} `json:"{{ $leaf.Key }}" yaml:"{{ $leaf.Key }}"`
+        {{- else if $leaf.IsTrigger }}
+            {{ $leaf.Name }} {{ $leaf.Type }} `json:"-" yaml:"-"`
         {{- else }}
             {{ $leaf.Name }} {{ $leaf.Type }} `json:"{{ $leaf.Key }}" yaml:"{{ $leaf.Key }}"`
         {{- end }}
