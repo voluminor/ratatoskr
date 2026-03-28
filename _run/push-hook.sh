@@ -12,6 +12,10 @@ set -Eeuo pipefail
 cd "$root_path"
 export CGO_ENABLED=1
 
+go work sync
+go generate .
+./_run/scripts/go_tidy_all.sh
+
 echo "==> Running tests with race detector..."
 go test -race -v ./...
 
