@@ -269,13 +269,9 @@ func animateProgress(done *atomic.Bool, total *atomic.Uint64, duration time.Dura
 // //
 
 func loadPEMPrivateKey(path string) (ed25519.PrivateKey, error) {
-	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("not a valid hex key and file not found: %s", path)
-	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read PEM file: %w", err)
+		return nil, fmt.Errorf("not a valid hex key and cannot read file: %w", err)
 	}
 
 	nodeCfg := &config.NodeConfig{}

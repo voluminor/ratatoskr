@@ -65,8 +65,8 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
-	connectedAll := false
-	for !connectedAll {
+wait:
+	for {
 		select {
 		case <-ticker.C:
 			snap := node.Snapshot()
@@ -77,9 +77,8 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 				}
 			}
 			if connected >= len(cfg.Url) {
-				connectedAll = true
 				clearLine()
-				break
+				break wait
 			}
 			dl, _ := ctx.Deadline()
 			remaining := time.Until(dl)
@@ -91,7 +90,7 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 			frame++
 		case <-ctx.Done():
 			clearLine()
-			connectedAll = true
+			break wait
 		}
 	}
 

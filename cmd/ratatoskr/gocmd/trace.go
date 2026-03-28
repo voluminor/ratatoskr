@@ -72,16 +72,7 @@ func traceCmd(cfg *gsettings.GoTracerouteObj) error {
 // //
 
 func validateTraceParams(cfg *gsettings.GoTracerouteObj) error {
-	modes := 0
-	if cfg.Scan {
-		modes++
-	}
-	if cfg.Trace != "" {
-		modes++
-	}
-	if cfg.Ping != "" {
-		modes++
-	}
+	modes := boolToInt(cfg.Scan) + boolToInt(cfg.Trace != "") + boolToInt(cfg.Ping != "")
 	if modes != 1 {
 		return fmt.Errorf("specify exactly one of -go.traceroute.scan, -go.traceroute.trace, or -go.traceroute.ping")
 	}

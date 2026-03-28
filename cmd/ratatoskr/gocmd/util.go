@@ -29,3 +29,12 @@ func formatRemaining(d time.Duration) string {
 func clearLine() {
 	fmt.Fprint(os.Stderr, "\r\033[2K")
 }
+
+// //
+
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

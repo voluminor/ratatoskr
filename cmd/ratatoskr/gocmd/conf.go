@@ -442,16 +442,6 @@ func writeOrderedValue(buf *bytes.Buffer, v any, jsonMode bool, level int) {
 
 // //
 
-func marshalHJSONWithComments(data any) ([]byte, error) {
-	raw, err := hjson.MarshalWithOptions(data, hjson.DefaultOptions())
-	if err != nil {
-		return nil, err
-	}
-	return injectHJSONComments(raw), nil
-}
-
-// //
-
 func injectHJSONComments(raw []byte) []byte {
 	lines := strings.Split(string(raw), "\n")
 	var stack []string
@@ -527,26 +517,19 @@ func confFormatExt(format gsettings.GoConfExportFormatEnum) string {
 // //
 
 func marshalNodeConfig(cfg *yggconfig.NodeConfig, ext string) ([]byte, error) {
-	switch ext {
-	case ".json":
-		data, err := json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("marshal json: %w", err)
-		}
-		return append(data, '\n'), nil
-	case ".conf":
-		data, err := hjson.MarshalWithOptions(cfg, hjson.DefaultOptions())
-		if err != nil {
-			return nil, fmt.Errorf("marshal hjson: %w", err)
-		}
-		return append(data, '\n'), nil
-	default:
-		data, err := json.MarshalIndent(cfg, "", "  ")
-		if err != nil {
-			return nil, fmt.Errorf("marshal json: %w", err)
-		}
-		return append(data, '\n'), nil
+	var data []byte
+	var err error
+
+	if ext == ".conf" {
+		data, err = hjson.MarshalWithOptions(cfg, hjson.DefaultOptions())
+	} else {
+		data, err = json.MarshalIndent(cfg, "", "  ")
 	}
+	if err != nil {
+		return nil, fmt.Errorf("marshal config: %w", err)
+	}
+
+	return append(data, '\n'), nil
 }
 
 // //
