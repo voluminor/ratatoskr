@@ -44,6 +44,9 @@ var helpTmpl string
 //go:embed comments.tmpl
 var commentsTmpl string
 
+//go:embed order.tmpl
+var orderTmpl string
+
 // // // // // // // // // //
 
 func main() {
@@ -72,6 +75,12 @@ func main() {
 	// Single-pass YAML walk: flags + branch usage + gen_interface paths
 	walk := WalkYAML(parseTree)
 
+	fieldOrder, err := ExtractFieldOrder(raw)
+	if err != nil {
+		fmt.Println("Error extracting field order:", err)
+		return
+	}
+
 	// Resolve enums, Go types, imports, and build struct tree
 	resolved := ResolveFlags(walk.Flags, walk.BranchUsage)
 
@@ -84,6 +93,7 @@ func main() {
 		Enums:           resolved.Enums,
 		Tree:            resolved.Tree,
 		Comments:        buildComments(walk.BranchUsage, resolved.Flags),
+		FieldOrder:      fieldOrder,
 		TypesImports:    sortedKeys(resolved.TypesImports),
 		FlagsImports:    sortedKeys(resolved.FlagsImports),
 		DefaultsImports: sortedKeys(resolved.DefaultsImports),
@@ -119,6 +129,7 @@ func main() {
 		{"init.go", initTmpl, false},
 		{"help.go", helpTmpl, false},
 		{"comments.go", commentsTmpl, false},
+		{"order.go", orderTmpl, false},
 	}
 
 	for _, t := range templates {

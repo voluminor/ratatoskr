@@ -1,0 +1,14 @@
+// Code generated using '_generate/settings'; DO NOT EDIT.
+// Generation time: {{.GenerationTime}}
+
+package settings
+
+// // // // // // // // // //
+
+// FieldOrder maps a dotted prefix to its child keys in settings.yml document order.
+// Root-level keys use an empty prefix.
+var FieldOrder = map[string][]string{
+{{- range .FieldOrder }}
+    {{ printf "%q" .Prefix }}: { {{- range $i, $k := .Keys }}{{if $i}}, {{end}}{{ printf "%q" $k }}{{- end}} },
+{{- end }}
+}

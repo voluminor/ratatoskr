@@ -67,6 +67,14 @@ type CommentEntryObj struct {
 
 // //
 
+// FieldOrderEntryObj maps a prefix to its ordered child keys.
+type FieldOrderEntryObj struct {
+	Prefix string
+	Keys   []string
+}
+
+// //
+
 // TemplateObj is the root data structure passed to all templates.
 type TemplateObj struct {
 	GenerationTime  string
@@ -75,6 +83,7 @@ type TemplateObj struct {
 	Enums           []EnumObj
 	Tree            map[string]*TreeLeafObj
 	Comments        []CommentEntryObj
+	FieldOrder      []FieldOrderEntryObj
 	TypesImports    []string
 	FlagsImports    []string
 	DefaultsImports []string

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 // // // // // // // // // //
@@ -149,4 +151,91 @@ func sortedNodeKeys(node map[string]any) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// //
+
+// ExtractFieldOrder parses raw YAML via yaml.Node to preserve document key order.
+// Returns per-level ordered key lists, excluding trigger groups and the "config" field.
+func ExtractFieldOrder(raw []byte) ([]FieldOrderEntryObj, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return nil, nil
+	}
+
+	var entries []FieldOrderEntryObj
+	collectFieldOrder(doc.Content[0], "", &entries)
+	return entries, nil
+}
+
+// //
+
+func collectFieldOrder(node *yaml.Node, prefix string, entries *[]FieldOrderEntryObj) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+
+	if yamlNodeHasKey(node, "trigger") {
+		return
+	}
+
+	var keys []string
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		key := node.Content[i].Value
+		val := node.Content[i+1]
+
+		switch key {
+		case "type", "enum", "trigger", "usage", "value", "gen_interface", "config":
+			continue
+		}
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+		if val.Kind == yaml.MappingNode && yamlNodeHasKey(val, "trigger") {
+			continue
+		}
+
+		keys = append(keys, key)
+	}
+
+	if len(keys) > 0 {
+		*entries = append(*entries, FieldOrderEntryObj{Prefix: prefix, Keys: keys})
+	}
+
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		key := node.Content[i].Value
+		val := node.Content[i+1]
+
+		if val.Kind != yaml.MappingNode {
+			continue
+		}
+
+		switch key {
+		case "type", "enum", "trigger", "usage", "value", "gen_interface", "config":
+			continue
+		}
+		if strings.HasPrefix(key, "_") {
+			continue
+		}
+
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		collectFieldOrder(val, path, entries)
+	}
+}
+
+// //
+
+func yamlNodeHasKey(node *yaml.Node, key string) bool {
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		if node.Content[i].Value == key {
+			return true
+		}
+	}
+	return false
 }

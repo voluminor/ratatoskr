@@ -1,10 +1,12 @@
 package gocmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/hjson/hjson-go/v4"
@@ -184,9 +186,15 @@ func saveWithComments(data any, path string) error {
 	var raw []byte
 	var err error
 
+	m, isMap := data.(map[string]any)
+
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
-		raw, err = json.MarshalIndent(data, "", "  ")
+		if isMap {
+			raw, err = marshalOrderedJSON(m, "")
+		} else {
+			raw, err = json.MarshalIndent(data, "", "  ")
+		}
 		if err != nil {
 			return fmt.Errorf("marshal json: %w", err)
 		}
@@ -197,10 +205,15 @@ func saveWithComments(data any, path string) error {
 			return fmt.Errorf("marshal yaml: %w", err)
 		}
 	case ".hjson", ".conf":
-		raw, err = marshalHJSONWithComments(data)
+		if isMap {
+			raw, err = marshalOrderedHJSON(m, "")
+		} else {
+			raw, err = hjson.MarshalWithOptions(data, hjson.DefaultOptions())
+		}
 		if err != nil {
 			return fmt.Errorf("marshal hjson: %w", err)
 		}
+		raw = injectHJSONComments(raw)
 	default:
 		return fmt.Errorf("unsupported format: %s", filepath.Ext(path))
 	}
@@ -223,6 +236,7 @@ func marshalYAMLWithComments(data any) ([]byte, error) {
 	}
 
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		reorderYAMLNode(doc.Content[0], "")
 		annotateYAMLNode(doc.Content[0], "")
 	}
 
@@ -256,6 +270,173 @@ func annotateYAMLNode(node *yaml.Node, prefix string) {
 		if valNode.Kind == yaml.MappingNode {
 			annotateYAMLNode(valNode, path)
 		}
+	}
+}
+
+// //
+
+func orderedKeys(m map[string]any, prefix string) []string {
+	order, ok := gsettings.FieldOrder[prefix]
+	if !ok {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return keys
+	}
+
+	result := make([]string, 0, len(m))
+	seen := make(map[string]bool, len(m))
+	for _, k := range order {
+		if _, exists := m[k]; exists {
+			result = append(result, k)
+			seen[k] = true
+		}
+	}
+	for k := range m {
+		if !seen[k] {
+			result = append(result, k)
+		}
+	}
+	return result
+}
+
+// //
+
+func reorderYAMLNode(node *yaml.Node, prefix string) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+
+	if order, ok := gsettings.FieldOrder[prefix]; ok && len(node.Content) > 2 {
+		idx := make(map[string]int, len(node.Content)/2)
+		for i := 0; i < len(node.Content)-1; i += 2 {
+			idx[node.Content[i].Value] = i
+		}
+
+		out := make([]*yaml.Node, 0, len(node.Content))
+		seen := make(map[string]bool)
+		for _, k := range order {
+			if i, exists := idx[k]; exists {
+				out = append(out, node.Content[i], node.Content[i+1])
+				seen[k] = true
+			}
+		}
+		for i := 0; i < len(node.Content)-1; i += 2 {
+			if !seen[node.Content[i].Value] {
+				out = append(out, node.Content[i], node.Content[i+1])
+			}
+		}
+		node.Content = out
+	}
+
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		val := node.Content[i+1]
+		if val.Kind == yaml.MappingNode {
+			p := node.Content[i].Value
+			if prefix != "" {
+				p = prefix + "." + p
+			}
+			reorderYAMLNode(val, p)
+		}
+	}
+}
+
+// //
+
+func marshalOrderedJSON(m map[string]any, prefix string) ([]byte, error) {
+	var buf bytes.Buffer
+	writeOrderedMap(&buf, m, prefix, true, 0)
+	return buf.Bytes(), nil
+}
+
+// //
+
+func marshalOrderedHJSON(m map[string]any, prefix string) ([]byte, error) {
+	var buf bytes.Buffer
+	writeOrderedMap(&buf, m, prefix, false, 0)
+	return buf.Bytes(), nil
+}
+
+// //
+
+func writeOrderedMap(buf *bytes.Buffer, m map[string]any, prefix string, jsonMode bool, level int) {
+	indent := strings.Repeat("  ", level)
+	childIndent := strings.Repeat("  ", level+1)
+	keys := orderedKeys(m, prefix)
+
+	buf.WriteString("{\n")
+	for i, k := range keys {
+		buf.WriteString(childIndent)
+
+		childPrefix := k
+		if prefix != "" {
+			childPrefix = prefix + "." + k
+		}
+
+		if jsonMode {
+			fmt.Fprintf(buf, "%q: ", k)
+		} else {
+			buf.WriteString(k)
+			buf.WriteString(": ")
+		}
+
+		if nested, ok := m[k].(map[string]any); ok {
+			writeOrderedMap(buf, nested, childPrefix, jsonMode, level+1)
+		} else {
+			writeOrderedValue(buf, m[k], jsonMode, level+1)
+		}
+
+		if jsonMode && i < len(keys)-1 {
+			buf.WriteByte(',')
+		}
+		buf.WriteByte('\n')
+	}
+	buf.WriteString(indent)
+	buf.WriteByte('}')
+}
+
+// //
+
+func writeOrderedValue(buf *bytes.Buffer, v any, jsonMode bool, level int) {
+	if jsonMode {
+		raw, _ := json.Marshal(v)
+		buf.Write(raw)
+		return
+	}
+
+	switch val := v.(type) {
+	case string:
+		fmt.Fprintf(buf, "%q", val)
+	case bool:
+		fmt.Fprintf(buf, "%t", val)
+	case int:
+		fmt.Fprintf(buf, "%d", val)
+	case int64:
+		fmt.Fprintf(buf, "%d", val)
+	case uint64:
+		fmt.Fprintf(buf, "%d", val)
+	case float64:
+		fmt.Fprintf(buf, "%g", val)
+	case []string:
+		if len(val) == 0 {
+			buf.WriteString("[]")
+		} else {
+			buf.WriteString("[\n")
+			for _, s := range val {
+				buf.WriteString(strings.Repeat("  ", level+1))
+				fmt.Fprintf(buf, "%q", s)
+				buf.WriteByte('\n')
+			}
+			buf.WriteString(strings.Repeat("  ", level))
+			buf.WriteByte(']')
+		}
+	case nil:
+		buf.WriteString("null")
+	default:
+		raw, _ := json.Marshal(val)
+		buf.Write(raw)
 	}
 }
 
