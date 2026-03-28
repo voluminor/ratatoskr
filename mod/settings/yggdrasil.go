@@ -5,8 +5,6 @@ import (
 	"fmt"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
-
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -15,47 +13,47 @@ import (
 // Converts key.text from hex to bytes; all other processing
 // (key.path, certificate generation) is handled by the core.
 func NodeConfig(s YggdrasilInterface) (*config.NodeConfig, error) {
-	y := s.Self().(*gsettings.YggdrasilObj)
-
 	cfg := &config.NodeConfig{
-		PrivateKeyPath:    y.Key.Path,
-		Listen:            y.Listen,
-		AllowedPublicKeys: y.AllowedPublicKeys,
-		AdminListen:       y.AdminListen,
-		IfName:            y.If.Name,
-		IfMTU:             y.If.Mtu,
-		NodeInfo:          y.Node.Info,
-		NodeInfoPrivacy:   y.Node.Privacy,
-		LogLookups:        y.LogLookups,
-		InterfacePeers:    y.Peers.Interface,
+		PrivateKeyPath:    s.GetKey().GetPath(),
+		Listen:            s.GetListen(),
+		AllowedPublicKeys: s.GetAllowedPublicKeys(),
+		AdminListen:       s.GetAdminListen(),
+		IfName:            s.GetIf().GetName(),
+		IfMTU:             s.GetIf().GetMtu(),
+		NodeInfo:          s.GetNode().GetInfo(),
+		NodeInfoPrivacy:   s.GetNode().GetPrivacy(),
+		LogLookups:        s.GetLogLookups(),
+		InterfacePeers:    s.GetPeers().GetInterface(),
 	}
 
-	if y.Peers.Manager.Enable {
+	if s.GetPeers().GetManager().GetEnable() {
 		cfg.Peers = nil
 	} else {
-		cfg.Peers = y.Peers.Url
+		cfg.Peers = s.GetPeers().GetUrl()
 	}
 
 	if cfg.InterfacePeers == nil {
 		cfg.InterfacePeers = map[string][]string{}
 	}
 
-	if y.Key.Text != "" {
-		key, err := hex.DecodeString(y.Key.Text)
+	keyText := s.GetKey().GetText()
+	if keyText != "" {
+		key, err := hex.DecodeString(keyText)
 		if err != nil {
 			return nil, fmt.Errorf("invalid key.text hex: %w", err)
 		}
 		cfg.PrivateKey = key
 	}
 
-	if y.Multicast.Regex != "" {
+	mc := s.GetMulticast()
+	if mc.GetRegex() != "" {
 		cfg.MulticastInterfaces = []config.MulticastInterfaceConfig{{
-			Regex:    y.Multicast.Regex,
-			Beacon:   y.Multicast.Beacon,
-			Listen:   y.Multicast.Listen,
-			Port:     y.Multicast.Port,
-			Priority: uint64(y.Multicast.Priority),
-			Password: y.Multicast.Password,
+			Regex:    mc.GetRegex(),
+			Beacon:   mc.GetBeacon(),
+			Listen:   mc.GetListen(),
+			Port:     mc.GetPort(),
+			Priority: uint64(mc.GetPriority()),
+			Password: mc.GetPassword(),
 		}}
 	}
 

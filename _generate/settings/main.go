@@ -38,6 +38,9 @@ var saveTmpl string
 //go:embed init.tmpl
 var initTmpl string
 
+//go:embed iface.tmpl
+var ifaceTmpl string
+
 //go:embed help.tmpl
 var helpTmpl string
 
@@ -803,6 +806,7 @@ func main() {
 		skip bool
 	}{
 		{"types.go", typesTmpl, false},
+		{"iface.go", ifaceTmpl, false},
 		{"enums.go", enumsTmpl, !data.HasEnums},
 		{"defaults.go", defaultsTmpl, false},
 		{"flags.go", flagsTmpl, false},

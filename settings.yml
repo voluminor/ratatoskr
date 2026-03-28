@@ -12,7 +12,7 @@
 
 config:
   type: string
-  usage: "path to config file (json/yaml/hjson)"
+  usage: "path to config file (json/yml/yaml/hjson/conf)"
 
 # ==== #
 
@@ -87,7 +87,8 @@ yggdrasil:
 
       probe_timeout:
         type: duration
-        usage: "probe connection timeout (default: 10s)"
+        value: "10s"
+        usage: "probe connection timeout"
       refresh_interval:
         type: duration
         usage: "re-evaluation interval (0 → startup only)"
@@ -116,7 +117,8 @@ yggdrasil:
       usage: "TUN interface name; 'auto', 'none', or specific name"
     mtu:
       type: uint64
-      usage: "TUN interface MTU (min 1280; 0 → platform default)"
+      value: 65535
+      usage: "TUN interface MTU (min 1280)"
 
   node:
     usage: "node identity and metadata"
@@ -142,7 +144,8 @@ yggdrasil:
 
   rst_queue_size:
     type: int
-    usage: "RST packet deferred queue size (0 → 100)"
+    value: 100
+    usage: "RST packet deferred queue size"
 
   multicast:
     usage: "multicast peer discovery"
