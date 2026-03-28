@@ -1,3 +1,5 @@
+{{- /* Recursive helpers for struct field and nested type generation */ -}}
+
 {{- define "structFields" -}}
     {{- range $key, $leaf := . }}
         {{- if $leaf.IsTrigger }}
@@ -31,6 +33,9 @@
         {{- end }}
     {{- end }}
 {{- end -}}
+
+{{- /* ---- Main output ---- */ -}}
+
 // Code generated using '_generate/settings'; DO NOT EDIT.
 // Generation time: {{.GenerationTime}}
 {{- if gt (len .Path) 3 }}

@@ -13,8 +13,6 @@ import (
 
 // Init parses CLI flags and an optional config file, returning a fully resolved Obj.
 // Priority: defaults < config file < CLI flags.
-// If infoText is non-empty, the -i/-info flag is registered.
-// parseFile is used to load the config file by path into the given Obj.
 func Init(infoText string, parseFile func(string, *Obj) error) (*Obj, error) {
 obj := NewDefault()
 
@@ -46,7 +44,7 @@ printInfo(infoText)
 return nil, ErrInfo
 }
 
-// If a config file was specified, load it and re-apply CLI on top
+// Config file layer: load file, then re-apply CLI flags on top
 if obj.Config != "" && parseFile != nil {
 fileObj := NewDefault()
 if err := parseFile(obj.Config, fileObj); err != nil {
@@ -56,7 +54,6 @@ configPath := obj.Config
 *obj = *fileObj
 obj.Config = configPath
 
-// Re-define flags pointing to the file-loaded obj, then re-parse
 fs = flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 fs.Usage = printHelp
 

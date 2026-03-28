@@ -29,8 +29,9 @@ import (
     }
 {{ end }}
 
+{{- /* ---- DefineFlags ---- */ -}}
+
 // DefineFlags registers all settings as CLI flags on the given FlagSet.
-// The obj should be pre-filled with defaults (e.g. from NewDefault).
 {{- if .HasCustomFlags }}
     func DefineFlags(fs *flag.FlagSet, obj *Obj, targets *CustomFlagTargetsObj) {
 {{- else }}
@@ -70,7 +71,7 @@ import (
     // //
 
     // ApplyCustomFlags converts raw string flag values into typed struct fields.
-    // Only applies values for flags that were explicitly set.
+    // Only applies values for flags that were explicitly set via CLI.
     func ApplyCustomFlags(fs *flag.FlagSet, targets *CustomFlagTargetsObj, obj *Obj) error {
     var err error
     _ = err

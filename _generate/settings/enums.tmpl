@@ -42,6 +42,8 @@ import (
     return fmt.Sprintf("{{ .TypeName }}(%d)", e)
     }
 
+    // //
+
     func (e {{ .TypeName }}) MarshalJSON() ([]byte, error) {
     return json.Marshal(e.String())
     }
@@ -59,6 +61,8 @@ import (
     return nil
     }
 
+    // //
+
     func (e {{ .TypeName }}) MarshalYAML() (interface{}, error) {
     return e.String(), nil
     }
@@ -71,6 +75,8 @@ import (
     *e = v
     return nil
     }
+
+    // //
 
     func {{ .ParseFunc }}(s string) ({{ .TypeName }}, error) {
     s = strings.TrimSpace(strings.ToLower(s))

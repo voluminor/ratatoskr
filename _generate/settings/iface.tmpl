@@ -1,3 +1,5 @@
+{{- /* Recursive interface definitions for branches with GenInterface */ -}}
+
 {{- define "genInterfaces" -}}
     {{- range $key, $leaf := . }}
         {{- if and $leaf.Branch $leaf.GenInterface }}
@@ -23,6 +25,8 @@
     {{- end }}
 {{- end -}}
 
+{{- /* Recursive getter methods for branch struct types */ -}}
+
 {{- define "structGetters" -}}
     {{- range $key, $leaf := . }}
         {{- if $leaf.Branch }}
@@ -41,6 +45,9 @@
         {{- end }}
     {{- end }}
 {{- end -}}
+
+{{- /* ---- Main output ---- */ -}}
+
 // Code generated using '_generate/settings'; DO NOT EDIT.
 // Generation time: {{.GenerationTime}}
 
@@ -59,6 +66,8 @@ package settings
 {{ end }}
 
 // // // // // // // // // //
+
+{{- /* Root-level getters on Obj */ -}}
 {{ range $key, $leaf := .Tree }}
     {{- if $leaf.Branch }}
         {{- if $leaf.GenInterface }}
