@@ -137,9 +137,10 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:    ctx,
-		Config: nodeCfg,
-		Logger: logger,
+		Ctx:             ctx,
+		Config:          nodeCfg,
+		Logger:          logger,
+		CoreStopTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     []string{peerURI},
 			BatchSize: 1,

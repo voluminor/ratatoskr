@@ -44,7 +44,7 @@ go:
         usage: "output directory path (file is always ratatoskr-config.{format})"
       format:
         usage: "output file format (default: yml)"
-        enum: &conf_format [ json, yml, conf ]
+        enum: &conf_format [ yml, json, conf ]
       preset:
         usage: "config preset (default: basic)"
         enum: [ basic, medium, full ]

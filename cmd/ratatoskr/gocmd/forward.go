@@ -63,9 +63,10 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:    ctx,
-		Config: nodeCfg,
-		Logger: logger,
+		Ctx:             ctx,
+		Config:          nodeCfg,
+		Logger:          logger,
+		CoreStopTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     cfg.Peer,
 			BatchSize: len(cfg.Peer),
@@ -74,7 +75,7 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 	if err != nil {
 		return fmt.Errorf("start node: %w", err)
 	}
-	defer node.Close()
+	defer func() { go node.Close() }()
 
 	mgr := forward.New(logger, defaultUDPSessionTimeout)
 

@@ -58,8 +58,11 @@ func keyAddr(input string) error {
 	}
 
 	ip := net.IP(addr[:])
+
+	var snIP [16]byte
+	copy(snIP[:], subnet[:])
 	sn := net.IPNet{
-		IP:   net.IP(subnet[:]),
+		IP:   net.IP(snIP[:]),
 		Mask: net.CIDRMask(64, 128),
 	}
 
@@ -73,7 +76,7 @@ func keyAddr(input string) error {
 
 func keyToPem(cfg *gsettings.GoKeyObj) error {
 	if cfg.Addr == "" {
-		return fmt.Errorf("specify -go.keys.addr with hex private key (128 chars) or PEM file path")
+		return fmt.Errorf("specify -go.key.addr with hex private key (128 chars) or PEM file path")
 	}
 
 	priv, err := resolvePrivateKey(cfg.Addr)

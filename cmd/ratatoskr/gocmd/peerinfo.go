@@ -46,9 +46,10 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:    ctx,
-		Config: nodeCfg,
-		Logger: logger,
+		Ctx:             ctx,
+		Config:          nodeCfg,
+		Logger:          logger,
+		CoreStopTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     cfg.Url,
 			BatchSize: len(cfg.Url),
@@ -57,7 +58,7 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 	if err != nil {
 		return fmt.Errorf("start node: %w", err)
 	}
-	defer node.Close()
+	defer func() { go node.Close() }()
 
 	// Wait for connections or timeout
 	frame := 0

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/hjson/hjson-go/v4"
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
+	"gopkg.in/yaml.v3"
 
 	msettings "github.com/voluminor/ratatoskr/mod/settings"
 	gsettings "github.com/voluminor/ratatoskr/target/settings"
@@ -40,16 +42,22 @@ func confGenerate(cfg *gsettings.GoConfGenerateObj) error {
 		return err
 	}
 
-	ext := confFormatExt(cfg.Format, ".yml")
+	ext := confFormatExt(cfg.Format)
 	outPath := filepath.Join(outDir, configBaseName+ext)
 
 	nodeCfg := yggconfig.GenerateConfig()
 	obj := msettings.FromNodeConfig(nodeCfg, gsettings.NewDefault())
 	base := msettings.Obj(obj)
 
-	applyPreset(base, cfg.Preset)
-
-	if err := msettings.SaveFile(base, outPath); err != nil {
+	switch cfg.Preset {
+	case gsettings.GoConfGeneratePresetBasic:
+		err = saveMap(presetBasic(base), outPath)
+	case gsettings.GoConfGeneratePresetMedium:
+		err = saveMap(presetMedium(base), outPath)
+	default:
+		err = msettings.SaveFile(base, outPath)
+	}
+	if err != nil {
 		return err
 	}
 
@@ -79,7 +87,7 @@ func confImport(cfg *gsettings.GoConfImportObj) error {
 	obj := msettings.FromNodeConfig(nodeCfg, gsettings.NewDefault())
 	base := msettings.Obj(obj)
 
-	ext := confFormatExt(cfg.Format, ".yml")
+	ext := confFormatExt(cfg.Format)
 	outPath := filepath.Join(outDir, configBaseName+ext)
 
 	if err := msettings.SaveFile(base, outPath); err != nil {
@@ -108,8 +116,8 @@ func confExport(cfg *gsettings.GoConfExportObj) error {
 		return fmt.Errorf("convert to yggdrasil config: %w", err)
 	}
 
-	ext := confFormatExt(cfg.Format, ".json")
-	outPath := filepath.Join(outDir, "yggdrasil.conf")
+	ext := confFormatExt(cfg.Format)
+	outPath := filepath.Join(outDir, "yggdrasil"+ext)
 
 	data, err := marshalNodeConfig(nodeCfg, ext)
 	if err != nil {
@@ -126,41 +134,87 @@ func confExport(cfg *gsettings.GoConfExportObj) error {
 
 // //
 
-func applyPreset(obj *gsettings.Obj, preset gsettings.GoConfGeneratePresetEnum) {
-	switch preset {
-	case gsettings.GoConfGeneratePresetBasic:
-		obj.Yggdrasil.Listen = nil
-		obj.Yggdrasil.Inputs = nil
-		obj.Yggdrasil.AllowedPublicKeys = nil
-		obj.Yggdrasil.AdminListen = ""
-		obj.Yggdrasil.If = gsettings.YggdrasilIfObj{}
-		obj.Yggdrasil.Node = gsettings.YggdrasilNodeObj{}
-		obj.Yggdrasil.LogLookups = false
-		obj.Yggdrasil.CoreStopTimeout = 0
-		obj.Yggdrasil.RstQueueSize = 0
-		obj.Yggdrasil.Multicast = gsettings.YggdrasilMulticastObj{}
-		obj.Yggdrasil.Socks = gsettings.YggdrasilSocksObj{}
-		obj.Yggdrasil.Peers.Interface = nil
-		obj.Yggdrasil.Peers.Manager = gsettings.YggdrasilPeersManagerObj{}
-		obj.Log = gsettings.LogObj{}
-
-	case gsettings.GoConfGeneratePresetMedium:
-		obj.Yggdrasil.Inputs = nil
-		obj.Yggdrasil.AllowedPublicKeys = nil
-		obj.Yggdrasil.AdminListen = ""
-		obj.Yggdrasil.Node = gsettings.YggdrasilNodeObj{}
-		obj.Yggdrasil.Socks = gsettings.YggdrasilSocksObj{}
-		obj.Yggdrasil.Peers.Interface = nil
-		obj.Yggdrasil.Peers.Manager = gsettings.YggdrasilPeersManagerObj{}
-
-	case gsettings.GoConfGeneratePresetFull:
-		// keep everything
+func presetBasic(obj *gsettings.Obj) map[string]any {
+	return map[string]any{
+		"yggdrasil": map[string]any{
+			"key": map[string]any{
+				"text": obj.Yggdrasil.Key.Text,
+			},
+			"peers": map[string]any{
+				"url": obj.Yggdrasil.Peers.Url,
+			},
+		},
 	}
 }
 
 // //
 
-func confFormatExt(format gsettings.GoConfExportFormatEnum, defaultExt string) string {
+func presetMedium(obj *gsettings.Obj) map[string]any {
+	return map[string]any{
+		"yggdrasil": map[string]any{
+			"key": map[string]any{
+				"text": obj.Yggdrasil.Key.Text,
+			},
+			"listen": obj.Yggdrasil.Listen,
+			"peers": map[string]any{
+				"url": obj.Yggdrasil.Peers.Url,
+			},
+			"if": map[string]any{
+				"name": obj.Yggdrasil.If.Name,
+				"mtu":  obj.Yggdrasil.If.Mtu,
+			},
+			"multicast": map[string]any{
+				"regex":  obj.Yggdrasil.Multicast.Regex,
+				"beacon": obj.Yggdrasil.Multicast.Beacon,
+				"listen": obj.Yggdrasil.Multicast.Listen,
+			},
+			"core_stop_timeout": obj.Yggdrasil.CoreStopTimeout.String(),
+			"rst_queue_size":    obj.Yggdrasil.RstQueueSize,
+		},
+		"log": map[string]any{
+			"level": map[string]any{
+				"console": obj.Log.Level.Console.String(),
+				"file":    obj.Log.Level.File.String(),
+			},
+			"output": obj.Log.Output.String(),
+		},
+	}
+}
+
+// //
+
+func saveMap(data map[string]any, path string) error {
+	var raw []byte
+	var err error
+
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".json":
+		raw, err = json.MarshalIndent(data, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal json: %w", err)
+		}
+		raw = append(raw, '\n')
+	case ".yml", ".yaml":
+		raw, err = yaml.Marshal(data)
+		if err != nil {
+			return fmt.Errorf("marshal yaml: %w", err)
+		}
+	case ".hjson", ".conf":
+		raw, err = hjson.MarshalWithOptions(data, hjson.DefaultOptions())
+		if err != nil {
+			return fmt.Errorf("marshal hjson: %w", err)
+		}
+		raw = append(raw, '\n')
+	default:
+		return fmt.Errorf("unsupported format: %s", filepath.Ext(path))
+	}
+
+	return os.WriteFile(path, raw, 0644)
+}
+
+// //
+
+func confFormatExt(format gsettings.GoConfExportFormatEnum) string {
 	switch format {
 	case gsettings.GoConfExportFormatJson:
 		return ".json"
@@ -169,7 +223,7 @@ func confFormatExt(format gsettings.GoConfExportFormatEnum, defaultExt string) s
 	case gsettings.GoConfExportFormatConf:
 		return ".conf"
 	default:
-		return defaultExt
+		return ".yml"
 	}
 }
 
