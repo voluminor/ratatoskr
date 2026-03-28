@@ -1,9 +1,13 @@
 package settings_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	msettings "github.com/voluminor/ratatoskr/mod/settings"
 	gsettings "github.com/voluminor/ratatoskr/target/settings"
@@ -109,6 +113,218 @@ func TestSaveFile_HJSON(t *testing.T) {
 	}
 	if dst.GetLog().GetLevel().GetConsole() != src.GetLog().GetLevel().GetConsole() {
 		t.Fatalf("level.console mismatch: got %v, want %v", dst.GetLog().GetLevel().GetConsole(), src.GetLog().GetLevel().GetConsole())
+	}
+}
+
+// //
+
+func TestParseFile_Chain_Simple(t *testing.T) {
+	dir := t.TempDir()
+
+	// C — terminal file with actual settings
+	writeYAML(t, filepath.Join(dir, "c.yml"), map[string]any{
+		"yggdrasil": map[string]any{
+			"key":          map[string]any{"text": "cccc"},
+			"admin_listen": "unix:///c.sock",
+		},
+	})
+
+	// B → C
+	writeYAML(t, filepath.Join(dir, "b.yml"), map[string]any{
+		"config": "c.yml",
+		"yggdrasil": map[string]any{
+			"admin_listen": "unix:///b.sock",
+		},
+	})
+
+	// A → B
+	writeYAML(t, filepath.Join(dir, "a.yml"), map[string]any{
+		"config": "b.yml",
+		"yggdrasil": map[string]any{
+			"admin_listen": "unix:///a.sock",
+		},
+	})
+
+	dst := gsettings.NewDefault()
+	if err := msettings.ParseFile(filepath.Join(dir, "a.yml"), dst); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only C's values must be applied
+	if got := dst.GetYggdrasil().GetKey().GetText(); got != "cccc" {
+		t.Fatalf("key.text: got %q, want %q", got, "cccc")
+	}
+	if got := dst.GetYggdrasil().GetAdminListen(); got != "unix:///c.sock" {
+		t.Fatalf("admin_listen: got %q, want %q", got, "unix:///c.sock")
+	}
+}
+
+func TestParseFile_Chain_IntermediateIgnored(t *testing.T) {
+	dir := t.TempDir()
+
+	// Terminal file
+	writeYAML(t, filepath.Join(dir, "base.yml"), map[string]any{
+		"yggdrasil": map[string]any{
+			"admin_listen": "none",
+		},
+	})
+
+	// Redirect with extra fields that must be ignored
+	writeYAML(t, filepath.Join(dir, "redirect.yml"), map[string]any{
+		"config": "base.yml",
+		"yggdrasil": map[string]any{
+			"admin_listen": "unix:///should-be-ignored.sock",
+			"key":          map[string]any{"text": "deadbeef"},
+		},
+	})
+
+	dst := gsettings.NewDefault()
+	if err := msettings.ParseFile(filepath.Join(dir, "redirect.yml"), dst); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := dst.GetYggdrasil().GetAdminListen(); got != "none" {
+		t.Fatalf("admin_listen: got %q, want %q (intermediate values must be ignored)", got, "none")
+	}
+	if got := dst.GetYggdrasil().GetKey().GetText(); got != "" {
+		t.Fatalf("key.text: got %q, want empty (intermediate values must be ignored)", got)
+	}
+}
+
+func TestParseFile_Chain_NoRedirect(t *testing.T) {
+	dir := t.TempDir()
+
+	writeYAML(t, filepath.Join(dir, "standalone.yml"), map[string]any{
+		"yggdrasil": map[string]any{
+			"admin_listen": "unix:///standalone.sock",
+		},
+	})
+
+	dst := gsettings.NewDefault()
+	if err := msettings.ParseFile(filepath.Join(dir, "standalone.yml"), dst); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := dst.GetYggdrasil().GetAdminListen(); got != "unix:///standalone.sock" {
+		t.Fatalf("admin_listen: got %q, want %q", got, "unix:///standalone.sock")
+	}
+}
+
+func TestParseFile_Chain_Circular(t *testing.T) {
+	dir := t.TempDir()
+
+	writeYAML(t, filepath.Join(dir, "x.yml"), map[string]any{"config": "y.yml"})
+	writeYAML(t, filepath.Join(dir, "y.yml"), map[string]any{"config": "x.yml"})
+
+	dst := gsettings.NewDefault()
+	err := msettings.ParseFile(filepath.Join(dir, "x.yml"), dst)
+	if err == nil {
+		t.Fatal("expected circular reference error")
+	}
+	if !strings.Contains(err.Error(), "circular") {
+		t.Fatalf("expected 'circular' in error, got: %s", err)
+	}
+}
+
+func TestParseFile_Chain_SelfRef(t *testing.T) {
+	dir := t.TempDir()
+
+	writeYAML(t, filepath.Join(dir, "self.yml"), map[string]any{"config": "self.yml"})
+
+	dst := gsettings.NewDefault()
+	err := msettings.ParseFile(filepath.Join(dir, "self.yml"), dst)
+	if err == nil {
+		t.Fatal("expected circular reference error")
+	}
+}
+
+func TestParseFile_Chain_ExceedsMax(t *testing.T) {
+	dir := t.TempDir()
+
+	// Build a chain of 33 files (exceeds limit of 32)
+	for i := range 33 {
+		var content map[string]any
+		if i < 32 {
+			content = map[string]any{"config": fmt.Sprintf("f%d.yml", i+1)}
+		} else {
+			content = map[string]any{"yggdrasil": map[string]any{"admin_listen": "none"}}
+		}
+		writeYAML(t, filepath.Join(dir, fmt.Sprintf("f%d.yml", i)), content)
+	}
+
+	dst := gsettings.NewDefault()
+	err := msettings.ParseFile(filepath.Join(dir, "f0.yml"), dst)
+	if err == nil {
+		t.Fatal("expected chain limit error")
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected 'exceeds' in error, got: %s", err)
+	}
+}
+
+func TestParseFile_Chain_BrokenLink(t *testing.T) {
+	dir := t.TempDir()
+
+	writeYAML(t, filepath.Join(dir, "broken.yml"), map[string]any{"config": "nonexistent.yml"})
+
+	dst := gsettings.NewDefault()
+	err := msettings.ParseFile(filepath.Join(dir, "broken.yml"), dst)
+	if err == nil {
+		t.Fatal("expected file not found error")
+	}
+}
+
+func TestParseFile_Chain_ConfigCleared(t *testing.T) {
+	dir := t.TempDir()
+
+	writeYAML(t, filepath.Join(dir, "a.yml"), map[string]any{
+		"config": "b.yml",
+	})
+	writeYAML(t, filepath.Join(dir, "b.yml"), map[string]any{
+		"yggdrasil": map[string]any{"admin_listen": "none"},
+	})
+
+	dst := gsettings.NewDefault()
+	if err := msettings.ParseFile(filepath.Join(dir, "a.yml"), dst); err != nil {
+		t.Fatal(err)
+	}
+	if got := dst.GetConfig(); got != "" {
+		t.Fatalf("config must be cleared after parsing, got %q", got)
+	}
+}
+
+func TestParseFile_Chain_RelativePath(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	os.MkdirAll(sub, 0755)
+
+	writeYAML(t, filepath.Join(sub, "target.yml"), map[string]any{
+		"yggdrasil": map[string]any{"admin_listen": "unix:///target.sock"},
+	})
+	// Redirect uses relative path from parent dir into sub/
+	writeYAML(t, filepath.Join(dir, "entry.yml"), map[string]any{
+		"config": "sub/target.yml",
+	})
+
+	dst := gsettings.NewDefault()
+	if err := msettings.ParseFile(filepath.Join(dir, "entry.yml"), dst); err != nil {
+		t.Fatal(err)
+	}
+	if got := dst.GetYggdrasil().GetAdminListen(); got != "unix:///target.sock" {
+		t.Fatalf("admin_listen: got %q, want %q", got, "unix:///target.sock")
+	}
+}
+
+// //
+
+func writeYAML(t *testing.T, path string, data map[string]any) {
+	t.Helper()
+	raw, err := yaml.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0644); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -135,7 +135,7 @@ func buildComments(branchUsage map[string]string, flags []FlagObj) []CommentEntr
 		}
 	}
 	for _, f := range flags {
-		if f.Usage != "" && !f.IsTrigger {
+		if f.Usage != "" && !f.IsTrigger && f.Name != "config" {
 			all[f.Name] = f.Usage
 		}
 	}

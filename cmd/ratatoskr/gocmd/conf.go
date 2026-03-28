@@ -205,6 +205,7 @@ func saveWithComments(data any, path string) error {
 		return fmt.Errorf("unsupported format: %s", filepath.Ext(path))
 	}
 
+	raw = msettings.StripRootKey(raw, "config")
 	return os.WriteFile(path, raw, 0644)
 }
 

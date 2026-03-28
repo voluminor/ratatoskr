@@ -6,6 +6,7 @@ require (
 	github.com/hjson/hjson-go/v4 v4.6.0
 	github.com/voluminor/ratatoskr v0.0.0
 	github.com/yggdrasil-network/yggdrasil-go v0.5.13
+	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
@@ -24,7 +25,6 @@ require (
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6 // indirect
 )
 

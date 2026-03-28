@@ -10,6 +10,13 @@
 #   map:     map[string]any, map[string][]string — JSON on CLI, native in config files
 #   trigger: true — CLI-only bool flag, not saved/parsed from config files
 
+# Config file redirect chain:
+#   When a config file contains a non-empty "config" field, it acts as a pure
+#   redirect — all other fields in that file are ignored and the referenced
+#   file is loaded instead. Chains are followed up to 32 hops; circular
+#   references are detected and rejected.
+#   Relative paths are resolved from the directory of the referring file.
+#   The "config" field is never written to generated config files.
 config:
   type: string
   usage: "path to config file (json/yml/yaml/hjson/conf)"
