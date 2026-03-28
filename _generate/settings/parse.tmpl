@@ -5,10 +5,6 @@ package settings
 
 import (
 "encoding/json"
-"fmt"
-"os"
-"path/filepath"
-"strings"
 
 "github.com/hjson/hjson-go/v4"
 "gopkg.in/yaml.v3"
@@ -29,26 +25,4 @@ return yaml.Unmarshal(data, obj)
 // ParseHJSON unmarshals HJSON data into the given Obj.
 func ParseHJSON(data []byte, obj *Obj) error {
 return hjson.Unmarshal(data, obj)
-}
-
-// //
-
-// ParseFile reads a config file and unmarshals it into the given Obj.
-// Format is detected by file extension: .json, .yml/.yaml, .hjson/.conf
-func ParseFile(path string, obj *Obj) error {
-data, err := os.ReadFile(path)
-if err != nil {
-return fmt.Errorf("read config %s: %w", path, err)
-}
-
-switch strings.ToLower(filepath.Ext(path)) {
-case ".json":
-return ParseJSON(data, obj)
-case ".yml", ".yaml":
-return ParseYAML(data, obj)
-case ".hjson", ".conf":
-return ParseHJSON(data, obj)
-default:
-return fmt.Errorf("unsupported config format: %s", filepath.Ext(path))
-}
 }

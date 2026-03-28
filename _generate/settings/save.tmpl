@@ -7,8 +7,6 @@ import (
 "encoding/json"
 "fmt"
 "os"
-"path/filepath"
-"strings"
 
 "github.com/hjson/hjson-go/v4"
 "gopkg.in/yaml.v3"
@@ -41,21 +39,4 @@ if err != nil {
 return fmt.Errorf("marshal hjson: %w", err)
 }
 return os.WriteFile(path, append(data, '\n'), 0644)
-}
-
-// //
-
-// SaveFile writes the Obj to the given path.
-// Format is detected by file extension: .json, .yml/.yaml, .hjson/.conf
-func SaveFile(obj *Obj, path string) error {
-switch strings.ToLower(filepath.Ext(path)) {
-case ".json":
-return SaveJSON(obj, path)
-case ".yml", ".yaml":
-return SaveYAML(obj, path)
-case ".hjson", ".conf":
-return SaveHJSON(obj, path)
-default:
-return fmt.Errorf("unsupported config format: %s", filepath.Ext(path))
-}
 }
