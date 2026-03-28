@@ -20,7 +20,7 @@ go:
   usage: "executable commands"
   trigger: true
 
-  key:
+  keys:
     usage: "key utilities"
     gen:
       type: duration
@@ -41,10 +41,12 @@ go:
       usage: "generate a default ratatoskr config file"
       path:
         type: string
-        usage: "output file path (extension determines format: json/yml/yaml/hjson/conf)"
+        usage: "output directory path (file is always ratatoskr-config.{format})"
+      format:
+        usage: "output file format (default: yml)"
+        enum: &conf_format [ json, yml, conf ]
       preset:
-        value: "basic"
-        usage: "config preset"
+        usage: "config preset (default: basic)"
         enum: [ basic, medium, full ]
     import:
       usage: "convert Yggdrasil config to ratatoskr format"
@@ -53,7 +55,10 @@ go:
         usage: "input Yggdrasil config file path"
       to:
         type: string
-        usage: "output ratatoskr config file path"
+        usage: "output directory path"
+      format:
+        usage: "output file format (default: yml)"
+        enum: *conf_format
     export:
       usage: "convert ratatoskr config to Yggdrasil format"
       from:
@@ -61,7 +66,10 @@ go:
         usage: "input ratatoskr config file path"
       to:
         type: string
-        usage: "output Yggdrasil config file path (json)"
+        usage: "output directory path"
+      format:
+        usage: "output file format (default: json)"
+        enum: *conf_format
 
   peer_info:
     usage: "probe peers and report status"
@@ -87,8 +95,8 @@ go:
       usage: "protocol (default: tcp)"
       enum: [ tcp, udp ]
     peer:
-      type: string
-      usage: "yggdrasil peer URI to connect through (e.g. tcp://1.2.3.4:5678)"
+      type: "[]string"
+      usage: "yggdrasil peer URIs to connect through (e.g. tcp://1.2.3.4:5678)"
 
   traceroute:
     scan:

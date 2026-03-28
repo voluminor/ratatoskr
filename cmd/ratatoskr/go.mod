@@ -3,6 +3,7 @@ module github.com/voluminor/ratatoskr/cmd/ratatoskr
 go 1.25.5
 
 require (
+	github.com/hjson/hjson-go/v4 v4.6.0
 	github.com/voluminor/ratatoskr v0.0.0
 	github.com/yggdrasil-network/yggdrasil-go v0.5.13
 )
@@ -15,7 +16,6 @@ require (
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/gologme/log v1.3.0 // indirect
 	github.com/google/btree v1.1.3 // indirect
-	github.com/hjson/hjson-go/v4 v4.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/things-go/go-socks5 v0.1.1 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect

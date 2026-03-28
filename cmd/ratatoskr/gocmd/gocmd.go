@@ -9,11 +9,23 @@ import (
 // Run dispatches the active command from the go trigger group.
 // Returns (true, err) if a command was handled, (false, nil) otherwise.
 func Run(cfg *gsettings.GoObj) (bool, error) {
-	if cfg.Keygen > 0 {
-		return true, keygen(cfg.Keygen)
+	if handled, err := keysCmd(&cfg.Keys); handled {
+		return true, err
 	}
 
-	if cfg.Traceroute.Scan || cfg.Traceroute.Trace != "" {
+	if handled, err := confCmd(&cfg.Conf); handled {
+		return true, err
+	}
+
+	if handled, err := peerInfoCmd(&cfg.PeerInfo); handled {
+		return true, err
+	}
+
+	if handled, err := forwardCmd(&cfg.Forward); handled {
+		return true, err
+	}
+
+	if cfg.Traceroute.Scan || cfg.Traceroute.Trace != "" || cfg.Traceroute.Ping != "" {
 		return true, traceCmd(&cfg.Traceroute)
 	}
 

@@ -63,17 +63,27 @@ func traceCmd(cfg *gsettings.TracerouteObj) error {
 	if cfg.Scan {
 		return runScan(ctx, tr, cfg)
 	}
+	if cfg.Ping != "" {
+		return runPing(ctx, tr, cfg)
+	}
 	return runTrace(ctx, tr, cfg)
 }
 
 // //
 
 func validateTraceParams(cfg *gsettings.TracerouteObj) error {
-	if cfg.Scan && cfg.Trace != "" {
-		return fmt.Errorf("specify either -go.traceroute.scan or -go.traceroute.trace, not both")
+	modes := 0
+	if cfg.Scan {
+		modes++
 	}
-	if !cfg.Scan && cfg.Trace == "" {
-		return fmt.Errorf("specify -go.traceroute.scan or -go.traceroute.trace <pubkey>")
+	if cfg.Trace != "" {
+		modes++
+	}
+	if cfg.Ping != "" {
+		modes++
+	}
+	if modes != 1 {
+		return fmt.Errorf("specify exactly one of -go.traceroute.scan, -go.traceroute.trace, or -go.traceroute.ping")
 	}
 
 	if cfg.Peer == "" {
@@ -87,15 +97,21 @@ func validateTraceParams(cfg *gsettings.TracerouteObj) error {
 		return fmt.Errorf("timeout must be >= %s", minTraceTimeout)
 	}
 
-	if cfg.Trace != "" {
-		raw, err := hex.DecodeString(cfg.Trace)
-		if err != nil || len(raw) != ed25519.PublicKeySize {
-			return fmt.Errorf("invalid target key: must be 64-char hex (32 bytes)")
+	for _, key := range []string{cfg.Trace, cfg.Ping} {
+		if key != "" {
+			raw, err := hex.DecodeString(key)
+			if err != nil || len(raw) != ed25519.PublicKeySize {
+				return fmt.Errorf("invalid target key: must be 64-char hex (32 bytes)")
+			}
 		}
 	}
 
 	return nil
 }
+
+const defaultPingCount = 4
+
+// //
 
 func applyTraceDefaults(cfg *gsettings.TracerouteObj) {
 	if cfg.Timeout == 0 {
@@ -106,6 +122,9 @@ func applyTraceDefaults(cfg *gsettings.TracerouteObj) {
 	}
 	if cfg.Concurrency == 0 {
 		cfg.Concurrency = defaultTraceConcurrency
+	}
+	if cfg.Count == 0 {
+		cfg.Count = defaultPingCount
 	}
 }
 
@@ -388,8 +407,97 @@ trace:
 
 // //
 
-func clearLine() {
-	fmt.Fprint(os.Stderr, "\r\033[2K")
+func runPing(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteObj) error {
+	keyBytes, _ := hex.DecodeString(cfg.Ping)
+	pubKey := ed25519.PublicKey(keyBytes)
+
+	fmt.Fprintf(os.Stderr, "PING %s... via %s\n", cfg.Ping[:16], cfg.Peer)
+
+	type pingResultObj struct {
+		Seq int     `json:"seq"`
+		RTT float64 `json:"rtt_ms"`
+		Err string  `json:"error,omitempty"`
+	}
+
+	results := make([]pingResultObj, 0, cfg.Count)
+	var minRTT, maxRTT, sumRTT float64
+
+	for i := range cfg.Count {
+		start := time.Now()
+		_, err := tr.Trace(ctx, pubKey)
+		rtt := time.Since(start)
+		ms := float64(rtt.Microseconds()) / 1000.0
+
+		pr := pingResultObj{Seq: i + 1, RTT: ms}
+		if err != nil {
+			pr.Err = err.Error()
+			pr.RTT = 0
+			if cfg.Format == gsettings.GoPeerInfoFormatText {
+				fmt.Fprintf(os.Stderr, "seq %d: error %s\n", i+1, err)
+			}
+		} else {
+			if cfg.Format == gsettings.GoPeerInfoFormatText {
+				fmt.Fprintf(os.Stderr, "seq %d: %.2f ms\n", i+1, ms)
+			}
+			if minRTT == 0 || ms < minRTT {
+				minRTT = ms
+			}
+			if ms > maxRTT {
+				maxRTT = ms
+			}
+			sumRTT += ms
+		}
+		results = append(results, pr)
+
+		if ctx.Err() != nil {
+			break
+		}
+	}
+
+	successful := 0
+	for _, r := range results {
+		if r.Err == "" {
+			successful++
+		}
+	}
+
+	avgRTT := 0.0
+	if successful > 0 {
+		avgRTT = sumRTT / float64(successful)
+	}
+
+	if cfg.Format == gsettings.GoPeerInfoFormatJson {
+		out := struct {
+			Target string          `json:"target"`
+			Pings  []pingResultObj `json:"pings"`
+			Stats  struct {
+				Count int     `json:"count"`
+				OK    int     `json:"ok"`
+				Min   float64 `json:"min_ms"`
+				Avg   float64 `json:"avg_ms"`
+				Max   float64 `json:"max_ms"`
+			} `json:"stats"`
+		}{
+			Target: cfg.Ping,
+			Pings:  results,
+		}
+		out.Stats.Count = len(results)
+		out.Stats.OK = successful
+		out.Stats.Min = minRTT
+		out.Stats.Avg = avgRTT
+		out.Stats.Max = maxRTT
+
+		data, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "--- %d pings, %d ok, min/avg/max = %.2f/%.2f/%.2f ms\n",
+		len(results), successful, minRTT, avgRTT, maxRTT)
+	return nil
 }
 
 // //
@@ -469,8 +577,8 @@ func nodeToScanJSON(n *traceroute.NodeObj) *scanNodeJSON {
 
 // //
 
-func outputScan(result *traceroute.TreeResultObj, format gsettings.GoTracerouteFormatEnum) error {
-	if format == gsettings.GoTracerouteFormatJson {
+func outputScan(result *traceroute.TreeResultObj, format gsettings.GoPeerInfoFormatEnum) error {
+	if format == gsettings.GoPeerInfoFormatJson {
 		data, err := json.MarshalIndent(nodeToScanJSON(result.Root), "", "  ")
 		if err != nil {
 			return err
@@ -484,8 +592,8 @@ func outputScan(result *traceroute.TreeResultObj, format gsettings.GoTracerouteF
 	return nil
 }
 
-func outputTrace(target string, result *traceroute.TraceResultObj, format gsettings.GoTracerouteFormatEnum) error {
-	if format == gsettings.GoTracerouteFormatJson {
+func outputTrace(target string, result *traceroute.TraceResultObj, format gsettings.GoPeerInfoFormatEnum) error {
+	if format == gsettings.GoPeerInfoFormatJson {
 		out := struct {
 			Target string          `json:"target"`
 			Path   []*scanNodeJSON `json:"path,omitempty"`
