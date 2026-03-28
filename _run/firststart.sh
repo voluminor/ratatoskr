@@ -10,4 +10,5 @@ mkdir -p tmp
 
 
 go work sync
-go generate
+go generate .
+./_run/scripts/go_tidy_all.sh

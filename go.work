@@ -2,12 +2,12 @@ go 1.25.5
 
 use (
 	.
+	./_generate/dependencies
+	./_generate/settings
 	./cmd/embedded/http
 	./cmd/embedded/mobile
 	./cmd/embedded/tiny-chat
 	./cmd/embedded/tiny-http
 	./cmd/ratatoskr
 	./cmd/yggstack
-	./_generate/settings
-	./_generate/dependencies
 )
