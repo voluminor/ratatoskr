@@ -156,17 +156,12 @@ func presetMedium(obj *gsettings.Obj) map[string]any {
 				"text": obj.Yggdrasil.Key.Text,
 			},
 			"listen": obj.Yggdrasil.Listen,
+			"inputs": obj.Yggdrasil.Inputs,
 			"peers": map[string]any{
 				"url": obj.Yggdrasil.Peers.Url,
 			},
 			"if": map[string]any{
-				"name": obj.Yggdrasil.If.Name,
-				"mtu":  obj.Yggdrasil.If.Mtu,
-			},
-			"multicast": map[string]any{
-				"regex":  obj.Yggdrasil.Multicast.Regex,
-				"beacon": obj.Yggdrasil.Multicast.Beacon,
-				"listen": obj.Yggdrasil.Multicast.Listen,
+				"mtu": obj.Yggdrasil.If.Mtu,
 			},
 			"core_stop_timeout": obj.Yggdrasil.CoreStopTimeout.String(),
 			"rst_queue_size":    obj.Yggdrasil.RstQueueSize,

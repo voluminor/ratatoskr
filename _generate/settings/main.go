@@ -41,6 +41,9 @@ var ifaceTmpl string
 //go:embed help.tmpl
 var helpTmpl string
 
+//go:embed comments.tmpl
+var commentsTmpl string
+
 // // // // // // // // // //
 
 func main() {
@@ -80,6 +83,7 @@ func main() {
 		Flags:           resolved.Flags,
 		Enums:           resolved.Enums,
 		Tree:            resolved.Tree,
+		Comments:        buildComments(walk.BranchUsage, resolved.Flags),
 		TypesImports:    sortedKeys(resolved.TypesImports),
 		FlagsImports:    sortedKeys(resolved.FlagsImports),
 		DefaultsImports: sortedKeys(resolved.DefaultsImports),
@@ -114,6 +118,7 @@ func main() {
 		{"save.go", saveTmpl, false},
 		{"init.go", initTmpl, false},
 		{"help.go", helpTmpl, false},
+		{"comments.go", commentsTmpl, false},
 	}
 
 	for _, t := range templates {

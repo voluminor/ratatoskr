@@ -59,6 +59,14 @@ type TreeLeafObj struct {
 
 // //
 
+// CommentEntryObj is a single path→usage pair for the comments map.
+type CommentEntryObj struct {
+	Path    string
+	Comment string
+}
+
+// //
+
 // TemplateObj is the root data structure passed to all templates.
 type TemplateObj struct {
 	GenerationTime  string
@@ -66,6 +74,7 @@ type TemplateObj struct {
 	Flags           []FlagObj
 	Enums           []EnumObj
 	Tree            map[string]*TreeLeafObj
+	Comments        []CommentEntryObj
 	TypesImports    []string
 	FlagsImports    []string
 	DefaultsImports []string

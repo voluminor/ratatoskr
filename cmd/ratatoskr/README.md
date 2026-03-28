@@ -83,11 +83,7 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ## Port forwarding
 
 ```bash
-./ratatoskr -go.forward.from 127.0.0.1:8080 -go.forward.to [200:abc::1]:8080 -go.forward.peer tcp://1.2.3.4:5678
-```
-
-```bash
-./ratatoskr -go.forward.from 127.0.0.1:5353 -go.forward.to [200:abc::1]:53 -go.forward.proto udp -go.forward.peer tcp://1.2.3.4:5678
+./ratatoskr -go.forward.from 127.0.0.1:8080 -go.forward.to [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.forward.peer  tcp://yggdrasil.sunsung.fun:4442
 ```
 
 ## Traceroute
@@ -100,12 +96,6 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ./ratatoskr -go.traceroute.scan -go.traceroute.peer tcp://yggdrasil.sunsung.fun:4442
 ```
 
-### Ping
-
 ```bash
 ./ratatoskr -go.traceroute.ping a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.traceroute.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.traceroute.ping a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.traceroute.peer tcp://yggdrasil.sunsung.fun:4442 -go.traceroute.count 10
 ```

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -100,6 +101,53 @@ func buildFlagAccessor(flagName string) string {
 		sb.WriteString(dep.GenGoName(p))
 	}
 	return sb.String()
+}
+
+// //
+
+// buildComments merges branch usage and leaf flag usage into a sorted slice.
+// Trigger groups and their children are excluded.
+func buildComments(branchUsage map[string]string, flags []FlagObj) []CommentEntryObj {
+	// Collect trigger prefixes from flags
+	triggerPrefixes := make([]string, 0)
+	for _, f := range flags {
+		if f.IsTrigger {
+			parts := strings.Split(f.Name, ".")
+			triggerPrefixes = append(triggerPrefixes, parts[0]+".")
+		}
+	}
+	slices.Sort(triggerPrefixes)
+	triggerPrefixes = slices.Compact(triggerPrefixes)
+
+	isTriggerPath := func(path string) bool {
+		for _, p := range triggerPrefixes {
+			if path+"." == p || strings.HasPrefix(path, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	all := make(map[string]string, len(branchUsage)+len(flags))
+	for path, usage := range branchUsage {
+		if !isTriggerPath(path) {
+			all[path] = usage
+		}
+	}
+	for _, f := range flags {
+		if f.Usage != "" && !f.IsTrigger {
+			all[f.Name] = f.Usage
+		}
+	}
+
+	entries := make([]CommentEntryObj, 0, len(all))
+	for path, comment := range all {
+		entries = append(entries, CommentEntryObj{Path: path, Comment: comment})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].Path < entries[j].Path
+	})
+	return entries
 }
 
 // //
