@@ -21,25 +21,25 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ### Generate vanity key
 
 ```bash
-./ratatoskr -go.keys.gen 10s
+./ratatoskr -go.key.gen 10s
 ```
 
 ### Show address for a key
 
 ```bash
-./ratatoskr -go.keys.addr <hex-private-128|hex-public-64|path-to-pem>
+./ratatoskr -go.key.addr <hex-private-128|hex-public-64|path-to-pem>
 ```
 
 ### Convert hex key to PEM
 
 ```bash
-./ratatoskr -go.keys.to_pem key.pem -go.keys.addr <hex-private-128>
+./ratatoskr -go.key.to_pem key.pem -go.key.addr <hex-private-128>
 ```
 
 ### Convert PEM to hex key
 
 ```bash
-./ratatoskr -go.keys.from_pem key.pem
+./ratatoskr -go.key.from_pem key.pem
 ```
 
 ## Configuration utilities

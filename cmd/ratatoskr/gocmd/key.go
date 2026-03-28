@@ -27,7 +27,7 @@ var (
 
 // //
 
-func keysCmd(cfg *gsettings.KeysObj) (bool, error) {
+func keyCmd(cfg *gsettings.GoKeyObj) (bool, error) {
 	if cfg.Gen > 0 {
 		return true, keygen(cfg.Gen)
 	}
@@ -71,7 +71,7 @@ func keyAddr(input string) error {
 
 // //
 
-func keyToPem(cfg *gsettings.KeysObj) error {
+func keyToPem(cfg *gsettings.GoKeyObj) error {
 	if cfg.Addr == "" {
 		return fmt.Errorf("specify -go.keys.addr with hex private key (128 chars) or PEM file path")
 	}

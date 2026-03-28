@@ -17,10 +17,11 @@ func insertLeaf(tree map[string]*TreeLeafObj, points []string, leaf *TreeLeafObj
 		branch, ok := current[key]
 		if !ok {
 			usageKey := strings.Join(points[:i+1], ".")
+			typeName := branchTypeName(points[:i+1])
 			branch = &TreeLeafObj{
 				Branch: make(map[string]*TreeLeafObj),
 				Name:   dep.GenGoName(key),
-				Type:   dep.GenGoName(key) + "Obj",
+				Type:   typeName,
 				Key:    key,
 				Usage:  branchUsage[usageKey],
 			}
@@ -29,6 +30,21 @@ func insertLeaf(tree map[string]*TreeLeafObj, points []string, leaf *TreeLeafObj
 		current = branch.Branch
 	}
 	current[points[len(points)-1]] = leaf
+}
+
+// branchTypeName builds the struct type name for a branch node.
+// Root-level branches (depth 1) use just the key: "GoObj".
+// Deeper branches include the full path: "GoKeyObj", "YggdrasilPeersManagerObj".
+func branchTypeName(path []string) string {
+	if len(path) <= 1 {
+		return dep.GenGoName(path[len(path)-1]) + "Obj"
+	}
+	var b strings.Builder
+	for _, p := range path {
+		b.WriteString(dep.GenGoName(p))
+	}
+	b.WriteString("Obj")
+	return b.String()
 }
 
 // //
@@ -69,7 +85,7 @@ func propagateGenInterface(tree map[string]*TreeLeafObj, paths map[string]bool, 
 		active := inherited || paths[fullKey]
 		if active {
 			node.GenInterface = true
-			node.InterfaceType = node.Name + "Interface"
+			node.InterfaceType = strings.TrimSuffix(node.Type, "Obj") + "Interface"
 		}
 		propagateGenInterface(node.Branch, paths, fullKey, active)
 	}

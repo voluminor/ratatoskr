@@ -9,7 +9,7 @@ import (
 // Run dispatches the active command from the go trigger group.
 // Returns (true, err) if a command was handled, (false, nil) otherwise.
 func Run(cfg *gsettings.GoObj) (bool, error) {
-	if handled, err := keysCmd(&cfg.Keys); handled {
+	if handled, err := keyCmd(&cfg.Key); handled {
 		return true, err
 	}
 

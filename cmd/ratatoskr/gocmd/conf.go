@@ -19,7 +19,7 @@ const configBaseName = "ratatoskr-config"
 
 // //
 
-func confCmd(cfg *gsettings.ConfObj) (bool, error) {
+func confCmd(cfg *gsettings.GoConfObj) (bool, error) {
 	if cfg.Generate.Path != "" {
 		return true, confGenerate(&cfg.Generate)
 	}
@@ -34,7 +34,7 @@ func confCmd(cfg *gsettings.ConfObj) (bool, error) {
 
 // //
 
-func confGenerate(cfg *gsettings.GenerateObj) error {
+func confGenerate(cfg *gsettings.GoConfGenerateObj) error {
 	outDir, err := validateDir(cfg.Path)
 	if err != nil {
 		return err
@@ -59,7 +59,7 @@ func confGenerate(cfg *gsettings.GenerateObj) error {
 
 // //
 
-func confImport(cfg *gsettings.ImportObj) error {
+func confImport(cfg *gsettings.GoConfImportObj) error {
 	outDir, err := validateDir(cfg.To)
 	if err != nil {
 		return fmt.Errorf("output path: %w", err)
@@ -92,7 +92,7 @@ func confImport(cfg *gsettings.ImportObj) error {
 
 // //
 
-func confExport(cfg *gsettings.ExportObj) error {
+func confExport(cfg *gsettings.GoConfExportObj) error {
 	outDir, err := validateDir(cfg.To)
 	if err != nil {
 		return fmt.Errorf("output path: %w", err)
@@ -133,25 +133,25 @@ func applyPreset(obj *gsettings.Obj, preset gsettings.GoConfGeneratePresetEnum) 
 		obj.Yggdrasil.Inputs = nil
 		obj.Yggdrasil.AllowedPublicKeys = nil
 		obj.Yggdrasil.AdminListen = ""
-		obj.Yggdrasil.If = gsettings.IfObj{}
-		obj.Yggdrasil.Node = gsettings.NodeObj{}
+		obj.Yggdrasil.If = gsettings.YggdrasilIfObj{}
+		obj.Yggdrasil.Node = gsettings.YggdrasilNodeObj{}
 		obj.Yggdrasil.LogLookups = false
 		obj.Yggdrasil.CoreStopTimeout = 0
 		obj.Yggdrasil.RstQueueSize = 0
-		obj.Yggdrasil.Multicast = gsettings.MulticastObj{}
-		obj.Yggdrasil.Socks = gsettings.SocksObj{}
+		obj.Yggdrasil.Multicast = gsettings.YggdrasilMulticastObj{}
+		obj.Yggdrasil.Socks = gsettings.YggdrasilSocksObj{}
 		obj.Yggdrasil.Peers.Interface = nil
-		obj.Yggdrasil.Peers.Manager = gsettings.ManagerObj{}
+		obj.Yggdrasil.Peers.Manager = gsettings.YggdrasilPeersManagerObj{}
 		obj.Log = gsettings.LogObj{}
 
 	case gsettings.GoConfGeneratePresetMedium:
 		obj.Yggdrasil.Inputs = nil
 		obj.Yggdrasil.AllowedPublicKeys = nil
 		obj.Yggdrasil.AdminListen = ""
-		obj.Yggdrasil.Node = gsettings.NodeObj{}
-		obj.Yggdrasil.Socks = gsettings.SocksObj{}
+		obj.Yggdrasil.Node = gsettings.YggdrasilNodeObj{}
+		obj.Yggdrasil.Socks = gsettings.YggdrasilSocksObj{}
 		obj.Yggdrasil.Peers.Interface = nil
-		obj.Yggdrasil.Peers.Manager = gsettings.ManagerObj{}
+		obj.Yggdrasil.Peers.Manager = gsettings.YggdrasilPeersManagerObj{}
 
 	case gsettings.GoConfGeneratePresetFull:
 		// keep everything

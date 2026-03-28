@@ -20,7 +20,7 @@ go:
   usage: "executable commands"
   trigger: true
 
-  keys:
+  key:
     usage: "key utilities"
     gen:
       type: duration

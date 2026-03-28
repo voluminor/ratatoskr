@@ -29,7 +29,7 @@ const (
 
 // //
 
-func traceCmd(cfg *gsettings.TracerouteObj) error {
+func traceCmd(cfg *gsettings.GoTracerouteObj) error {
 	if err := validateTraceParams(cfg); err != nil {
 		return err
 	}
@@ -71,7 +71,7 @@ func traceCmd(cfg *gsettings.TracerouteObj) error {
 
 // //
 
-func validateTraceParams(cfg *gsettings.TracerouteObj) error {
+func validateTraceParams(cfg *gsettings.GoTracerouteObj) error {
 	modes := 0
 	if cfg.Scan {
 		modes++
@@ -113,7 +113,7 @@ const defaultPingCount = 4
 
 // //
 
-func applyTraceDefaults(cfg *gsettings.TracerouteObj) {
+func applyTraceDefaults(cfg *gsettings.GoTracerouteObj) {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = defaultTraceTimeout
 	}
@@ -282,7 +282,7 @@ func hasUnreachable(root *traceroute.NodeObj) bool {
 
 // //
 
-func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteObj) error {
+func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerouteObj) error {
 	ch := make(chan traceroute.TreeProgressObj, 16)
 
 	var result *traceroute.TreeResultObj
@@ -355,7 +355,7 @@ scan:
 
 // //
 
-func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteObj) error {
+func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerouteObj) error {
 	keyBytes, _ := hex.DecodeString(cfg.Trace)
 	pubKey := ed25519.PublicKey(keyBytes)
 
@@ -407,7 +407,7 @@ trace:
 
 // //
 
-func runPing(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteObj) error {
+func runPing(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerouteObj) error {
 	keyBytes, _ := hex.DecodeString(cfg.Ping)
 	pubKey := ed25519.PublicKey(keyBytes)
 

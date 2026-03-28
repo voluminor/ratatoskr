@@ -21,7 +21,7 @@ const defaultPeerInfoTimeout = 10 * time.Second
 
 // //
 
-func peerInfoCmd(cfg *gsettings.PeerInfoObj) (bool, error) {
+func peerInfoCmd(cfg *gsettings.GoPeerInfoObj) (bool, error) {
 	if len(cfg.Url) == 0 {
 		return false, nil
 	}
@@ -30,7 +30,7 @@ func peerInfoCmd(cfg *gsettings.PeerInfoObj) (bool, error) {
 
 // //
 
-func peerInfo(cfg *gsettings.PeerInfoObj) error {
+func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 	timeout := cfg.Timeout
 	if timeout == 0 {
 		timeout = defaultPeerInfoTimeout

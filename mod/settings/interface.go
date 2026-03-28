@@ -14,10 +14,10 @@ type Interface interface {
 // //
 
 type YggdrasilInterface = gsettings.YggdrasilInterface
-type KeyInterface = gsettings.KeyInterface
-type IfInterface = gsettings.IfInterface
-type NodeInterface = gsettings.NodeInterface
-type PeersInterface = gsettings.PeersInterface
-type ManagerInterface = gsettings.ManagerInterface
-type MulticastInterface = gsettings.MulticastInterface
-type SocksInterface = gsettings.SocksInterface
+type KeyInterface = gsettings.YggdrasilKeyInterface
+type IfInterface = gsettings.YggdrasilIfInterface
+type NodeInterface = gsettings.YggdrasilNodeInterface
+type PeersInterface = gsettings.YggdrasilPeersInterface
+type ManagerInterface = gsettings.YggdrasilPeersManagerInterface
+type MulticastInterface = gsettings.YggdrasilMulticastInterface
+type SocksInterface = gsettings.YggdrasilSocksInterface

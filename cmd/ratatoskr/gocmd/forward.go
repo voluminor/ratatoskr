@@ -24,7 +24,7 @@ const defaultUDPSessionTimeout = 120 * time.Second
 
 // //
 
-func forwardCmd(cfg *gsettings.ForwardObj) (bool, error) {
+func forwardCmd(cfg *gsettings.GoForwardObj) (bool, error) {
 	if cfg.From == "" && cfg.To == "" {
 		return false, nil
 	}
@@ -33,7 +33,7 @@ func forwardCmd(cfg *gsettings.ForwardObj) (bool, error) {
 
 // //
 
-func forwardRun(cfg *gsettings.ForwardObj) error {
+func forwardRun(cfg *gsettings.GoForwardObj) error {
 	if cfg.From == "" {
 		return fmt.Errorf("missing -go.forward.from (local listen address)")
 	}
