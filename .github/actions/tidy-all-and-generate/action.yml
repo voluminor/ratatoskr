@@ -9,7 +9,7 @@ runs:
       run: |
         set -Eeuo pipefail
         mkdir -p target tmp
-        GOWORK=off GOFLAGS=-mod=mod go generate .
+        GOFLAGS=-mod=mod go generate .
 
     - name: 📥 go mod tidy-all
       shell: bash
