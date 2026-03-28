@@ -8,12 +8,24 @@ require (
 )
 
 require (
+	github.com/Arceliar/ironwood v0.0.0-20260117132459-7017dbc41d8e // indirect
+	github.com/Arceliar/phony v0.0.0-20220903101357-530938a4b13d // indirect
+	github.com/bits-and-blooms/bitset v1.24.4 // indirect
+	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
+	github.com/coder/websocket v1.8.14 // indirect
+	github.com/gologme/log v1.3.0 // indirect
+	github.com/google/btree v1.1.3 // indirect
 	github.com/hjson/hjson-go/v4 v4.6.0 // indirect
-	github.com/kr/pretty v0.3.1 // indirect
-	github.com/rogpeppe/go-internal v1.10.0 // indirect
+	github.com/quic-go/quic-go v0.59.0 // indirect
+	github.com/things-go/go-socks5 v0.1.1 // indirect
+	github.com/wlynxg/anet v0.0.5 // indirect
+	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
+	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
-	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
+	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6 // indirect
 )
 
 replace github.com/voluminor/ratatoskr => ../..

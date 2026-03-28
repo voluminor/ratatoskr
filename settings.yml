@@ -13,12 +13,40 @@ config:
   type: string
   usage: "path to config file (json/yaml/hjson)"
 
+# ==== #
+
 go:
   usage: "executable commands"
   trigger: true
+
   keygen:
     type: duration
     usage: "mine a private key with max leading zeros for the given duration (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
+
+  trace:
+    scan:
+      type: bool
+      usage: "BFS network topology scan"
+    trace:
+      type: string
+      usage: "traceroute to target public key (64-char hex)"
+    peer:
+      type: string
+      usage: "yggdrasil peer URI to connect through (e.g. tcp://1.2.3.4:5678)"
+    timeout:
+      type: duration
+      usage: "context timeout (default: 5m, min: 100ms)"
+    max_depth:
+      type: uint16
+      usage: "BFS max depth for scan (default: 3)"
+    concurrency:
+      type: int
+      usage: "parallel workers for scan (default: 64)"
+    format:
+      usage: "output format (default: text)"
+      enum: [ text, json ]
+
+# ==== #
 
 log:
   usage: "logging configuration"

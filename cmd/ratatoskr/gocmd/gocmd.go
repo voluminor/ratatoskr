@@ -9,9 +9,12 @@ import (
 // Run dispatches the active command from the go trigger group.
 // Returns (true, err) if a command was handled, (false, nil) otherwise.
 func Run(cfg *gsettings.GoObj) (bool, error) {
-
 	if cfg.Keygen > 0 {
 		return true, keygen(cfg.Keygen)
+	}
+
+	if cfg.Trace.Scan || cfg.Trace.Trace != "" {
+		return true, traceCmd(&cfg.Trace)
 	}
 
 	return false, nil
