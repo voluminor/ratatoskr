@@ -10,15 +10,3 @@ type Interface interface {
 	GetYggdrasil() gsettings.YggdrasilInterface
 	Self() any
 }
-
-// //
-
-// Re-exported sub-setting interfaces for external consumers.
-type YggdrasilInterface = gsettings.YggdrasilInterface
-type KeyInterface = gsettings.YggdrasilKeyInterface
-type IfInterface = gsettings.YggdrasilIfInterface
-type NodeInterface = gsettings.YggdrasilNodeInterface
-type PeersInterface = gsettings.YggdrasilPeersInterface
-type ManagerInterface = gsettings.YggdrasilPeersManagerInterface
-type MulticastInterface = gsettings.YggdrasilMulticastInterface
-type SocksInterface = gsettings.YggdrasilSocksInterface

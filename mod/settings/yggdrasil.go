@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
+
+	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -17,7 +19,7 @@ import (
 //
 // If peers.manager is enabled, cfg.Peers is set to nil so the core
 // delegates peer discovery to the built-in manager instead of a static list.
-func NodeConfig(s YggdrasilInterface) (*config.NodeConfig, error) {
+func NodeConfig(s gsettings.YggdrasilInterface) (*config.NodeConfig, error) {
 	cfg := &config.NodeConfig{
 		PrivateKeyPath:    s.GetKey().GetPath(),
 		Listen:            s.GetListen(),

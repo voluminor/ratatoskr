@@ -141,26 +141,20 @@ func marshalPretty(data any, format gsettings.GoConfExportFormatEnum) ([]byte, e
 
 	switch format {
 	case gsettings.GoConfExportFormatJson:
-		var raw []byte
-		var err error
 		if isMap {
-			raw, err = marshalOrderedJSON(m, "")
-		} else {
-			raw, err = json.MarshalIndent(data, "", "  ")
+			return append(marshalOrdered(m, "", true), '\n'), nil
 		}
+		raw, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
 			return nil, fmt.Errorf("marshal json: %w", err)
 		}
 		return append(raw, '\n'), nil
 
 	case gsettings.GoConfExportFormatConf:
-		var raw []byte
-		var err error
 		if isMap {
-			raw, err = marshalOrderedHJSON(m, "")
-		} else {
-			raw, err = hjson.MarshalWithOptions(data, hjson.DefaultOptions())
+			return injectHJSONComments(marshalOrdered(m, "", false)), nil
 		}
+		raw, err := hjson.MarshalWithOptions(data, hjson.DefaultOptions())
 		if err != nil {
 			return nil, fmt.Errorf("marshal hjson: %w", err)
 		}
@@ -184,13 +178,32 @@ func marshalPretty(data any, format gsettings.GoConfExportFormatEnum) ([]byte, e
 // Works by line-scanning for patterns like `key:`, `"key":` — not by parsing
 // the document tree. Also cleans up trailing commas left by JSON key removal.
 //
-// Limitation: only removes root-level occurrences. Nested keys with the same
-// name are preserved. False positives are possible if a value line starts
-// with the exact key pattern (unlikely for well-formed config).
+// Root level is determined by indentation and format detection:
+// if the first non-blank line is `{` (JSON/HJSON), root keys are at one
+// indent level (≤2 spaces); otherwise (YAML) root keys are at indent 0.
+// Nested keys with the same name are preserved.
 func StripRootKey(data []byte, key string) []byte {
 	lines := strings.Split(string(data), "\n")
+
+	// Detect brace-delimited format (JSON/HJSON) vs YAML.
+	maxRootIndent := 0
+	for _, line := range lines {
+		if t := strings.TrimSpace(line); t != "" {
+			if t == "{" {
+				maxRootIndent = 2
+			}
+			break
+		}
+	}
+
 	result := make([]string, 0, len(lines))
 	for _, line := range lines {
+		indent := len(line) - len(strings.TrimLeft(line, " \t"))
+		if indent > maxRootIndent {
+			result = append(result, line)
+			continue
+		}
+
 		trimmed := strings.TrimSpace(line)
 		if trimmed == key+":" ||
 			strings.HasPrefix(trimmed, key+": ") ||
@@ -370,22 +383,13 @@ func orderedKeys(m map[string]any, prefix string) []string {
 
 // //
 
-// marshalOrderedJSON serializes a map to indented JSON with key order
-// controlled by gsettings.FieldOrder.
-func marshalOrderedJSON(m map[string]any, prefix string) ([]byte, error) {
+// marshalOrdered serializes a map to indented JSON or HJSON with key order
+// controlled by gsettings.FieldOrder. In jsonMode keys are quoted and
+// entries are comma-separated.
+func marshalOrdered(m map[string]any, prefix string, jsonMode bool) []byte {
 	var buf bytes.Buffer
-	writeOrderedMap(&buf, m, prefix, true, 0)
-	return buf.Bytes(), nil
-}
-
-// //
-
-// marshalOrderedHJSON serializes a map to HJSON with key order
-// controlled by gsettings.FieldOrder.
-func marshalOrderedHJSON(m map[string]any, prefix string) ([]byte, error) {
-	var buf bytes.Buffer
-	writeOrderedMap(&buf, m, prefix, false, 0)
-	return buf.Bytes(), nil
+	writeOrderedMap(&buf, m, prefix, jsonMode, 0)
+	return buf.Bytes()
 }
 
 // //

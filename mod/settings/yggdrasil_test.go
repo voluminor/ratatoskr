@@ -38,7 +38,7 @@ func populatedObj() *gsettings.Obj {
 	return obj
 }
 
-func ygg(obj *gsettings.Obj) msettings.YggdrasilInterface {
+func ygg(obj *gsettings.Obj) gsettings.YggdrasilInterface {
 	return &obj.Yggdrasil
 }
 

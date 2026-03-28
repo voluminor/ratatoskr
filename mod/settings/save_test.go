@@ -85,6 +85,28 @@ func TestSaveFile_ExcludesConfig(t *testing.T) {
 	}
 }
 
+func TestStripRootKey_PreservesNested(t *testing.T) {
+	input := "{\n  \"config\": \"root\",\n  \"nested\": {\n    \"config\": \"keep-me\"\n  }\n}"
+	got := string(msettings.StripRootKey([]byte(input), "config"))
+	if !strings.Contains(got, "keep-me") {
+		t.Fatal("StripRootKey must preserve nested 'config' keys")
+	}
+	if strings.Contains(got, "root") {
+		t.Fatal("StripRootKey must strip root-level 'config'")
+	}
+}
+
+func TestStripRootKey_YAML_PreservesNested(t *testing.T) {
+	input := "config: root-value\nnested:\n  config: keep-me\n"
+	got := string(msettings.StripRootKey([]byte(input), "config"))
+	if !strings.Contains(got, "keep-me") {
+		t.Fatal("StripRootKey must preserve nested YAML 'config' keys")
+	}
+	if strings.Contains(got, "root-value") {
+		t.Fatal("StripRootKey must strip root-level YAML 'config'")
+	}
+}
+
 func TestSaveFile_UnsupportedFormat(t *testing.T) {
 	dir := t.TempDir()
 	_, err := msettings.SaveFile(gsettings.NewDefault(), dir, 99)
