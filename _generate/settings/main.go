@@ -94,6 +94,7 @@ func main() {
 		Tree:            resolved.Tree,
 		Comments:        buildComments(walk.BranchUsage, resolved.Flags),
 		FieldOrder:      fieldOrder,
+		TreeChildren:    populateChildren(resolved.Tree, fieldOrder),
 		TypesImports:    sortedKeys(resolved.TypesImports),
 		FlagsImports:    sortedKeys(resolved.FlagsImports),
 		DefaultsImports: sortedKeys(resolved.DefaultsImports),

@@ -1,14 +1,12 @@
 package settings
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/hjson/hjson-go/v4"
-	"gopkg.in/yaml.v3"
+	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -26,7 +24,7 @@ func ParseFile(path string, dst Interface) error {
 		return err
 	}
 
-	if err := unmarshalFile(target, dst); err != nil {
+	if err := unmarshalFile(target, Obj(dst)); err != nil {
 		return err
 	}
 
@@ -45,14 +43,15 @@ func resolveChain(path string) (string, error) {
 	visited := map[string]bool{current: true}
 
 	for range maxConfigChain {
-		next, err := probeConfig(current)
-		if err != nil {
+		probe := gsettings.NewDefault()
+		if err := unmarshalFile(current, probe); err != nil {
 			return "", err
 		}
-		if next == "" {
+		if probe.Config == "" {
 			return current, nil
 		}
 
+		next := probe.Config
 		if !filepath.IsAbs(next) {
 			next = filepath.Join(filepath.Dir(current), next)
 		}
@@ -74,36 +73,7 @@ func resolveChain(path string) (string, error) {
 
 // //
 
-func probeConfig(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("read config %s: %w", path, err)
-	}
-
-	var probe struct {
-		Config string `json:"config" yaml:"config"`
-	}
-
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".json":
-		err = json.Unmarshal(data, &probe)
-	case ".yml", ".yaml":
-		err = yaml.Unmarshal(data, &probe)
-	case ".hjson", ".conf":
-		err = hjson.Unmarshal(data, &probe)
-	default:
-		return "", fmt.Errorf("unsupported config format: %s", filepath.Ext(path))
-	}
-
-	if err != nil {
-		return "", fmt.Errorf("parse config %s: %w", path, err)
-	}
-	return probe.Config, nil
-}
-
-// //
-
-func unmarshalFile(path string, dst any) error {
+func unmarshalFile(path string, dst *gsettings.Obj) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read config %s: %w", path, err)
@@ -111,11 +81,11 @@ func unmarshalFile(path string, dst any) error {
 
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
-		return json.Unmarshal(data, dst)
+		return gsettings.ParseJSON(data, dst)
 	case ".yml", ".yaml":
-		return yaml.Unmarshal(data, dst)
+		return gsettings.ParseYAML(data, dst)
 	case ".hjson", ".conf":
-		return hjson.Unmarshal(data, dst)
+		return gsettings.ParseHJSON(data, dst)
 	default:
 		return fmt.Errorf("unsupported config format: %s", filepath.Ext(path))
 	}
@@ -126,38 +96,36 @@ func unmarshalFile(path string, dst any) error {
 // SaveFile marshals the settings object to a file.
 // The "config" field is excluded from output.
 func SaveFile(src Interface, path string) error {
-	var data []byte
-	var err error
+	obj := Obj(src)
 
 	switch strings.ToLower(filepath.Ext(path)) {
 	case ".json":
-		data, err = json.MarshalIndent(src, "", "  ")
-		if err != nil {
-			return fmt.Errorf("marshal json: %w", err)
+		if err := gsettings.SaveJSON(obj, path); err != nil {
+			return err
 		}
-		data = append(data, '\n')
 	case ".yml", ".yaml":
-		data, err = yaml.Marshal(src)
-		if err != nil {
-			return fmt.Errorf("marshal yaml: %w", err)
+		if err := gsettings.SaveYAML(obj, path); err != nil {
+			return err
 		}
 	case ".hjson", ".conf":
-		data, err = hjson.MarshalWithOptions(src, hjson.DefaultOptions())
-		if err != nil {
-			return fmt.Errorf("marshal hjson: %w", err)
+		if err := gsettings.SaveHJSON(obj, path); err != nil {
+			return err
 		}
-		data = append(data, '\n')
 	default:
 		return fmt.Errorf("unsupported config format: %s", filepath.Ext(path))
 	}
 
-	data = StripRootKey(data, "config")
-	return os.WriteFile(path, data, 0644)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, StripRootKey(data, "config"), 0644)
 }
 
 // //
 
 // StripRootKey removes a root-level key line from serialized config output.
+// Also removes trailing commas left by JSON removal.
 func StripRootKey(data []byte, key string) []byte {
 	lines := strings.Split(string(data), "\n")
 	result := make([]string, 0, len(lines))
@@ -166,6 +134,12 @@ func StripRootKey(data []byte, key string) []byte {
 		if trimmed == key+":" ||
 			strings.HasPrefix(trimmed, key+": ") ||
 			strings.HasPrefix(trimmed, "\""+key+"\":") {
+			if n := len(result); n > 0 {
+				prev := strings.TrimRight(result[n-1], " \t")
+				if strings.HasSuffix(prev, ",") {
+					result[n-1] = prev[:len(prev)-1]
+				}
+			}
 			continue
 		}
 		result = append(result, line)

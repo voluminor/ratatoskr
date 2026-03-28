@@ -55,6 +55,9 @@ type TreeLeafObj struct {
 
 	GenInterface  bool
 	InterfaceType string // e.g. "YggdrasilInterface"
+
+	// Children is an ordered slice of branch children (settings.yml order).
+	Children []*TreeLeafObj
 }
 
 // //
@@ -84,6 +87,7 @@ type TemplateObj struct {
 	Tree            map[string]*TreeLeafObj
 	Comments        []CommentEntryObj
 	FieldOrder      []FieldOrderEntryObj
+	TreeChildren    []*TreeLeafObj
 	TypesImports    []string
 	FlagsImports    []string
 	DefaultsImports []string

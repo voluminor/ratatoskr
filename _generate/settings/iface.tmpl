@@ -1,14 +1,14 @@
 {{- /* Recursive interface definitions for branches with GenInterface */ -}}
 
 {{- define "genInterfaces" -}}
-    {{- range $key, $leaf := . }}
+    {{- range $leaf := . }}
         {{- if and $leaf.Branch $leaf.GenInterface }}
 
             {{- if $leaf.Usage }}
                 // {{ $leaf.Usage }}
             {{- end }}
             type {{ $leaf.InterfaceType }} interface {
-            {{- range $subKey, $subLeaf := $leaf.Branch }}
+            {{- range $subLeaf := $leaf.Children }}
                 {{- if $subLeaf.Branch }}
                     {{- if $subLeaf.GenInterface }}
                         Get{{ $subLeaf.Name }}() {{ $subLeaf.InterfaceType }}
@@ -20,7 +20,7 @@
                 {{- end }}
             {{- end }}
             }
-            {{- template "genInterfaces" $leaf.Branch }}
+            {{- template "genInterfaces" $leaf.Children }}
         {{- end }}
     {{- end }}
 {{- end -}}
@@ -28,9 +28,9 @@
 {{- /* Recursive getter methods for branch struct types */ -}}
 
 {{- define "structGetters" -}}
-    {{- range $key, $leaf := . }}
+    {{- range $leaf := . }}
         {{- if $leaf.Branch }}
-            {{- range $subKey, $subLeaf := $leaf.Branch }}
+            {{- range $subLeaf := $leaf.Children }}
                 {{- if $subLeaf.Branch }}
                     {{- if $subLeaf.GenInterface }}
                         func (o *{{ $leaf.Type }}) Get{{ $subLeaf.Name }}() {{ $subLeaf.InterfaceType }} { return &o.{{ $subLeaf.Name }} }
@@ -41,7 +41,7 @@
                     func (o *{{ $leaf.Type }}) Get{{ $subLeaf.Name }}() {{ $subLeaf.Type }} { return o.{{ $subLeaf.Name }} }
                 {{- end }}
             {{- end }}
-            {{- template "structGetters" $leaf.Branch }}
+            {{- template "structGetters" $leaf.Children }}
         {{- end }}
     {{- end }}
 {{- end -}}
@@ -68,7 +68,7 @@ package settings
 // // // // // // // // // //
 
 {{- /* Root-level getters on Obj */ -}}
-{{ range $key, $leaf := .Tree }}
+{{ range $leaf := .TreeChildren }}
     {{- if $leaf.Branch }}
         {{- if $leaf.GenInterface }}
             func (o *Obj) Get{{ $leaf.Name }}() {{ $leaf.InterfaceType }} { return &o.{{ $leaf.Name }} }
@@ -79,7 +79,7 @@ package settings
         func (o *Obj) Get{{ $leaf.Name }}() {{ $leaf.Type }} { return o.{{ $leaf.Name }} }
     {{- end }}
 {{- end }}
-{{ template "structGetters" .Tree }}
+{{ template "structGetters" .TreeChildren }}
 
 // //
-{{ template "genInterfaces" .Tree }}
+{{ template "genInterfaces" .TreeChildren }}

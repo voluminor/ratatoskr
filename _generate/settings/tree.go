@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"strings"
 
 	dep "github.com/voluminor/ratatoskr/_generate"
@@ -45,6 +46,54 @@ func branchTypeName(path []string) string {
 	}
 	b.WriteString("Obj")
 	return b.String()
+}
+
+// //
+
+// populateChildren builds ordered Children slices from FieldOrder for each branch.
+func populateChildren(tree map[string]*TreeLeafObj, fieldOrder []FieldOrderEntryObj) []*TreeLeafObj {
+	orderMap := make(map[string][]string, len(fieldOrder))
+	for _, e := range fieldOrder {
+		orderMap[e.Prefix] = e.Keys
+	}
+	return buildChildOrder(tree, "", orderMap)
+}
+
+func buildChildOrder(tree map[string]*TreeLeafObj, prefix string, orderMap map[string][]string) []*TreeLeafObj {
+	order := orderMap[prefix]
+
+	var children []*TreeLeafObj
+	seen := make(map[string]bool, len(order))
+
+	for _, k := range order {
+		if node, exists := tree[k]; exists {
+			children = append(children, node)
+			seen[k] = true
+		}
+	}
+
+	var rest []string
+	for k := range tree {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	sort.Strings(rest)
+	for _, k := range rest {
+		children = append(children, tree[k])
+	}
+
+	for _, node := range children {
+		if node.Branch != nil {
+			p := node.Key
+			if prefix != "" {
+				p = prefix + "." + node.Key
+			}
+			node.Children = buildChildOrder(node.Branch, p, orderMap)
+		}
+	}
+
+	return children
 }
 
 // //

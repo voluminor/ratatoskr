@@ -1,7 +1,7 @@
 {{- /* Recursive helpers for struct field and nested type generation */ -}}
 
 {{- define "structFields" -}}
-    {{- range $key, $leaf := . }}
+    {{- range $leaf := . }}
         {{- if $leaf.IsTrigger }}
             {{ $leaf.Name }} {{ $leaf.Type }} `json:"-" yaml:"-"`
         {{- else if $leaf.Branch }}
@@ -16,20 +16,20 @@
 {{- end -}}
 
 {{- define "nestedStructs" -}}
-    {{- range $key, $leaf := . }}
+    {{- range $leaf := . }}
         {{- if $leaf.Branch }}
 
             {{- if $leaf.Usage }}
                 // {{ $leaf.Usage }}
             {{- end }}
             type {{ $leaf.Type }} struct {
-            {{- template "structFields" $leaf.Branch }}
+            {{- template "structFields" $leaf.Children }}
             }
             {{- if not $leaf.GenInterface }}
 
             func (o *{{ $leaf.Type }}) Self() any { return o }
             {{- end }}
-            {{- template "nestedStructs" $leaf.Branch }}
+            {{- template "nestedStructs" $leaf.Children }}
         {{- end }}
     {{- end }}
 {{- end -}}
@@ -59,9 +59,9 @@ package settings
 // // // // // // // // // //
 
 type Obj struct {
-{{- template "structFields" .Tree }}
+{{- template "structFields" .TreeChildren }}
 }
-{{ template "nestedStructs" .Tree }}
+{{ template "nestedStructs" .TreeChildren }}
 
 // //
 
