@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"net"
 	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -111,7 +112,7 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 	visited := make(map[[ed25519.PublicKeySize]byte]struct{})
 	visited[toKeyArray(selfKey)] = struct{}{}
 
-	// Level 1: active direct peers only.
+	// Level 1: active direct peers only. RTT from core's measured latency.
 	var currentLevel []*NodeObj
 	for _, p := range o.core.GetPeers() {
 		if !p.Up || len(p.Key) != ed25519.PublicKeySize {
@@ -122,7 +123,7 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 			continue
 		}
 		visited[k] = struct{}{}
-		child := &NodeObj{Key: p.Key, Parent: selfKey, Depth: 1}
+		child := &NodeObj{Key: p.Key, Parent: selfKey, Depth: 1, RTT: p.Latency}
 		root.Children = append(root.Children, child)
 		currentLevel = append(currentLevel, child)
 	}
@@ -268,6 +269,21 @@ func (o *Obj) Lookup(key ed25519.PublicKey) {
 
 // // // // // // // // // //
 
+// Self returns this node's public key and routing info.
+func (o *Obj) Self() yggcore.SelfInfo {
+	return o.core.GetSelf()
+}
+
+// Address returns this node's Yggdrasil IPv6 address.
+func (o *Obj) Address() net.IP {
+	return o.core.Address()
+}
+
+// Subnet returns this node's Yggdrasil IPv6 subnet.
+func (o *Obj) Subnet() net.IPNet {
+	return o.core.Subnet()
+}
+
 // Peers returns direct peers from the core.
 func (o *Obj) Peers() []yggcore.PeerInfo {
 	return o.core.GetPeers()
@@ -276,4 +292,14 @@ func (o *Obj) Peers() []yggcore.PeerInfo {
 // Sessions returns active sessions from the core.
 func (o *Obj) Sessions() []yggcore.SessionInfo {
 	return o.core.GetSessions()
+}
+
+// SpanningTree returns the raw spanning tree entries from the core.
+func (o *Obj) SpanningTree() []yggcore.TreeEntryInfo {
+	return o.core.GetTree()
+}
+
+// Paths returns active pathfinder routes from the core.
+func (o *Obj) Paths() []yggcore.PathEntryInfo {
+	return o.core.GetPaths()
 }

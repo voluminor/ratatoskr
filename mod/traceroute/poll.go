@@ -138,25 +138,51 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 
 // //
 
-// enrichPath fills RTT on path nodes via callRemotePeers (cache-friendly, no children).
-// Skips root (index 0). Best-effort: errors are silently ignored.
+// enrichPath fills RTT on path nodes. Direct peers get core's measured latency;
+// remote nodes get RTT from callRemotePeers. Skips root (index 0).
 func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 	if len(path) <= 1 {
 		return
 	}
+
+	// Build direct peer latency map for fast lookup.
+	peerLatency := make(map[[ed25519.PublicKeySize]byte]time.Duration)
+	for _, p := range o.core.GetPeers() {
+		if p.Up && len(p.Key) == ed25519.PublicKeySize && p.Latency > 0 {
+			peerLatency[toKeyArray(p.Key)] = p.Latency
+		}
+	}
+
 	targets := path[1:]
 	type rttResultObj struct {
 		idx int
 		rtt time.Duration
 	}
-	ch := make(chan rttResultObj, len(targets))
+
+	// Count how many nodes need a remote call.
+	var remoteCount int
 	for i, n := range targets {
+		if lat, ok := peerLatency[toKeyArray(n.Key)]; ok {
+			targets[i].RTT = lat
+		} else {
+			remoteCount++
+		}
+	}
+	if remoteCount == 0 {
+		return
+	}
+
+	ch := make(chan rttResultObj, remoteCount)
+	for i, n := range targets {
+		if n.RTT > 0 {
+			continue
+		}
 		go func(idx int, k ed25519.PublicKey) {
 			_, rtt, _ := o.callRemotePeers(ctx, k)
 			ch <- rttResultObj{idx: idx, rtt: rtt}
 		}(i, n.Key)
 	}
-	for range len(targets) {
+	for range remoteCount {
 		select {
 		case r := <-ch:
 			targets[r.idx].RTT = r.rtt

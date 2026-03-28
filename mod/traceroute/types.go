@@ -11,12 +11,15 @@ import (
 // Used by Tree() (BFS over peers), Path() and Trace() (spanning tree).
 // Unreachable is set to true only in Tree() if the node did not respond to a peer query.
 type NodeObj struct {
-	Key         ed25519.PublicKey // node public key
-	Parent      ed25519.PublicKey // parent key
-	Sequence    uint64            // sequence number (spanning tree mode only)
-	Depth       int               // depth from root (root = 0)
-	RTT         time.Duration     // remote peer query round-trip time (Tree() / BFS only)
-	Unreachable bool              // node did not respond to peer query in Tree()
+	Key      ed25519.PublicKey // node public key
+	Parent   ed25519.PublicKey // parent key
+	Sequence uint64            // sequence number (spanning tree mode only)
+	Depth    int               // depth from root (root = 0)
+	// RTT is approximate. For direct peers it uses core's measured latency (accurate).
+	// For remote nodes it measures the debug_remoteGetPeers round-trip, which includes
+	// multi-hop network traversal plus remote processing time — not pure network latency.
+	RTT         time.Duration
+	Unreachable bool // node did not respond to peer query in Tree()
 	Children    []*NodeObj
 }
 
