@@ -7,6 +7,7 @@
 #   enum:    add "enum: [val1, val2, ...]" — generates uint16 const type
 #            (type field is optional for enums)
 #   []enum:  array of enum values
+#   map:     map[string]any, map[string][]string — JSON on CLI, native in config files
 #   trigger: true — CLI-only bool flag, not saved/parsed from config files
 
 config:
@@ -85,9 +86,17 @@ yggdrasil:
     type: uint64
     usage: "TUN interface MTU (min 1280; 0 → platform default)"
 
+  node_info:
+    type: "map[string]any"
+    usage: "node metadata visible to the network"
+
   node_info_privacy:
     type: bool
     usage: "hide default nodeinfo (platform, architecture, version)"
+
+  interface_peers:
+    type: "map[string][]string"
+    usage: "outbound peers bound to network interfaces"
 
   log_lookups:
     type: bool

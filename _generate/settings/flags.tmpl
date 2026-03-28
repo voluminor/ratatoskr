@@ -20,6 +20,8 @@ import (
             {{ flatName .FlagAccessor }} string
         {{- else if .IsArray }}
             {{ flatName .FlagAccessor }} string
+        {{- else if isMapType .Type }}
+            {{ flatName .FlagAccessor }} string
         {{- else if not (nativeFlag .Type) }}
             {{ flatName .FlagAccessor }} string
         {{- end }}
@@ -38,6 +40,8 @@ import (
     {{- if .IsEnum }}
         fs.StringVar(&targets.{{ flatName .FlagAccessor }}, "{{ .Name }}", obj.{{ .FlagAccessor }}.String(), "{{ .Usage }}")
     {{- else if .IsArray }}
+        fs.StringVar(&targets.{{ flatName .FlagAccessor }}, "{{ .Name }}", "", "{{ .Usage }}")
+    {{- else if isMapType .Type }}
         fs.StringVar(&targets.{{ flatName .FlagAccessor }}, "{{ .Name }}", "", "{{ .Usage }}")
     {{- else if eq .Type "string" }}
         fs.StringVar(&obj.{{ .FlagAccessor }}, "{{ .Name }}", obj.{{ .FlagAccessor }}, "{{ .Usage }}")
@@ -171,6 +175,14 @@ import (
                 }
                 obj.{{ .FlagAccessor }} = append(obj.{{ .FlagAccessor }}, dv)
             {{- end }}
+            }
+        {{- else if isMapType .Type }}
+            case "{{ .Name }}":
+            if s := targets.{{ flatName .FlagAccessor }}; s != "" {
+            err = json.Unmarshal([]byte(s), &obj.{{ .FlagAccessor }})
+            if err != nil {
+            return
+            }
             }
         {{- else if not (nativeFlag .Type) }}
             {{- if eq .Type "int8" }}

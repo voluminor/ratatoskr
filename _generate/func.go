@@ -37,6 +37,9 @@ func WriteFileFromTemplate(pathToFile string, textTemplate string, dataTemplate 
 		"backtick": func() string {
 			return "`"
 		},
+		"isMapType": func(t string) bool {
+			return strings.HasPrefix(t, "map[")
+		},
 	})
 
 	t, err := tmpl.New(fileName).Parse(textTemplate)

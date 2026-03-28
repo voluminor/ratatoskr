@@ -51,6 +51,7 @@ type FlagObj struct {
 	Enum    []string
 	IsArray bool
 	IsEnum  bool
+	IsMap   bool
 
 	// Go-resolved fields (filled during tree building)
 	GoType       string // resolved Go type: "string", "LogFormatEnum", "[]string", etc.
@@ -81,6 +82,7 @@ type TreeLeafObj struct {
 	Branch    map[string]*TreeLeafObj
 	IsEnum    bool
 	IsArray   bool
+	IsMap     bool
 	IsTrigger bool
 	EnumType  string // "LogFormatEnum" if enum
 }
@@ -123,6 +125,10 @@ func sortedKeys(m map[string]bool) []string {
 
 func isArrayType(t string) bool {
 	return strings.HasPrefix(t, "[]")
+}
+
+func isMapType(t string) bool {
+	return strings.HasPrefix(t, "map[")
 }
 
 func baseType(t string) string {
@@ -249,6 +255,7 @@ func collectFlags(node map[string]any, prefix string, inheritTrigger bool) []Fla
 				}
 			}
 			f.IsArray = isArrayType(f.Type)
+			f.IsMap = isMapType(f.Type)
 			result = append(result, f)
 		}
 	}
@@ -320,7 +327,7 @@ func lowerFirst(s string) string {
 
 func goDefaultLiteral(f FlagObj, enumTypeName string) string {
 	if f.Value == nil {
-		if f.IsArray {
+		if f.IsArray || f.IsMap {
 			return "nil"
 		}
 		switch f.Type {
@@ -638,13 +645,17 @@ func main() {
 		if isCustomFlag(bt, f.IsEnum, f.IsArray) {
 			hasCustomFlags = true
 		}
+		if f.IsMap {
+			hasCustomFlags = true
+			flagsImports["encoding/json"] = true
+		}
 		if f.IsArray {
 			flagsImports["strings"] = true
 		}
 		if f.IsTrigger {
 			hasTriggerFlags = true
 		}
-		if !f.IsEnum && !f.IsArray && !nativeFlagTypes[f.Type] {
+		if !f.IsEnum && !f.IsArray && !f.IsMap && !nativeFlagTypes[f.Type] {
 			flagsImports["fmt"] = true
 			flagsImports["strconv"] = true
 		}
@@ -664,6 +675,7 @@ func main() {
 				Key:       points[0],
 				IsEnum:    f.IsEnum,
 				IsArray:   f.IsArray,
+				IsMap:     f.IsMap,
 				IsTrigger: f.IsTrigger,
 				EnumType:  enumTypeName,
 			}
@@ -685,6 +697,7 @@ func main() {
 				Key:       points[1],
 				IsEnum:    f.IsEnum,
 				IsArray:   f.IsArray,
+				IsMap:     f.IsMap,
 				IsTrigger: f.IsTrigger,
 				EnumType:  enumTypeName,
 			}
@@ -717,6 +730,7 @@ func main() {
 				Key:       points[2],
 				IsEnum:    f.IsEnum,
 				IsArray:   f.IsArray,
+				IsMap:     f.IsMap,
 				IsTrigger: f.IsTrigger,
 				EnumType:  enumTypeName,
 			}
