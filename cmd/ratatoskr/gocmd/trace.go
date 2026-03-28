@@ -39,7 +39,7 @@ func traceCmd(cfg *gsettings.TracerouteObj) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
 
-	fmt.Fprintf(os.Stderr, "  booting node...\n")
+	fmt.Fprintln(os.Stderr, "booting node...")
 	node, tr, err := bootNode(ctx, cfg.Peer)
 	if err != nil {
 		return err
@@ -51,10 +51,15 @@ func traceCmd(cfg *gsettings.TracerouteObj) error {
 		}()
 	}()
 
-	if err := waitForPeers(ctx, node); err != nil {
+	if err := waitForPeers(ctx, node, tr); err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "  peer connected\n")
+
+	if err := waitForRouting(ctx, tr); err != nil {
+		return err
+	}
+	tr.FlushCache()
+	fmt.Fprintln(os.Stderr, "ready")
 
 	if cfg.Scan {
 		return runScan(ctx, tr, cfg)
@@ -138,20 +143,48 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 
 // //
 
-func waitForPeers(ctx context.Context, node *ratatoskr.Obj) error {
+func waitForPeers(ctx context.Context, node *ratatoskr.Obj, tr *traceroute.Obj) error {
 	frame := 0
-	ticker := time.NewTicker(100 * time.Millisecond)
+	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+
+	peerUp := false
+	prevTree := 0
+	stableTicks := 0
 
 	for {
 		select {
 		case <-ticker.C:
-			if hasUpPeer(node) {
-				clearLine()
-				return nil
+			if !peerUp {
+				for _, p := range node.GetPeers() {
+					if p.Up {
+						peerUp = true
+						break
+					}
+				}
 			}
-			fmt.Fprintf(os.Stderr, "\r  %c connecting to peer...  ",
-				spinnerFrames[frame%len(spinnerFrames)])
+
+			if peerUp {
+				n := len(tr.SpanningTree())
+				if n > 1 && n == prevTree {
+					stableTicks++
+				} else {
+					stableTicks = 0
+				}
+				prevTree = n
+				if stableTicks >= 3 {
+					clearLine()
+					return nil
+				}
+			}
+
+			dl, _ := ctx.Deadline()
+			remaining := time.Until(dl)
+			if remaining < 0 {
+				remaining = 0
+			}
+			fmt.Fprintf(os.Stderr, "\r%c connecting... %s remaining | tree: %d nodes  ",
+				spinnerFrames[frame%len(spinnerFrames)], formatRemaining(remaining), prevTree)
 			frame++
 		case <-ctx.Done():
 			clearLine()
@@ -160,9 +193,70 @@ func waitForPeers(ctx context.Context, node *ratatoskr.Obj) error {
 	}
 }
 
-func hasUpPeer(node *ratatoskr.Obj) bool {
-	for _, p := range node.GetPeers() {
-		if p.Up {
+// waitForRouting probes the direct peer with Tree(depth=2) until
+// debug_remoteGetPeers responds. Sends Lookups to stimulate DHT convergence.
+func waitForRouting(ctx context.Context, tr *traceroute.Obj) error {
+	var peerKey ed25519.PublicKey
+	for _, p := range tr.Peers() {
+		if p.Up && len(p.Key) == ed25519.PublicKeySize {
+			peerKey = p.Key
+			break
+		}
+	}
+	if peerKey == nil {
+		return fmt.Errorf("no active peer for routing probe")
+	}
+
+	frame := 0
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	tr.Lookup(peerKey)
+	probing := false
+	probeDone := make(chan bool, 1)
+
+	for {
+		select {
+		case ok := <-probeDone:
+			probing = false
+			if ok {
+				clearLine()
+				return nil
+			}
+			tr.FlushCache()
+			tr.Lookup(peerKey)
+
+		case <-ticker.C:
+			if !probing {
+				probing = true
+				go func() {
+					tr.FlushCache()
+					result, _ := tr.Tree(ctx, 2, 1)
+					probeDone <- result != nil && result.Total > 0 && !hasUnreachable(result.Root)
+				}()
+			}
+			dl, _ := ctx.Deadline()
+			remaining := time.Until(dl)
+			if remaining < 0 {
+				remaining = 0
+			}
+			fmt.Fprintf(os.Stderr, "\r%c establishing route... %s remaining  ",
+				spinnerFrames[frame%len(spinnerFrames)], formatRemaining(remaining))
+			frame++
+
+		case <-ctx.Done():
+			clearLine()
+			return fmt.Errorf("timeout waiting for route establishment")
+		}
+	}
+}
+
+func hasUnreachable(root *traceroute.NodeObj) bool {
+	if root == nil {
+		return false
+	}
+	for _, ch := range root.Children {
+		if ch.Unreachable {
 			return true
 		}
 	}
@@ -203,14 +297,19 @@ func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteO
 				lastTotal = p.Total
 				if p.Depth > lastDepth {
 					clearLine()
-					fmt.Fprintf(os.Stderr, "  depth %d: %d nodes found\n", lastDepth, lastTotal)
+					fmt.Fprintf(os.Stderr, "depth %d: %d nodes found\n", lastDepth, lastTotal)
 					printedDepth = lastDepth
 				}
 				lastDepth = p.Depth
 			}
 		case <-ticker.C:
-			fmt.Fprintf(os.Stderr, "\r  %c scanning depth %d... (%d nodes)  ",
-				spinnerFrames[frame%len(spinnerFrames)], lastDepth, lastTotal)
+			dl, _ := ctx.Deadline()
+			remaining := time.Until(dl)
+			if remaining < 0 {
+				remaining = 0
+			}
+			fmt.Fprintf(os.Stderr, "\r%c scanning depth %d... %s remaining | %d nodes  ",
+				spinnerFrames[frame%len(spinnerFrames)], lastDepth, formatRemaining(remaining), lastTotal)
 			frame++
 		case <-ctx.Done():
 			clearLine()
@@ -222,7 +321,7 @@ func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteO
 	<-done
 
 	if lastDepth > printedDepth && lastTotal > 0 {
-		fmt.Fprintf(os.Stderr, "  depth %d: %d nodes total\n", lastDepth, lastTotal)
+		fmt.Fprintf(os.Stderr, "depth %d: %d nodes total\n", lastDepth, lastTotal)
 	}
 	if scanErr != nil {
 		return scanErr
@@ -230,7 +329,7 @@ func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteO
 	if result == nil {
 		return fmt.Errorf("scan returned no result")
 	}
-	fmt.Fprintf(os.Stderr, "  scan complete: %d nodes\n", result.Total)
+	fmt.Fprintf(os.Stderr, "scan complete: %d nodes\n", result.Total)
 	return outputScan(result, cfg.Format)
 }
 
@@ -259,8 +358,13 @@ func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.Traceroute
 			clearLine()
 			loop = false
 		case <-ticker.C:
-			fmt.Fprintf(os.Stderr, "\r  %c tracing %s...  ",
-				spinnerFrames[frame%len(spinnerFrames)], cfg.Trace[:16])
+			dl, _ := ctx.Deadline()
+			remaining := time.Until(dl)
+			if remaining < 0 {
+				remaining = 0
+			}
+			fmt.Fprintf(os.Stderr, "\r%c tracing %s... %s remaining  ",
+				spinnerFrames[frame%len(spinnerFrames)], cfg.Trace[:16], formatRemaining(remaining))
 			frame++
 		case <-ctx.Done():
 			clearLine()
@@ -277,7 +381,7 @@ func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.Traceroute
 	if result == nil {
 		return fmt.Errorf("trace returned no result")
 	}
-	fmt.Fprintf(os.Stderr, "  trace complete\n")
+	fmt.Fprintln(os.Stderr, "trace complete")
 	return outputTrace(cfg.Trace, result, cfg.Format)
 }
 
