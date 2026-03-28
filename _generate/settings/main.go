@@ -92,6 +92,7 @@ type TemplateObj struct {
 	Enums                   []EnumObj
 	Tree                    map[string]*TreeLeafObj
 	HasDuration             bool
+	HasArrayDuration        bool
 	HasCustomFlags          bool
 	HasEnums                bool
 	HasArrayFlags           bool
@@ -524,6 +525,7 @@ func main() {
 	var enums []EnumObj
 	enumMap := make(map[string]*EnumObj)
 	hasDuration := false
+	hasArrayDuration := false
 	hasCustomFlags := false
 	hasArrayFlags := false
 	hasNonNativeScalarFlags := false
@@ -582,6 +584,9 @@ func main() {
 		}
 		if bt == "duration" {
 			hasDuration = true
+			if f.IsArray {
+				hasArrayDuration = true
+			}
 		}
 		if isCustomFlag(bt, f.IsEnum, f.IsArray) {
 			hasCustomFlags = true
@@ -679,6 +684,7 @@ func main() {
 		Enums:                   enums,
 		Tree:                    tree,
 		HasDuration:             hasDuration,
+		HasArrayDuration:        hasArrayDuration,
 		HasCustomFlags:          hasCustomFlags,
 		HasEnums:                len(enums) > 0,
 		HasArrayFlags:           hasArrayFlags,

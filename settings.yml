@@ -14,8 +14,9 @@ config:
   usage: "path to config file (json/yaml/hjson)"
 
 gen_private_key:
-  usage: "generate new encryption key and exit"
+  usage: "mine a private key with max leading zeros for the given duration, then exit (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
   trigger: true
+  type: duration
 
 log:
   usage: "logging configuration"

@@ -20,6 +20,10 @@ func main() {
 func run(cfg msettings.Interface) error {
 	obj := msettings.Obj(cfg)
 
+	if obj.GenPrivateKey > 0 {
+		return handleKeygen(obj.GenPrivateKey)
+	}
+
 	data, err := json.MarshalIndent(obj, "", "  ")
 	if err != nil {
 		return err
