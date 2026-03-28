@@ -25,6 +25,7 @@ type peerCacheObj struct {
 	entries   map[[ed25519.PublicKeySize]byte]peerCacheEntryObj
 	running   atomic.Int32
 	idle      atomic.Int32
+	wg        sync.WaitGroup
 	done      chan struct{}
 	closeOnce sync.Once
 }
@@ -42,6 +43,7 @@ func newPeerCache() *peerCacheObj {
 
 func (c *peerCacheObj) close() {
 	c.closeOnce.Do(func() { close(c.done) })
+	c.wg.Wait()
 }
 
 // //
@@ -72,6 +74,7 @@ func (c *peerCacheObj) set(key [ed25519.PublicKeySize]byte, peers []ed25519.Publ
 
 	c.idle.Store(0)
 	if c.running.CompareAndSwap(0, 1) {
+		c.wg.Add(1)
 		go c.cleanup()
 	}
 }
@@ -84,6 +87,7 @@ func (c *peerCacheObj) cleanup() {
 	ticker := time.NewTicker(CacheTTL / 2)
 	defer ticker.Stop()
 	defer c.running.Store(0)
+	defer c.wg.Done()
 
 	for {
 		select {
