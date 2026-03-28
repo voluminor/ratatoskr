@@ -54,14 +54,10 @@ type TemplateObj struct {
 func main() {
 	modPath := flag.String("mod", "go.mod", "path to go.mod")
 	flag.Parse()
-	if flag.NArg() > 0 && *modPath == "go.mod" {
-		xx := flag.Arg(0)
-		modPath = &xx
-	}
 
 	file, err := os.Open(*modPath)
 	if err != nil {
-		fmt.Println("An error occurred while opening the file:", err)
+		fmt.Println("Error opening go.mod:", err)
 		return
 	}
 	defer file.Close()
@@ -85,15 +81,16 @@ func main() {
 
 		if strings.HasPrefix(line, "\t") {
 			fields := strings.Fields(line)
-			if len(fields) > 0 {
+			if len(fields) >= 2 {
 				dependencies[fields[0]] = fields[1]
 			}
 		}
 	}
 
-	lics, err := buildLicEntries(dependencies)
+	modDir := filepath.Dir(*modPath)
+	lics, err := buildLicEntries(dependencies, modDir)
 	if err != nil {
-		fmt.Println("An error occurred while building licenses:", err)
+		fmt.Println("Error building licenses:", err)
 		return
 	}
 
@@ -125,7 +122,7 @@ func main() {
 
 			compressed, err := CompressString(text)
 			if err != nil {
-				fmt.Println("An error occurred while compressing:", err)
+				fmt.Printf("Error compressing license for %s: %s\n", k, err)
 				continue
 			}
 			mapLicense[hash] = License{
@@ -160,12 +157,14 @@ func main() {
 	data.ImportsArr = append(data.ImportsArr, "bytes")
 	data.ImportsArr = append(data.ImportsArr, "compress/flate")
 
+	outDir := "target"
 	if *modPath != "go.mod" {
 		data.Path = filepath.Dir(*modPath)
+		outDir = filepath.Join("target", data.Path)
 	}
 
-	err = dep.WriteFileFromTemplate(filepath.Join("target", fileName), template_text, data)
+	err = dep.WriteFileFromTemplate(filepath.Join(outDir, fileName), template_text, data)
 	if err != nil {
-		fmt.Println("An error when trying to save a generated file:", err)
+		fmt.Println("Error saving generated file:", err)
 	}
 }

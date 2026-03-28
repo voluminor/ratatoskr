@@ -46,8 +46,11 @@ type modJSON struct {
 	}
 }
 
-func listModulesAll() ([]modJSON, error) {
+func listModulesAll(dir string) ([]modJSON, error) {
 	cmd := exec.Command("go", "list", "-m", "-json", "all")
+	if dir != "" && dir != "." {
+		cmd.Dir = dir
+	}
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -111,8 +114,8 @@ func findLicenseAtDir(dir string) (filename string, data []byte, ok bool) {
 
 // //
 
-func buildLicEntries(dependencies map[string]string) (map[string][]byte, error) {
-	mods, err := listModulesAll()
+func buildLicEntries(dependencies map[string]string, modDir string) (map[string][]byte, error) {
+	mods, err := listModulesAll(modDir)
 	if err != nil {
 		return nil, err
 	}
