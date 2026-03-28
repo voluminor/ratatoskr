@@ -9,9 +9,14 @@ import (
 
 // // // // // // // // // //
 
-// NodeConfig maps yggdrasil settings into config.NodeConfig.
-// Converts key.text from hex to bytes; all other processing
-// (key.path, certificate generation) is handled by the core.
+// NodeConfig builds a config.NodeConfig from the yggdrasil settings branch.
+//
+// key.text is decoded from hex to raw bytes; an invalid hex string
+// causes an error. When key.text is empty, PrivateKey stays nil and
+// the core generates or loads a key via key.path.
+//
+// If peers.manager is enabled, cfg.Peers is set to nil so the core
+// delegates peer discovery to the built-in manager instead of a static list.
 func NodeConfig(s YggdrasilInterface) (*config.NodeConfig, error) {
 	cfg := &config.NodeConfig{
 		PrivateKeyPath:    s.GetKey().GetPath(),
@@ -62,9 +67,15 @@ func NodeConfig(s YggdrasilInterface) (*config.NodeConfig, error) {
 
 // //
 
-// FromNodeConfig populates yggdrasil settings from a config.NodeConfig.
-// Takes a base settings Interface, clones it, fills the yggdrasil branch
-// and returns the updated Interface.
+// FromNodeConfig creates a new settings object by shallow-copying base and
+// overwriting its yggdrasil branch with values from cfg.
+//
+// The base object is NOT mutated — the copy is stack-allocated and
+// escapes to the heap via the returned pointer. Non-yggdrasil fields
+// (e.g. log settings) are preserved from base.
+//
+// Only the first MulticastInterfaces entry is mapped; additional entries
+// in cfg.MulticastInterfaces are silently ignored.
 func FromNodeConfig(cfg *config.NodeConfig, base Interface) Interface {
 	obj := *Obj(base)
 	y := &obj.Yggdrasil

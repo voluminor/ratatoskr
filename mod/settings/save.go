@@ -10,16 +10,13 @@ import (
 	"strings"
 
 	"github.com/hjson/hjson-go/v4"
+	"github.com/voluminor/ratatoskr/target"
 	"gopkg.in/yaml.v3"
 
 	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
-
-const ConfigBaseName = "ratatoskr-config"
-
-// //
 
 // FormatExt returns the file extension for a given format enum.
 func FormatExt(format gsettings.GoConfExportFormatEnum) string {
@@ -35,9 +32,9 @@ func FormatExt(format gsettings.GoConfExportFormatEnum) string {
 	}
 }
 
-// ConfigPath builds the full output path: dir/ConfigBaseName+ext.
+// ConfigPath builds the full output path: dir/GlobalName+ext.
 func ConfigPath(dir string, format gsettings.GoConfExportFormatEnum) string {
-	return filepath.Join(dir, ConfigBaseName+FormatExt(format))
+	return filepath.Join(dir, target.GlobalName+FormatExt(format))
 }
 
 // //
@@ -73,9 +70,10 @@ func ValidateDir(path string) (string, error) {
 
 // //
 
-// SaveFile marshals the settings object and writes it to dir/ConfigBaseName+ext.
-// The "config" field is excluded from output.
-// Returns the full output path.
+// SaveFile serializes src into the requested format and writes it to
+// dir/GlobalName+ext. The "config" key is stripped from the output
+// to prevent redirect loops when the file is later loaded.
+// Creates dir if it does not exist. Returns the full output path.
 func SaveFile(src Interface, dir string, format gsettings.GoConfExportFormatEnum) (string, error) {
 	absDir, err := ValidateDir(dir)
 	if err != nil {
@@ -95,16 +93,27 @@ func SaveFile(src Interface, dir string, format gsettings.GoConfExportFormatEnum
 
 // //
 
-// SaveFilePretty saves settings with preserved field order and comments
-// to dir/ConfigBaseName+ext. Returns the full output path.
+// SaveFilePretty saves settings with human-friendly formatting:
+// preserved field order and inline comments from gsettings.Comments.
+// Writes to dir/GlobalName+ext. Returns the full output path.
 func SaveFilePretty(src Interface, dir string, format gsettings.GoConfExportFormatEnum) (string, error) {
 	return SaveUnsafePretty(Obj(src), dir, format)
 }
 
 // //
 
-// SaveUnsafePretty saves arbitrary data with preserved field order and comments
-// to dir/ConfigBaseName+ext. Returns the full output path.
+// SaveUnsafePretty writes arbitrary data (not necessarily *gsettings.Obj) with
+// preserved field order and comments.
+//
+// "Unsafe" because:
+//   - data is typed as any — no compile-time guarantee that the structure
+//     matches the expected config schema;
+//   - if data is map[string]any, key ordering relies on gsettings.FieldOrder;
+//     missing or extra keys silently pass through without validation;
+//   - the "config" key is stripped from output by text search, which may
+//     remove unrelated keys named "config" in nested structures.
+//
+// Use SaveFilePretty when the source is a typed Interface.
 func SaveUnsafePretty(data any, dir string, format gsettings.GoConfExportFormatEnum) (string, error) {
 	absDir, err := ValidateDir(dir)
 	if err != nil {
@@ -124,6 +133,9 @@ func SaveUnsafePretty(data any, dir string, format gsettings.GoConfExportFormatE
 
 // //
 
+// marshalPretty serializes data with human-friendly formatting.
+// When data is map[string]any, field order follows gsettings.FieldOrder;
+// otherwise falls back to the default encoder behavior.
 func marshalPretty(data any, format gsettings.GoConfExportFormatEnum) ([]byte, error) {
 	m, isMap := data.(map[string]any)
 
@@ -169,7 +181,12 @@ func marshalPretty(data any, format gsettings.GoConfExportFormatEnum) ([]byte, e
 // //
 
 // StripRootKey removes a root-level key line from serialized config output.
-// Also removes trailing commas left by JSON removal.
+// Works by line-scanning for patterns like `key:`, `"key":` — not by parsing
+// the document tree. Also cleans up trailing commas left by JSON key removal.
+//
+// Limitation: only removes root-level occurrences. Nested keys with the same
+// name are preserved. False positives are possible if a value line starts
+// with the exact key pattern (unlikely for well-formed config).
 func StripRootKey(data []byte, key string) []byte {
 	lines := strings.Split(string(data), "\n")
 	result := make([]string, 0, len(lines))
@@ -193,6 +210,8 @@ func StripRootKey(data []byte, key string) []byte {
 
 // //
 
+// marshalByFormat serializes a typed settings object using standard encoders
+// (no custom field ordering or comment injection).
 func marshalByFormat(obj *gsettings.Obj, format gsettings.GoConfExportFormatEnum) ([]byte, error) {
 	switch format {
 	case gsettings.GoConfExportFormatJson:
@@ -220,6 +239,9 @@ func marshalByFormat(obj *gsettings.Obj, format gsettings.GoConfExportFormatEnum
 
 // //
 
+// marshalYAMLWithComments serializes data to YAML, then re-parses the output
+// as a yaml.Node tree to inject comments from gsettings.Comments and reorder
+// fields according to gsettings.FieldOrder before final serialization.
 func marshalYAMLWithComments(data any) ([]byte, error) {
 	raw, err := yaml.Marshal(data)
 	if err != nil {
@@ -241,6 +263,8 @@ func marshalYAMLWithComments(data any) ([]byte, error) {
 
 // //
 
+// annotateYAMLNode recursively walks a YAML mapping node and sets
+// HeadComment on keys whose dot-path appears in gsettings.Comments.
 func annotateYAMLNode(node *yaml.Node, prefix string) {
 	if node.Kind != yaml.MappingNode {
 		return
@@ -271,6 +295,9 @@ func annotateYAMLNode(node *yaml.Node, prefix string) {
 
 // //
 
+// reorderYAMLNode recursively reorders mapping node children
+// to match the sequence defined in gsettings.FieldOrder[prefix].
+// Keys absent from the order list are appended at the end.
 func reorderYAMLNode(node *yaml.Node, prefix string) {
 	if node.Kind != yaml.MappingNode {
 		return
@@ -312,6 +339,8 @@ func reorderYAMLNode(node *yaml.Node, prefix string) {
 
 // //
 
+// orderedKeys returns map keys sorted by gsettings.FieldOrder[prefix].
+// Falls back to alphabetical sort if no order is defined.
 func orderedKeys(m map[string]any, prefix string) []string {
 	order, ok := gsettings.FieldOrder[prefix]
 	if !ok {
@@ -341,6 +370,8 @@ func orderedKeys(m map[string]any, prefix string) []string {
 
 // //
 
+// marshalOrderedJSON serializes a map to indented JSON with key order
+// controlled by gsettings.FieldOrder.
 func marshalOrderedJSON(m map[string]any, prefix string) ([]byte, error) {
 	var buf bytes.Buffer
 	writeOrderedMap(&buf, m, prefix, true, 0)
@@ -349,6 +380,8 @@ func marshalOrderedJSON(m map[string]any, prefix string) ([]byte, error) {
 
 // //
 
+// marshalOrderedHJSON serializes a map to HJSON with key order
+// controlled by gsettings.FieldOrder.
 func marshalOrderedHJSON(m map[string]any, prefix string) ([]byte, error) {
 	var buf bytes.Buffer
 	writeOrderedMap(&buf, m, prefix, false, 0)
@@ -357,6 +390,8 @@ func marshalOrderedHJSON(m map[string]any, prefix string) ([]byte, error) {
 
 // //
 
+// writeOrderedMap recursively writes a map as an indented JSON or HJSON
+// object. In jsonMode keys are quoted and entries are comma-separated.
 func writeOrderedMap(buf *bytes.Buffer, m map[string]any, prefix string, jsonMode bool, level int) {
 	indent := strings.Repeat("  ", level)
 	childIndent := strings.Repeat("  ", level+1)
@@ -395,6 +430,9 @@ func writeOrderedMap(buf *bytes.Buffer, m map[string]any, prefix string, jsonMod
 
 // //
 
+// writeOrderedValue writes a single value to buf. In jsonMode delegates
+// to json.Marshal; in HJSON mode handles common types explicitly.
+// Marshal errors are silently ignored (output will contain "null").
 func writeOrderedValue(buf *bytes.Buffer, v any, jsonMode bool, level int) {
 	if jsonMode {
 		raw, _ := json.Marshal(v)
@@ -438,6 +476,9 @@ func writeOrderedValue(buf *bytes.Buffer, v any, jsonMode bool, level int) {
 
 // //
 
+// injectHJSONComments inserts "# comment" lines above HJSON keys
+// whose dot-path appears in gsettings.Comments. Tracks nesting depth
+// via a stack of key names to reconstruct dot-paths.
 func injectHJSONComments(raw []byte) []byte {
 	lines := strings.Split(string(raw), "\n")
 	var stack []string

@@ -35,6 +35,9 @@ func New(run func(Interface) error) error {
 
 // //
 
+// Obj extracts the underlying *gsettings.Obj via an unchecked type assertion.
+// Panics if i.Self() is not *gsettings.Obj — only call with values
+// originating from gsettings.Init or FromNodeConfig.
 func Obj(i Interface) *gsettings.Obj {
 	return i.Self().(*gsettings.Obj)
 }

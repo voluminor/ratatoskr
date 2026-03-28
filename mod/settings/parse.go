@@ -34,6 +34,9 @@ func ParseFile(path string, dst Interface) error {
 
 // //
 
+// resolveChain walks the config→config redirect chain starting from path.
+// Returns the terminal file path (one without a "config" field).
+// Detects cycles via a visited set; aborts after maxConfigChain hops.
 func resolveChain(path string) (string, error) {
 	current, err := filepath.Abs(path)
 	if err != nil {
@@ -73,6 +76,8 @@ func resolveChain(path string) (string, error) {
 
 // //
 
+// unmarshalFile reads the file at path and decodes it into dst
+// based on the file extension (.json, .yml/.yaml, .hjson/.conf).
 func unmarshalFile(path string, dst *gsettings.Obj) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
