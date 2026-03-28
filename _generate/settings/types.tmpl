@@ -1,12 +1,12 @@
 {{- define "structFields" -}}
     {{- range $key, $leaf := . }}
-        {{- if $leaf.Branch }}
+        {{- if $leaf.IsTrigger }}
+            {{ $leaf.Name }} {{ $leaf.Type }} `json:"-" yaml:"-"`
+        {{- else if $leaf.Branch }}
             {{- if $leaf.Usage }}
                 // {{ $leaf.Usage }}
             {{- end }}
             {{ $leaf.Name }} {{ $leaf.Type }} `json:"{{ $leaf.Key }}" yaml:"{{ $leaf.Key }}"`
-        {{- else if $leaf.IsTrigger }}
-            {{ $leaf.Name }} {{ $leaf.Type }} `json:"-" yaml:"-"`
         {{- else }}
             {{ $leaf.Name }} {{ $leaf.Type }} `json:"{{ $leaf.Key }}" yaml:"{{ $leaf.Key }}"`
         {{- end }}
@@ -52,8 +52,16 @@
 
 package settings
 
-{{- if .HasDuration }}
-    import "time"
+{{- if gt (len .TypesImports) 0 }}
+    {{- if eq (len .TypesImports) 1 }}
+        import "{{ index .TypesImports 0 }}"
+    {{- else }}
+        import (
+        {{- range .TypesImports }}
+            "{{ . }}"
+        {{- end }}
+        )
+    {{- end }}
 {{ end }}
 
 // // // // // // // // // //

@@ -13,10 +13,12 @@ config:
   type: string
   usage: "path to config file (json/yaml/hjson)"
 
-gen_private_key:
-  usage: "mine a private key with max leading zeros for the given duration, then exit (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
+go:
+  usage: "executable commands"
   trigger: true
-  type: duration
+  keygen:
+    type: duration
+    usage: "mine a private key with max leading zeros for the given duration (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
 
 log:
   usage: "logging configuration"

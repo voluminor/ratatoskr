@@ -19,13 +19,13 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ## Key generation
 
 ```bash
-./ratatoskr -gen_private_key 1s
+./ratatoskr -go.keygen 1s
 ```
 
 ```bash
-./ratatoskr -gen_private_key 10s
+./ratatoskr -go.keygen 10s
 ```
 
 ```bash
-./ratatoskr -gen_private_key 1m
+./ratatoskr -go.keygen 1m
 ```

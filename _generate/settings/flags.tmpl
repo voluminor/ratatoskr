@@ -4,16 +4,8 @@
 package settings
 
 import (
-"flag"
-{{- if .HasNonNativeScalarFlags }}
-    "fmt"
-    "strconv"
-{{- end }}
-{{- if .HasArrayFlags }}
-    "strings"
-{{- end }}
-{{- if .HasArrayDuration }}
-    "time"
+{{- range .FlagsImports }}
+    "{{ . }}"
 {{- end }}
 )
 

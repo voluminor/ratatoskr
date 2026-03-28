@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/voluminor/ratatoskr/cmd/ratatoskr/gocmd"
 	msettings "github.com/voluminor/ratatoskr/mod/settings"
 )
 
@@ -20,8 +21,8 @@ func main() {
 func run(cfg msettings.Interface) error {
 	obj := msettings.Obj(cfg)
 
-	if obj.GenPrivateKey > 0 {
-		return handleKeygen(obj.GenPrivateKey)
+	if handled, err := gocmd.Run(&obj.Go); handled {
+		return err
 	}
 
 	data, err := json.MarshalIndent(obj, "", "  ")

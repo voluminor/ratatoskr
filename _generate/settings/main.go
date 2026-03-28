@@ -86,19 +86,17 @@ type TreeLeafObj struct {
 }
 
 type TemplateObj struct {
-	GenerationTime          string
-	Path                    string
-	Flags                   []FlagObj
-	Enums                   []EnumObj
-	Tree                    map[string]*TreeLeafObj
-	HasDuration             bool
-	HasArrayDuration        bool
-	HasCustomFlags          bool
-	HasEnums                bool
-	HasArrayFlags           bool
-	HasNonNativeScalarFlags bool
-	HasTriggerFlags         bool
-	HelpText                string
+	GenerationTime  string
+	Path            string
+	Flags           []FlagObj
+	Enums           []EnumObj
+	Tree            map[string]*TreeLeafObj
+	TypesImports    []string
+	FlagsImports    []string
+	HasCustomFlags  bool
+	HasEnums        bool
+	HasTriggerFlags bool
+	HelpText        string
 }
 
 // //
@@ -112,6 +110,15 @@ var nativeFlagTypes = map[string]bool{
 	"uint64":   true,
 	"float64":  true,
 	"duration": true,
+}
+
+func sortedKeys(m map[string]bool) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func isArrayType(t string) bool {
@@ -154,9 +161,27 @@ func isCustomFlag(t string, isEnum, isArray bool) bool {
 
 // //
 
+// hasChildNodes returns true if the YAML node contains nested setting nodes.
+func hasChildNodes(node map[string]any) bool {
+	for k, v := range node {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
+		switch k {
+		case "type", "enum", "trigger", "usage", "value":
+			continue
+		}
+		if _, ok := v.(map[string]any); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // collectFlags recursively walks the YAML tree.
-// A node with a "type" key is a flag definition; otherwise it is a branch.
-func collectFlags(node map[string]any, prefix string) []FlagObj {
+// A node with children is a branch; a leaf node defines a flag.
+// inheritTrigger propagates trigger status from parent groups to all descendants.
+func collectFlags(node map[string]any, prefix string, inheritTrigger bool) []FlagObj {
 	keys := make([]string, 0, len(node))
 	for k := range node {
 		keys = append(keys, k)
@@ -181,11 +206,18 @@ func collectFlags(node map[string]any, prefix string) []FlagObj {
 			fullKey = prefix + "." + k
 		}
 
-		_, hasType := child["type"]
-		_, hasEnum := child["enum"]
 		_, hasTrigger := child["trigger"]
 
-		if hasType || hasEnum || hasTrigger {
+		if hasChildNodes(child) {
+			result = append(result, collectFlags(child, fullKey, inheritTrigger || hasTrigger)...)
+			continue
+		}
+
+		_, hasType := child["type"]
+		_, hasEnum := child["enum"]
+		isTrigger := hasTrigger || inheritTrigger
+
+		if hasType || hasEnum || isTrigger {
 			f := FlagObj{
 				Name: fullKey,
 			}
@@ -210,7 +242,7 @@ func collectFlags(node map[string]any, prefix string) []FlagObj {
 					f.IsEnum = true
 				}
 			}
-			if hasTrigger {
+			if isTrigger {
 				f.IsTrigger = true
 				if f.Type == "" {
 					f.Type = "bool"
@@ -218,8 +250,6 @@ func collectFlags(node map[string]any, prefix string) []FlagObj {
 			}
 			f.IsArray = isArrayType(f.Type)
 			result = append(result, f)
-		} else {
-			result = append(result, collectFlags(child, fullKey)...)
 		}
 	}
 
@@ -246,11 +276,7 @@ func collectBranchUsage(node map[string]any, prefix string) map[string]string {
 			fullKey = prefix + "." + k
 		}
 
-		// Branch node: no "type", no "enum", no "trigger" key
-		_, hasType := child["type"]
-		_, hasEnum := child["enum"]
-		_, hasTrig := child["trigger"]
-		if !hasType && !hasEnum && !hasTrig {
+		if hasChildNodes(child) {
 			if usage, ok := child["usage"]; ok {
 				result[fullKey] = fmt.Sprint(usage)
 			}
@@ -375,6 +401,28 @@ func buildFlagAccessor(flagName string) string {
 	}
 	s := sb.String()
 	return strings.TrimSuffix(s, ".")
+}
+
+// //
+
+// propagateTrigger marks branch nodes as trigger when all their children are triggers.
+func propagateTrigger(tree map[string]*TreeLeafObj) {
+	for _, node := range tree {
+		if node.Branch == nil {
+			continue
+		}
+		propagateTrigger(node.Branch)
+		allTrigger := true
+		for _, child := range node.Branch {
+			if !child.IsTrigger {
+				allTrigger = false
+				break
+			}
+		}
+		if allTrigger {
+			node.IsTrigger = true
+		}
+	}
 }
 
 // //
@@ -519,17 +567,16 @@ func main() {
 		return
 	}
 
-	flags := collectFlags(parseTree, "")
+	flags := collectFlags(parseTree, "", false)
 	branchUsage := collectBranchUsage(parseTree, "")
 	tree := make(map[string]*TreeLeafObj)
 	var enums []EnumObj
 	enumMap := make(map[string]*EnumObj)
-	hasDuration := false
-	hasArrayDuration := false
 	hasCustomFlags := false
-	hasArrayFlags := false
-	hasNonNativeScalarFlags := false
 	hasTriggerFlags := false
+
+	typesImports := map[string]bool{}
+	flagsImports := map[string]bool{"flag": true}
 
 	// Build enums — deduplicate identical value sets
 	enumByValues := make(map[string]*EnumObj) // key: joined values
@@ -583,22 +630,23 @@ func main() {
 			bt = baseType(bt)
 		}
 		if bt == "duration" {
-			hasDuration = true
+			typesImports["time"] = true
 			if f.IsArray {
-				hasArrayDuration = true
+				flagsImports["time"] = true
 			}
 		}
 		if isCustomFlag(bt, f.IsEnum, f.IsArray) {
 			hasCustomFlags = true
 		}
 		if f.IsArray {
-			hasArrayFlags = true
+			flagsImports["strings"] = true
 		}
 		if f.IsTrigger {
 			hasTriggerFlags = true
 		}
 		if !f.IsEnum && !f.IsArray && !nativeFlagTypes[f.Type] {
-			hasNonNativeScalarFlags = true
+			flagsImports["fmt"] = true
+			flagsImports["strconv"] = true
 		}
 
 		if f.Type == "" && !f.IsEnum {
@@ -678,19 +726,19 @@ func main() {
 		}
 	}
 
+	propagateTrigger(tree)
+
 	data := TemplateObj{
-		GenerationTime:          time.Now().Format(time.RFC3339),
-		Flags:                   flags,
-		Enums:                   enums,
-		Tree:                    tree,
-		HasDuration:             hasDuration,
-		HasArrayDuration:        hasArrayDuration,
-		HasCustomFlags:          hasCustomFlags,
-		HasEnums:                len(enums) > 0,
-		HasArrayFlags:           hasArrayFlags,
-		HasNonNativeScalarFlags: hasNonNativeScalarFlags,
-		HasTriggerFlags:         hasTriggerFlags,
-		HelpText:                buildHelpText(flags, tree),
+		GenerationTime:  time.Now().Format(time.RFC3339),
+		Flags:           flags,
+		Enums:           enums,
+		Tree:            tree,
+		TypesImports:    sortedKeys(typesImports),
+		FlagsImports:    sortedKeys(flagsImports),
+		HasCustomFlags:  hasCustomFlags,
+		HasEnums:        len(enums) > 0,
+		HasTriggerFlags: hasTriggerFlags,
+		HelpText:        buildHelpText(flags, tree),
 	}
 
 	outDir := filepath.Join("target", "settings")

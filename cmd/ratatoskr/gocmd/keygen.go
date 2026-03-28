@@ -1,4 +1,4 @@
-package main
+package gocmd
 
 import (
 	"crypto/ed25519"
@@ -31,7 +31,7 @@ type keygenResultObj struct {
 
 // //
 
-func handleKeygen(duration time.Duration) error {
+func keygen(duration time.Duration) error {
 	if duration < minKeygenDuration {
 		duration = minKeygenDuration
 	}
@@ -90,7 +90,7 @@ func mineKey(duration time.Duration) (*keygenResultObj, error) {
 		}()
 	}
 
-	animateProgress(&done, &total, &bestMu, &best, duration)
+	animateProgress(&done, &total, duration)
 	wg.Wait()
 
 	best.checked = total.Load()
@@ -103,7 +103,7 @@ func mineKey(duration time.Duration) (*keygenResultObj, error) {
 
 // //
 
-func animateProgress(done *atomic.Bool, total *atomic.Uint64, mu *sync.Mutex, best *keygenResultObj, duration time.Duration) {
+func animateProgress(done *atomic.Bool, total *atomic.Uint64, duration time.Duration) {
 	start := time.Now()
 	deadline := start.Add(duration)
 	frame := 0
@@ -122,12 +122,8 @@ func animateProgress(done *atomic.Bool, total *atomic.Uint64, mu *sync.Mutex, be
 			rate = float64(keys) / elapsed / 1e6
 		}
 
-		mu.Lock()
-		ones := best.ones
-		mu.Unlock()
-
-		fmt.Fprintf(os.Stderr, "\r%c mining key... %s remaining | best: %d leading zeros | %.1fM keys/sec  ",
-			spinnerFrames[frame%len(spinnerFrames)], formatRemaining(remaining), ones, rate)
+		fmt.Fprintf(os.Stderr, "\r%c mining key... %s remaining | %.1fM keys/sec  ",
+			spinnerFrames[frame%len(spinnerFrames)], formatRemaining(remaining), rate)
 		frame++
 	}
 	ticker.Stop()
