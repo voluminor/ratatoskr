@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -26,7 +25,6 @@ var spinnerFrames = [...]rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '
 type keygenResultObj struct {
 	privateKey ed25519.PrivateKey
 	ones       byte
-	checked    uint64
 }
 
 // //
@@ -93,7 +91,6 @@ func mineKey(duration time.Duration) (*keygenResultObj, error) {
 	animateProgress(&done, &total, duration)
 	wg.Wait()
 
-	best.checked = total.Load()
 	if best.privateKey == nil {
 		return nil, fmt.Errorf("key generation failed: no keys produced")
 	}
@@ -129,7 +126,7 @@ func animateProgress(done *atomic.Bool, total *atomic.Uint64, duration time.Dura
 	ticker.Stop()
 
 	done.Store(true)
-	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	fmt.Fprint(os.Stderr, "\r\033[2K")
 }
 
 // //

@@ -22,7 +22,7 @@ import (
 // // // // // // // // // //
 
 const (
-	defaultTraceTimeout     = 5 * time.Minute
+	defaultTraceTimeout     = 40 * time.Second
 	minTraceTimeout         = 100 * time.Millisecond
 	defaultTraceMaxDepth    = 3
 	defaultTraceConcurrency = 64
@@ -51,7 +51,7 @@ func traceCmd(cfg *gsettings.TracerouteObj) error {
 		}()
 	}()
 
-	if err := waitForPeers(ctx, node, tr); err != nil {
+	if err := waitForPeers(ctx, tr); err != nil {
 		return err
 	}
 
@@ -116,7 +116,7 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 	nodeCfg := yggconfig.GenerateConfig()
 	nodeCfg.AdminListen = "none"
 
-	logger := &noopLoggerObj{}
+	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
 		Ctx:    ctx,
@@ -143,7 +143,7 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 
 // //
 
-func waitForPeers(ctx context.Context, node *ratatoskr.Obj, tr *traceroute.Obj) error {
+func waitForPeers(ctx context.Context, tr *traceroute.Obj) error {
 	frame := 0
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -156,7 +156,7 @@ func waitForPeers(ctx context.Context, node *ratatoskr.Obj, tr *traceroute.Obj) 
 		select {
 		case <-ticker.C:
 			if !peerUp {
-				for _, p := range node.GetPeers() {
+				for _, p := range tr.Peers() {
 					if p.Up {
 						peerUp = true
 						break
@@ -223,7 +223,6 @@ func waitForRouting(ctx context.Context, tr *traceroute.Obj) error {
 				clearLine()
 				return nil
 			}
-			tr.FlushCache()
 			tr.Lookup(peerKey)
 
 		case <-ticker.C:
@@ -280,27 +279,30 @@ func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteO
 	frame := 0
 	ticker := time.NewTicker(100 * time.Millisecond)
 
-	lastTotal := 0
-	lastDepth := 0
-	printedDepth := 0
+	currentDepth := 0
+	depthFound := 0
+	totalNodes := 0
 
-	loop := true
-	for loop {
+scan:
+	for {
 		select {
-		case p, ok := <-ch:
-			if !ok || p.Done {
+		case p := <-ch:
+			if p.Done {
 				clearLine()
-				loop = false
-				continue
+				break scan
 			}
 			if p.Found > 0 {
-				lastTotal = p.Total
-				if p.Depth > lastDepth {
-					clearLine()
-					fmt.Fprintf(os.Stderr, "depth %d: %d nodes found\n", lastDepth, lastTotal)
-					printedDepth = lastDepth
+				if p.Depth > currentDepth {
+					if depthFound > 0 {
+						clearLine()
+						fmt.Fprintf(os.Stderr, "depth %d: %d nodes found\n", currentDepth, depthFound)
+					}
+					currentDepth = p.Depth
+					depthFound = p.Found
+				} else {
+					depthFound += p.Found
 				}
-				lastDepth = p.Depth
+				totalNodes = p.Total
 			}
 		case <-ticker.C:
 			dl, _ := ctx.Deadline()
@@ -309,19 +311,19 @@ func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteO
 				remaining = 0
 			}
 			fmt.Fprintf(os.Stderr, "\r%c scanning depth %d... %s remaining | %d nodes  ",
-				spinnerFrames[frame%len(spinnerFrames)], lastDepth, formatRemaining(remaining), lastTotal)
+				spinnerFrames[frame%len(spinnerFrames)], currentDepth, formatRemaining(remaining), totalNodes)
 			frame++
 		case <-ctx.Done():
 			clearLine()
-			loop = false
+			break scan
 		}
 	}
 
 	ticker.Stop()
 	<-done
 
-	if lastDepth > printedDepth && lastTotal > 0 {
-		fmt.Fprintf(os.Stderr, "depth %d: %d nodes total\n", lastDepth, lastTotal)
+	if depthFound > 0 {
+		fmt.Fprintf(os.Stderr, "depth %d: %d nodes found\n", currentDepth, depthFound)
 	}
 	if scanErr != nil {
 		return scanErr
@@ -351,12 +353,12 @@ func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.Traceroute
 	frame := 0
 	ticker := time.NewTicker(100 * time.Millisecond)
 
-	loop := true
-	for loop {
+trace:
+	for {
 		select {
 		case <-done:
 			clearLine()
-			loop = false
+			break trace
 		case <-ticker.C:
 			dl, _ := ctx.Deadline()
 			remaining := time.Until(dl)
@@ -368,7 +370,7 @@ func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.Traceroute
 			frame++
 		case <-ctx.Done():
 			clearLine()
-			loop = false
+			break trace
 		}
 	}
 
@@ -388,7 +390,7 @@ func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.Traceroute
 // //
 
 func clearLine() {
-	fmt.Fprintf(os.Stderr, "\r%s\r", strings.Repeat(" ", 80))
+	fmt.Fprint(os.Stderr, "\r\033[2K")
 }
 
 // //
