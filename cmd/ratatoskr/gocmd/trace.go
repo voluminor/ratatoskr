@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
@@ -395,6 +394,42 @@ func clearLine() {
 
 // //
 
+func printTree(n *traceroute.NodeObj, prefix string, isRoot bool) {
+	if n == nil {
+		return
+	}
+
+	label := hex.EncodeToString(n.Key) + "    "
+	if isRoot {
+		label = "root"
+	}
+
+	var extra string
+	if n.Unreachable {
+		extra = " [unreachable]"
+	} else if ms := float64(n.RTT.Microseconds()) / 1000.0; ms > 0 {
+		extra = fmt.Sprintf(" %.2f ms", ms)
+	}
+	if len(n.Children) > 0 {
+		extra += fmt.Sprintf(" (%d)", len(n.Children))
+	}
+
+	fmt.Printf("%s%s\n", label, extra)
+
+	for i, ch := range n.Children {
+		last := i == len(n.Children)-1
+		if last {
+			fmt.Printf("%s└── ", prefix)
+			printTree(ch, prefix+"    ", false)
+		} else {
+			fmt.Printf("%s├── ", prefix)
+			printTree(ch, prefix+"│   ", false)
+		}
+	}
+}
+
+// //
+
 type scanNodeJSON struct {
 	Key         string          `json:"key"`
 	Parent      string          `json:"parent,omitempty"`
@@ -444,17 +479,7 @@ func outputScan(result *traceroute.TreeResultObj, format gsettings.GoTracerouteF
 		return nil
 	}
 
-	nodes := result.Root.Flatten()
-	for _, n := range nodes {
-		indent := strings.Repeat("  ", n.Depth)
-		key := hex.EncodeToString(n.Key)
-		rtt := fmt.Sprintf("%.1fms", float64(n.RTT.Microseconds())/1000.0)
-		status := ""
-		if n.Unreachable {
-			status = " [unreachable]"
-		}
-		fmt.Printf("%s%s  %s%s\n", indent, key[:16]+"...", rtt, status)
-	}
+	printTree(result.Root, "", true)
 	fmt.Fprintf(os.Stderr, "total: %d nodes\n", result.Total)
 	return nil
 }
@@ -511,7 +536,7 @@ func outputTrace(target string, result *traceroute.TraceResultObj, format gsetti
 		for _, h := range result.Hops {
 			key := "???"
 			if len(h.Key) > 0 {
-				key = hex.EncodeToString(h.Key)[:16] + "..."
+				key = hex.EncodeToString(h.Key) + "    "
 			}
 			fmt.Printf("  %d  port:%-5d  %s\n", h.Index, h.Port, key)
 		}
