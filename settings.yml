@@ -1,0 +1,58 @@
+config: # перенаправление на другой конфиг-файл
+  type: string
+  usage: "path to config file (json/yaml)"
+
+log:
+  compress:
+    type: bool
+    value: true
+    usage: "compress rotated log files"
+  file_path:
+    type: string
+    usage: "log file path (auto-detected if empty)"
+  format:
+    type: string
+    value: "text"
+    usage: "console format (text/json)"
+  level_console:
+    type: string
+    value: "debug"
+    usage: "console log level (debug/info/warn/error/fatal/panic/disabled)"
+  level_file:
+    type: string
+    value: "info"
+    usage: "file log level (debug/info/warn/error/fatal/panic/disabled)"
+  max_age:
+    type: int
+    value: 30
+    usage: "log file max age (days)"
+  max_backups:
+    type: int
+    value: 3
+    usage: "log file max backups"
+  max_size:
+    type: int
+    value: 32
+    usage: "log file max size (MB)"
+  output:
+    type: string
+    value: "both"
+    usage: "log output mode (console/file/both)"
+
+ui:
+  text_size:
+    type: float
+    value: 1.0
+    usage: "text size multiplier (0.2-8.0)"
+  dark_mode:
+    type: bool
+    value: true
+    usage: "dark mode enabled"
+  tab_location:
+    type: string
+    value: "top"
+    usage: "tab position (top/bottom/leading/trailing)"
+  language:
+    type: string
+    value: "en"
+    usage: "UI language"

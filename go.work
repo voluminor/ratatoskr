@@ -7,4 +7,6 @@ use (
 	./cmd/embedded/tiny-chat
 	./cmd/embedded/tiny-http
 	./cmd/yggstack
+	./_generate/settings
+	./_generate/dependencies
 )
