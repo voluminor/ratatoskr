@@ -12,8 +12,7 @@ import (
 
 // // // // // // // // // //
 
-// Obj is the traceroute module for exploring Yggdrasil network topology.
-// Works directly with the core, without an admin socket.
+// Obj explores Yggdrasil network topology without an admin socket.
 // Tree() does BFS over peers via debug_remoteGetPeers.
 // Path(), Hops(), Trace() work with local core data.
 type Obj struct {
@@ -27,14 +26,23 @@ type Obj struct {
 
 const defaultPoolSize = 16
 
-// MaxPeersPerNode limits how many peers are accepted from a single remote node.
-// If a node reports more peers than this limit, it is marked as Unreachable.
+// MaxPeersPerNode limits peers accepted from a single remote node.
+// Exceeding this marks the node as Unreachable.
 var MaxPeersPerNode = 65535
 
 // //
 
+func validateKey(key ed25519.PublicKey) error {
+	if len(key) != ed25519.PublicKeySize {
+		return fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
+	}
+	return nil
+}
+
+// // // // // // // // // //
+
 // New creates a traceroute module.
-// Captures debug_remoteGetPeers via core.SetAdmin without starting an admin socket.
+// Captures debug_remoteGetPeers via core.SetAdmin.
 func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 	if core == nil {
 		return nil, ErrCoreRequired
@@ -64,7 +72,7 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 
 // //
 
-// Close stops the cache cleanup goroutine and releases resources.
+// Close stops the cache cleanup goroutine.
 func (o *Obj) Close() {
 	o.cache.close()
 }
@@ -76,24 +84,21 @@ func (o *Obj) FlushCache() {
 
 // // // // // // // // // //
 
-// Tree builds a network topology tree via BFS.
-// Root is our node; depth 1 is direct active peers from GetPeers().
+// Tree builds a network topology tree via BFS from our node as root.
 // maxDepth > 0 required. concurrency <= 0 defaults to 16.
-// Nodes that do not respond to peer queries are marked Unreachable.
 func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*TreeResultObj, error) {
 	return o.treeBFS(ctx, maxDepth, concurrency, nil)
 }
 
-// TreeChan is the same as Tree but sends a TreeProgressObj to ch after each depth level.
-// Done=true on the last message. ch is not closed by TreeChan.
+// TreeChan is Tree with progress: sends TreeProgressObj after each depth level.
+// Done=true on the last message. Does not close ch.
 func (o *Obj) TreeChan(ctx context.Context, maxDepth uint16, concurrency int, ch chan<- TreeProgressObj) (*TreeResultObj, error) {
 	return o.treeBFS(ctx, maxDepth, concurrency, ch)
 }
 
 // //
 
-// treeBFS is the shared BFS implementation used by Tree and TreeChan.
-// progress is nil-safe: no messages are sent when nil.
+// treeBFS is the shared BFS implementation. progress is nil-safe.
 func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, progress chan<- TreeProgressObj) (*TreeResultObj, error) {
 	if maxDepth == 0 {
 		return nil, ErrMaxDepthRequired
@@ -112,7 +117,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 	visited := make(map[[ed25519.PublicKeySize]byte]struct{})
 	visited[toKeyArray(selfKey)] = struct{}{}
 
-	// Level 1: active direct peers only. RTT from core's measured latency.
 	var currentLevel []*NodeObj
 	for _, p := range o.core.GetPeers() {
 		if !p.Up || len(p.Key) != ed25519.PublicKeySize {
@@ -136,7 +140,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 		}
 	}
 
-	// BFS levels 2..maxDepth.
 	for depth := uint16(1); depth < maxDepth && len(currentLevel) > 0; depth++ {
 		if ctx.Err() != nil {
 			break
@@ -165,7 +168,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 // //
 
 // scanLevel queries peers of all nodes at the current BFS level via the worker pool.
-// visited is updated sequentially after all results are collected — no mutex needed.
 func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeObj, visited map[[ed25519.PublicKeySize]byte]struct{}, nextDepth int) []*NodeObj {
 	nodeByKey := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(nodes))
 	for _, n := range nodes {
@@ -220,17 +222,7 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 
 // // // // // // // // // //
 
-func validateKey(key ed25519.PublicKey) error {
-	if len(key) != ed25519.PublicKeySize {
-		return fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
-	}
-	return nil
-}
-
-// //
-
-// Path returns the node chain from the spanning tree root to the target key.
-// Result: [root, ..., target]. Uses local GetTree().
+// Path returns [root, ..., target] from the local spanning tree.
 func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
@@ -246,8 +238,7 @@ func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	return path, nil
 }
 
-// Hops returns the port-level route to the key from GetPaths().
-// Each port is resolved to a key via GetPeers(). Requires a prior Lookup().
+// Hops returns the port-level route to the key. Requires a prior Lookup().
 func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
@@ -262,44 +253,17 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 	return nil, ErrNoActivePath
 }
 
-// Lookup initiates a path search to the key. Results appear in Hops() after some time.
+// Lookup initiates a path search. Results appear in Hops() after some time.
 func (o *Obj) Lookup(key ed25519.PublicKey) {
 	o.core.PacketConn.PacketConn.SendLookup(key)
 }
 
 // // // // // // // // // //
 
-// Self returns this node's public key and routing info.
-func (o *Obj) Self() yggcore.SelfInfo {
-	return o.core.GetSelf()
-}
-
-// Address returns this node's Yggdrasil IPv6 address.
-func (o *Obj) Address() net.IP {
-	return o.core.Address()
-}
-
-// Subnet returns this node's Yggdrasil IPv6 subnet.
-func (o *Obj) Subnet() net.IPNet {
-	return o.core.Subnet()
-}
-
-// Peers returns direct peers from the core.
-func (o *Obj) Peers() []yggcore.PeerInfo {
-	return o.core.GetPeers()
-}
-
-// Sessions returns active sessions from the core.
-func (o *Obj) Sessions() []yggcore.SessionInfo {
-	return o.core.GetSessions()
-}
-
-// SpanningTree returns the raw spanning tree entries from the core.
-func (o *Obj) SpanningTree() []yggcore.TreeEntryInfo {
-	return o.core.GetTree()
-}
-
-// Paths returns active pathfinder routes from the core.
-func (o *Obj) Paths() []yggcore.PathEntryInfo {
-	return o.core.GetPaths()
-}
+func (o *Obj) Self() yggcore.SelfInfo                { return o.core.GetSelf() }
+func (o *Obj) Address() net.IP                       { return o.core.Address() }
+func (o *Obj) Subnet() net.IPNet                     { return o.core.Subnet() }
+func (o *Obj) Peers() []yggcore.PeerInfo             { return o.core.GetPeers() }
+func (o *Obj) Sessions() []yggcore.SessionInfo       { return o.core.GetSessions() }
+func (o *Obj) SpanningTree() []yggcore.TreeEntryInfo { return o.core.GetTree() }
+func (o *Obj) Paths() []yggcore.PathEntryInfo        { return o.core.GetPaths() }

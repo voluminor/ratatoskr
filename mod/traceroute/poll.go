@@ -25,8 +25,8 @@ const hopsGracePeriod = 10
 // // // // // // // // // //
 
 // Trace searches for the key in both spanning tree and pathfinder.
-// Strategy: both available → return immediately; tree only → Lookup + wait 2s for hops;
-// nothing → full poll with lookup retries every second until ctx expires.
+// Returns immediately if both found; waits for hops if only tree is available;
+// falls back to full poll with lookup retries until ctx expires.
 func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.
 // //
 
 // pollFull polls for both tree path and hops until ctx expires.
-// Single flat loop: once tree is found, gives hopsGracePeriod extra ticks for hops.
+// Once tree is found, gives hopsGracePeriod extra ticks before returning.
 func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
 	ticker := time.NewTicker(PollInterval)
 	defer ticker.Stop()
@@ -138,14 +138,13 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResult
 
 // //
 
-// enrichPath fills RTT on path nodes. Direct peers get core's measured latency;
-// remote nodes get RTT from callRemotePeers. Skips root (index 0).
+// enrichPath fills RTT on path nodes (skips root).
+// Direct peers use core's latency; remote nodes use callRemotePeers round-trip.
 func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 	if len(path) <= 1 {
 		return
 	}
 
-	// Build direct peer latency map for fast lookup.
 	peerLatency := make(map[[ed25519.PublicKeySize]byte]time.Duration)
 	for _, p := range o.core.GetPeers() {
 		if p.Up && len(p.Key) == ed25519.PublicKeySize && p.Latency > 0 {
@@ -159,7 +158,6 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 		rtt time.Duration
 	}
 
-	// Count how many nodes need a remote call.
 	var remoteCount int
 	for i, n := range targets {
 		if lat, ok := peerLatency[toKeyArray(n.Key)]; ok {

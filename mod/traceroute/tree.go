@@ -8,9 +8,7 @@ import (
 
 // // // // // // // // // //
 
-// buildTree builds a tree from a flat list of TreeEntryInfo.
-// Root is the node where Parent == Key (self-parented).
-// Returns nil and an error if no self-rooted node is found.
+// buildTree builds a tree from flat TreeEntryInfo. Root is the self-parented node.
 func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj, error) {
 	if len(entries) == 0 {
 		return nil, ErrTreeEmpty
@@ -55,8 +53,7 @@ func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj
 
 // //
 
-// setDepth recursively assigns depth starting from d.
-// maxDepth guards against cycles or pathologically deep trees.
+// setDepth recursively assigns depth. maxDepth guards against cycles.
 func setDepth(n *NodeObj, d, maxDepth int) {
 	n.Depth = d
 	if d >= maxDepth {
@@ -70,8 +67,7 @@ func setDepth(n *NodeObj, d, maxDepth int) {
 
 // // // // // // // // // //
 
-// resolveHops converts PathEntryInfo into a HopObj slice.
-// Ports are resolved to keys via GetPeers(); unresolved ports leave Key nil.
+// resolveHops converts PathEntryInfo to HopObj slice, resolving ports to keys via peers.
 func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj {
 	portToKey := make(map[uint64]ed25519.PublicKey, len(peers))
 	for _, p := range peers {
@@ -93,7 +89,7 @@ func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj 
 
 // // // // // // // // // //
 
-// toKeyArray converts ed25519.PublicKey to a fixed-size array for use as map keys.
+// toKeyArray converts ed25519.PublicKey to a fixed-size array for map keys.
 func toKeyArray(key ed25519.PublicKey) [ed25519.PublicKeySize]byte {
 	var arr [ed25519.PublicKeySize]byte
 	copy(arr[:], key)

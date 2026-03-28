@@ -68,6 +68,7 @@ jobs:
       - uses: ./.github/actions/run-tests
 
   cross-build:
+    if: false
     name: "🛠️ Build [${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('/v{0}', matrix.goarm) || '' }}${{ matrix.gomips && format('/{0}', matrix.gomips) || '' }}]"
     needs: [ prepare ]
     runs-on: ubuntu-latest

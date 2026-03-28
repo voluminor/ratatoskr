@@ -46,8 +46,7 @@ func (c *peerCacheObj) close() {
 
 // //
 
-// get returns cached peers, RTT and true if the entry exists and has not expired.
-// nil peers with ok=true means the node was unreachable.
+// get returns cached peers and RTT. nil peers with ok=true means unreachable.
 func (c *peerCacheObj) get(key [ed25519.PublicKeySize]byte) ([]ed25519.PublicKey, time.Duration, bool) {
 	c.mu.RLock()
 	e, ok := c.entries[key]
@@ -65,7 +64,7 @@ func (c *peerCacheObj) flush() {
 	c.mu.Unlock()
 }
 
-// set stores a peer list (or nil for unreachable) with RTT and ensures the cleanup goroutine is running.
+// set stores a peer list (nil = unreachable) and starts cleanup if needed.
 func (c *peerCacheObj) set(key [ed25519.PublicKeySize]byte, peers []ed25519.PublicKey, rtt time.Duration) {
 	c.mu.Lock()
 	c.entries[key] = peerCacheEntryObj{peers: peers, rtt: rtt, at: time.Now()}
@@ -80,7 +79,7 @@ func (c *peerCacheObj) set(key [ed25519.PublicKeySize]byte, peers []ed25519.Publ
 // //
 
 // cleanup removes expired entries every CacheTTL/2.
-// Exits after 10 consecutive iterations with an empty cache or when done is closed.
+// Exits after 10 consecutive empty iterations or when done is closed.
 func (c *peerCacheObj) cleanup() {
 	ticker := time.NewTicker(CacheTTL / 2)
 	defer ticker.Stop()

@@ -8,23 +8,20 @@ import (
 // // // // // // // // // //
 
 // NodeObj is a node in the network topology tree.
-// Used by Tree() (BFS over peers), Path() and Trace() (spanning tree).
-// Unreachable is set to true only in Tree() if the node did not respond to a peer query.
+// Used by Tree() (BFS), Path() and Trace() (spanning tree).
 type NodeObj struct {
-	Key      ed25519.PublicKey // node public key
-	Parent   ed25519.PublicKey // parent key
-	Sequence uint64            // sequence number (spanning tree mode only)
-	Depth    int               // depth from root (root = 0)
-	// RTT is approximate. For direct peers it uses core's measured latency (accurate).
-	// For remote nodes it measures the debug_remoteGetPeers round-trip, which includes
-	// multi-hop network traversal plus remote processing time — not pure network latency.
+	Key      ed25519.PublicKey
+	Parent   ed25519.PublicKey
+	Sequence uint64 // spanning tree mode only
+	Depth    int
+	// RTT is approximate for remote nodes: measures debug_remoteGetPeers round-trip
+	// including multi-hop traversal, not pure network latency.
 	RTT         time.Duration
-	Unreachable bool // node did not respond to peer query in Tree()
+	Unreachable bool // did not respond to peer query (Tree only)
 	Children    []*NodeObj
 }
 
-// Find recursively searches for a node by key in the subtree.
-// Returns a pointer to the found node or nil.
+// Find recursively searches for a node by key. Returns nil if not found.
 func (n *NodeObj) Find(key ed25519.PublicKey) *NodeObj {
 	if n == nil {
 		return nil
@@ -40,8 +37,7 @@ func (n *NodeObj) Find(key ed25519.PublicKey) *NodeObj {
 	return nil
 }
 
-// Flatten performs a depth-first traversal, returning a flat list of all nodes.
-// Order: current node first, then all descendants recursively.
+// Flatten returns a depth-first flat list of all nodes in the subtree.
 func (n *NodeObj) Flatten() []*NodeObj {
 	if n == nil {
 		return nil
@@ -58,8 +54,7 @@ func (n *NodeObj) flattenInto(out *[]*NodeObj) {
 	}
 }
 
-// PathTo returns the node chain from the current node (root) to the target key.
-// Returns [root, ..., target] or nil if the key is not found.
+// PathTo returns [root, ..., target] or nil if the key is not found.
 func (n *NodeObj) PathTo(key ed25519.PublicKey) []*NodeObj {
 	if n == nil {
 		return nil
@@ -89,19 +84,15 @@ func (n *NodeObj) pathTo(key ed25519.PublicKey, out *[]*NodeObj) bool {
 // //
 
 // HopObj is a single hop in the port-level route.
-// Key may be nil if the port could not be resolved to a known peer.
 type HopObj struct {
-	Key   ed25519.PublicKey // node public key (nil if unresolvable)
-	Port  uint64            // port number in spanning tree
-	Index int               // hop ordinal (0 = first)
+	Key   ed25519.PublicKey // nil if port could not be resolved
+	Port  uint64
+	Index int
 }
 
 // //
 
-// TraceResultObj — result of Trace().
-// Both fields may be populated simultaneously.
-// TreePath: path through spanning tree [root, ..., target]; nil if not in tree.
-// Hops: pathfinder route port→key; nil if no active path.
+// TraceResultObj is the result of Trace(). Both fields may be populated.
 type TraceResultObj struct {
 	TreePath []*NodeObj
 	Hops     []HopObj
@@ -109,18 +100,16 @@ type TraceResultObj struct {
 
 // //
 
-// TreeResultObj — result of Tree() and TreeChan().
+// TreeResultObj is the result of Tree() and TreeChan().
 type TreeResultObj struct {
 	Root  *NodeObj
-	Total int // total nodes found, excluding the root itself
+	Total int // excluding root
 }
 
-// TreeProgressObj — progress update emitted after each BFS depth level.
-// Done=true marks the final message; TreeChan returns immediately after sending it.
-// The channel is not closed by TreeChan.
+// TreeProgressObj is emitted after each BFS depth level.
 type TreeProgressObj struct {
 	Depth int
-	Found int  // nodes discovered at this depth level
-	Total int  // cumulative total across all levels so far
-	Done  bool // true on the last message — scan complete
+	Found int  // nodes at this depth level
+	Total int  // cumulative total
+	Done  bool // last message — scan complete
 }

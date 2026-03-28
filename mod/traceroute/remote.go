@@ -13,8 +13,7 @@ import (
 
 // // // // // // // // // //
 
-// adminCaptureObj implements AddHandler to intercept handlers from core.SetAdmin.
-// No real admin socket needed — just stores functions in a map.
+// adminCaptureObj intercepts handlers from core.SetAdmin without a real admin socket.
 type adminCaptureObj struct {
 	handlers map[string]yggcore.AddHandlerFunc
 }
@@ -35,9 +34,8 @@ type remoteCallResultObj struct {
 // //
 
 // callRemotePeers queries a remote node's peers via debug_remoteGetPeers.
-// Called from pool workers. Returns immediately on ctx cancellation.
-// The underlying o.remotePeers call (~6s yggdrasil timeout) may outlive the return —
-// this is a bounded goroutine leak; the buffered channel prevents it from blocking.
+// Returns immediately on ctx cancellation; the underlying call (~6s timeout)
+// may outlive the return — bounded leak, buffered channel prevents blocking.
 func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error) {
 	if o.remotePeers == nil {
 		return nil, 0, ErrRemotePeersDisabled
@@ -88,9 +86,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 
 // //
 
-// parseRemotePeersResponse parses the debug_remoteGetPeers response.
-// Yggdrasil returns DebugGetPeersResponse (named map[string]interface{}) where
-// each value is a json.RawMessage with {"keys": ["hex1", "hex2", ...]}.
+// parseRemotePeersResponse parses DebugGetPeersResponse into a key list.
 func parseRemotePeersResponse(raw interface{}) ([]ed25519.PublicKey, error) {
 	outer, ok := raw.(yggcore.DebugGetPeersResponse)
 	if !ok {
