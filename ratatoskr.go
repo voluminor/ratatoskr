@@ -36,7 +36,7 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 
 	if cfg.Peers != nil && cfg.Config != nil && len(cfg.Config.Peers) > 0 {
-		return nil, fmt.Errorf("cannot use Config.Peers and Peers manager simultaneously")
+		return nil, ErrPeersConflict
 	}
 
 	coreNode, err := core.New(core.ConfigObj{
@@ -117,7 +117,7 @@ func (o *Obj) PeerManagerActive() []string {
 // PeerManagerOptimize triggers an unscheduled peer re-evaluation
 func (o *Obj) PeerManagerOptimize() error {
 	if o.peerMgr == nil {
-		return fmt.Errorf("peer manager not enabled")
+		return ErrPeerManagerNotEnabled
 	}
 	return o.peerMgr.Optimize()
 }

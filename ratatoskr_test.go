@@ -2,6 +2,7 @@ package ratatoskr
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr/mod/peermgr"
+	"github.com/voluminor/ratatoskr/mod/socks"
 )
 
 // // // // // // // // // //
@@ -188,8 +190,9 @@ func TestEnableSOCKS_doubleEnable(t *testing.T) {
 		t.Fatalf("first EnableSOCKS: %v", err)
 	}
 	defer node.DisableSOCKS()
-	if err := node.EnableSOCKS(SOCKSConfigObj{Addr: "127.0.0.1:0"}); err == nil {
-		t.Fatal("expected error on double EnableSOCKS")
+	err := node.EnableSOCKS(SOCKSConfigObj{Addr: "127.0.0.1:0"})
+	if !errors.Is(err, socks.ErrAlreadyEnabled) {
+		t.Fatalf("expected socks.ErrAlreadyEnabled, got: %v", err)
 	}
 }
 

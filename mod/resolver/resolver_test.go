@@ -5,8 +5,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"net"
-	"strings"
 	"testing"
 
 	"golang.org/x/net/proxy"
@@ -78,8 +78,8 @@ func TestResolve_pkYgg_shortKey(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for too-short key")
 	}
-	if !strings.Contains(err.Error(), "bytes") {
-		t.Errorf("unexpected error: %v", err)
+	if !errors.Is(err, ErrInvalidKeyLength) {
+		t.Errorf("expected ErrInvalidKeyLength, got: %v", err)
 	}
 }
 
@@ -120,8 +120,8 @@ func TestResolve_noDNS_hostname(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error: no nameserver configured")
 	}
-	if !strings.Contains(err.Error(), "no nameserver") {
-		t.Errorf("unexpected error: %v", err)
+	if !errors.Is(err, ErrNoNameserver) {
+		t.Errorf("expected ErrNoNameserver, got: %v", err)
 	}
 }
 
