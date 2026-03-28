@@ -1,13 +1,12 @@
-{{- define "goType" -}}
-    {{- if eq . "duration" }}time.Duration{{- else if eq . "float" }}float32{{- else }}{{ . }}{{- end -}}
-{{- end -}}
-
 {{- define "structFields" -}}
     {{- range $key, $leaf := . }}
         {{- if $leaf.Branch }}
-            {{ $leaf.Name }} {{ $leaf.Type }} `koanf:"{{ $key }}" json:"{{ $key }}"`
+            {{- if $leaf.Usage }}
+                // {{ $leaf.Usage }}
+            {{- end }}
+            {{ $leaf.Name }} {{ $leaf.Type }} `json:"{{ $leaf.Key }}" yaml:"{{ $leaf.Key }}"`
         {{- else }}
-            {{ $leaf.Name }} {{ template "goType" $leaf.Type }} `koanf:"{{ $key }}" json:"{{ $key }}"`
+            {{ $leaf.Name }} {{ $leaf.Type }} `json:"{{ $leaf.Key }}" yaml:"{{ $leaf.Key }}"`
         {{- end }}
     {{- end }}
 {{- end -}}
@@ -16,6 +15,9 @@
     {{- range $key, $leaf := . }}
         {{- if $leaf.Branch }}
 
+            {{- if $leaf.Usage }}
+                // {{ $leaf.Usage }}
+            {{- end }}
             type {{ $leaf.Type }} struct {
             {{- template "structFields" $leaf.Branch }}
             }
@@ -31,7 +33,7 @@
                 {{- if $subLeaf.Branch }}
                     func (o *{{ $leaf.Type }}) Get{{ $subLeaf.Name }}() *{{ $subLeaf.Type }} { return &o.{{ $subLeaf.Name }} }
                 {{- else }}
-                    func (o *{{ $leaf.Type }}) Get{{ $subLeaf.Name }}() {{ template "goType" $subLeaf.Type }} { return o.{{ $subLeaf.Name }} }
+                    func (o *{{ $leaf.Type }}) Get{{ $subLeaf.Name }}() {{ $subLeaf.Type }} { return o.{{ $subLeaf.Name }} }
                 {{- end }}
             {{- end }}
             {{- template "structGetters" $leaf.Branch }}
@@ -46,12 +48,9 @@
 
 package settings
 
-import (
 {{- if .HasDuration }}
-    "time"
+    import "time"
 {{ end }}
-"github.com/spf13/pflag"
-)
 
 // // // // // // // // // //
 
@@ -61,47 +60,11 @@ type Obj struct {
 {{ template "nestedStructs" .Tree }}
 
 // //
-
-var values = map[string]any{
-{{- range .Flags }}
-    {{- if .Value }}
-        {{- if eq .Type "string" }}
-            "{{ .Name }}": "{{ .Value }}",
-        {{- else }}
-            "{{ .Name }}": {{ .Value }},
-        {{- end }}
-    {{- end }}
-{{- end }}
-}
-
-//
-
-func (*Obj) Values() map[string]any {
-return values
-}
-
-func (*Obj) DefineFlags(fs *pflag.FlagSet) {
-{{- range .Flags }}
-    {{- if eq .Type "string" }}
-        fs.String("{{ .Name }}", "", "{{ .Usage }}")
-    {{- else if eq .Type "int" }}
-        fs.Int("{{ .Name }}", 0, "{{ .Usage }}")
-    {{- else if eq .Type "bool" }}
-        fs.Bool("{{ .Name }}", false, "{{ .Usage }}")
-    {{- else if eq .Type "float" }}
-        fs.Float32("{{ .Name }}", 0, "{{ .Usage }}")
-    {{- else if eq .Type "duration" }}
-        fs.Duration("{{ .Name }}", 0, "{{ .Usage }}")
-    {{- end }}
-{{- end }}
-}
-
-// //
 {{ range $key, $leaf := .Tree }}
     {{- if $leaf.Branch }}
         func (o *Obj) Get{{ $leaf.Name }}() *{{ $leaf.Type }} { return &o.{{ $leaf.Name }} }
     {{- else }}
-        func (o *Obj) Get{{ $leaf.Name }}() {{ template "goType" $leaf.Type }} { return o.{{ $leaf.Name }} }
+        func (o *Obj) Get{{ $leaf.Name }}() {{ $leaf.Type }} { return o.{{ $leaf.Name }} }
     {{- end }}
 {{- end }}
 {{ template "structGetters" .Tree }}

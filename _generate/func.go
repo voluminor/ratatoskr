@@ -18,8 +18,22 @@ func WriteFileFromTemplate(pathToFile string, textTemplate string, dataTemplate 
 	fileName := filepath.Base(pathToFile)
 
 	tmpl := template.New("cli-template").Funcs(template.FuncMap{
-		"split": strings.Split,
-		"mod":   func(a, b int) int { return a % b },
+		"split":   strings.Split,
+		"mod":     func(a, b int) int { return a % b },
+		"replace": strings.ReplaceAll,
+		"flatName": func(s string) string {
+			return strings.ReplaceAll(s, ".", "")
+		},
+		"nativeFlag": func(t string) bool {
+			switch t {
+			case "string", "bool", "int", "int64", "uint", "uint64", "float64", "duration":
+				return true
+			}
+			return false
+		},
+		"baseArrayType": func(t string) string {
+			return strings.TrimPrefix(t, "[]")
+		},
 	})
 
 	t, err := tmpl.New(fileName).Parse(textTemplate)

@@ -4,10 +4,11 @@ go 1.25.5
 
 require (
 	github.com/gologme/log v1.3.0
-	github.com/spf13/pflag v1.0.10
+	github.com/hjson/hjson-go/v4 v4.6.0
 	github.com/things-go/go-socks5 v0.1.1
 	github.com/yggdrasil-network/yggdrasil-go v0.5.13
 	golang.org/x/net v0.52.0
+	gopkg.in/yaml.v3 v3.0.1
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6
 )
 
@@ -18,7 +19,7 @@ require (
 	github.com/bits-and-blooms/bloom/v3 v3.7.1 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/google/btree v1.1.3 // indirect
-	github.com/hjson/hjson-go/v4 v4.6.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
 	golang.org/x/crypto v0.49.0 // indirect

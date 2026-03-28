@@ -1,8 +1,19 @@
-config: # перенаправление на другой конфиг-файл
+# Supported types:
+#   scalar:  string, bool, int, int8, int16, int32, int64,
+#            uint, uint8, uint16, uint32, uint64,
+#            float32, float64, duration
+#   array:   []string, []bool, []int, []int64, []uint, []uint64,
+#            []float32, []float64, []duration
+#   enum:    add "enum: [val1, val2, ...]" — generates uint16 const type
+#            (type field is optional for enums)
+#   []enum:  array of enum values
+
+config:
   type: string
-  usage: "path to config file (json/yaml)"
+  usage: "path to config file (json/yaml/hjson)"
 
 log:
+  usage: "logging configuration"
   compress:
     type: bool
     value: true
@@ -11,17 +22,19 @@ log:
     type: string
     usage: "log file path (auto-detected if empty)"
   format:
-    type: string
     value: "text"
-    usage: "console format (text/json)"
-  level_console:
-    type: string
-    value: "debug"
-    usage: "console log level (debug/info/warn/error/fatal/panic/disabled)"
-  level_file:
-    type: string
-    value: "info"
-    usage: "file log level (debug/info/warn/error/fatal/panic/disabled)"
+    usage: "console format"
+    enum: [ text, json ]
+  level:
+    usage: "log level thresholds"
+    console:
+      value: "debug"
+      usage: "console log level"
+      enum: &log_levels [ debug, info, warn, error, fatal, panic, disabled ]
+    file:
+      value: "info"
+      usage: "file log level"
+      enum: *log_levels
   max_age:
     type: int
     value: 30
@@ -35,13 +48,14 @@ log:
     value: 32
     usage: "log file max size (MB)"
   output:
-    type: string
     value: "both"
-    usage: "log output mode (console/file/both)"
+    usage: "log output mode"
+    enum: [ console, file, both ]
 
 ui:
+  usage: "user interface settings"
   text_size:
-    type: float
+    type: float32
     value: 1.0
     usage: "text size multiplier (0.2-8.0)"
   dark_mode:
@@ -49,9 +63,9 @@ ui:
     value: true
     usage: "dark mode enabled"
   tab_location:
-    type: string
     value: "top"
-    usage: "tab position (top/bottom/leading/trailing)"
+    usage: "tab position"
+    enum: [ top, bottom, leading, trailing ]
   language:
     type: string
     value: "en"
