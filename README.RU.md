@@ -39,6 +39,7 @@ Go-библиотека для встраивания узла Yggdrasil в пр
 - **Peer manager** (`peermgr`) — ротация и оптимизация пиров; включается через `ConfigObj.Peers`
 - **Resolver** (`mod/resolver`) — резолвер `.pk.ygg`-адресов
 - **Forward** (`mod/forward`) — TCP/UDP-форвардинг
+- **Traceroute** (`mod/traceroute`) — исследование топологии сети и трассировка маршрутов
 
 ### Примеры
 
@@ -60,6 +61,7 @@ Go-библиотека для встраивания узла Yggdrasil в пр
 - [Архитектура](#архитектура)
 - [Структура модуля](#структура-модуля)
 - [Пакеты](#пакеты)
+    - [traceroute](#traceroute)
 - [Конфигурация](#конфигурация)
 - [Примеры использования](#примеры-использования)
 - [Snapshot](#snapshot)
@@ -161,6 +163,10 @@ Resolver[Резолвер .pk.ygg / DNS]
 PeerMgr[PeerManager — выбор пиров]
 end
 
+subgraph traceroute
+TR[traceroute.Obj]
+end
+
 subgraph core
 CoreObj[core.Obj]
 Netstack[netstack — userspace TCP/UDP]
@@ -182,6 +188,9 @@ SOCKS --> Resolver
 SOCKS -->|DialContext|CoreObj
 Resolver -->|DialContext для DNS|CoreObj
 PeerMgr -->|AddPeer / RemovePeer|CoreObj
+
+TR -->|SetAdmin capture|YggCore
+TR -->|GetTree / GetPeers / GetPaths|YggCore
 
 CoreObj --> Netstack
 CoreObj --> Multicast
@@ -282,6 +291,12 @@ J[Obj — SOCKS5-сервер]
 K[Interface — контракт]
 end
 
+subgraph "traceroute"
+TR[Obj — исследователь топологии]
+CACHE[peerCacheObj — кеш с TTL]
+POOL[workerPoolObj — пул BFS]
+end
+
 A -->|встраивает|E
 A -->|использует|J
 A -->|создаёт|I
@@ -293,6 +308,9 @@ D -->|содержит|F
 F -->|содержит|G
 D -->|содержит|H
 J -->|реализует|K
+TR -->|SetAdmin capture|D
+TR --> CACHE
+TR --> POOL
 ```
 
 ## Пакеты
@@ -410,6 +428,170 @@ stateDiagram-v2
     Enabled --> Enabled: Enable() → ошибка
     Created --> Created: Disable() → no-op
 ```
+
+### `traceroute`
+
+Исследователь сетевой топологии и трассировщик маршрутов для Yggdrasil. Работает напрямую с
+`yggdrasil-go/core` (не через `core.Interface`) — перехватывает внутренний обработчик
+`debug_remoteGetPeers` через `core.SetAdmin` без необходимости настоящего admin-сокета.
+
+| Тип               | Назначение                                                                       |
+|-------------------|----------------------------------------------------------------------------------|
+| `Obj`             | Исследователь: Tree (BFS), Path (spanning tree), Hops (pathfinder), Trace        |
+| `NodeObj`         | Узел в дереве топологии. Find, Flatten, PathTo для операций над поддеревом       |
+| `HopObj`          | Один хоп в маршруте на уровне портов. Key может быть nil если порт не резолвится |
+| `TraceResultObj`  | Комбинированный результат: TreePath (spanning tree) + Hops (pathfinder)          |
+| `TreeResultObj`   | Результат BFS: корневой узел + число обнаруженных узлов                          |
+| `TreeProgressObj` | Колбек прогресса по глубине BFS: Depth, Found, Total, Done                       |
+
+#### Принцип работы
+
+Модуль комбинирует две независимые подсистемы маршрутизации Yggdrasil:
+
+1. **Spanning tree** — `core.GetTree()` возвращает локальное представление глобального дерева.
+   `Path()` строит дерево из этих данных и находит путь `[root, ..., target]`.
+
+2. **Pathfinder** — `core.GetPaths()` возвращает активные маршруты source-routing.
+   `Hops()` резолвит маршрут на уровне портов для заданного ключа. Требует предварительного
+   `Lookup()` для инициации поиска пути в ядре.
+
+3. **BFS-сканирование топологии** — `Tree()` использует `debug_remoteGetPeers` для опроса
+   пиров каждого узла и построения полного дерева топологии. Это сканирование всей сети,
+   а не локальные данные.
+
+**Ключевое отличие от классического traceroute:** классический traceroute отправляет пакеты
+с инкрементируемым TTL и ожидает ICMP Time Exceeded. Yggdrasil не поддерживает TTL и ICMP.
+Вместо этого модуль использует BFS через `debug_remoteGetPeers` для топологии и
+`core.GetPaths()` для маршрутов на уровне портов. RTT приблизительный — измеряет полное
+время round-trip `debug_remoteGetPeers` через все промежуточные хопы, а не задержку
+до конкретного узла.
+
+#### Алгоритм BFS (Tree)
+
+```mermaid
+flowchart TD
+    START[Получить свой PublicKey как корень] --> L1[Уровень 1: core.GetPeers — прямые пиры]
+L1 --> SUBMIT[Отправить узлы уровня в пул воркеров]
+SUBMIT --> QUERY[Каждый воркер: callRemotePeers через debug_remoteGetPeers]
+QUERY --> CACHE{В кеше?}
+CACHE -->|Да| RETURN[Вернуть из кеша]
+CACHE -->|Нет|CALL[JSON-RPC к удалённому узлу]
+CALL --> PARSE[Парсинг ответа → ключи пиров]
+PARSE --> STORE[Сохранить в кеш с TTL]
+STORE --> COLLECT[Собрать все результаты уровня]
+RETURN --> COLLECT
+COLLECT --> FILTER[Фильтр: пропустить посещённые, проверить MaxPeersPerNode]
+FILTER --> PROGRESS[Отправить TreeProgressObj в канал]
+PROGRESS --> NEXT{depth < maxDepth?}
+NEXT -->|Да|SUBMIT
+NEXT -->|Нет|DONE[Вернуть TreeResultObj]
+```
+
+#### Стратегия Trace
+
+```mermaid
+flowchart TD
+    START[Trace key] --> COLLECT1[collect: проверить tree + paths]
+    COLLECT1 --> BOTH{Оба найдены?}
+    BOTH -->|Да| ENRICH[enrichPath: заполнить RTT] --> RETURN[Вернуть результат]
+    BOTH -->|Нет| LOOKUP1[SendLookup в ядро]
+    LOOKUP1 --> TREE{Путь в tree найден?}
+    TREE -->|Да| POLL_HOPS[pollHops: ждать до HopsWaitTimeout]
+    POLL_HOPS --> ENRICH
+    TREE -->|Нет| POLL_FULL[pollFull: опрашивать оба до истечения ctx]
+    POLL_FULL --> GRACE{Tree найден в процессе?}
+    GRACE -->|Да| GRACE_TICKS[Дать hopsGracePeriod дополнительных тиков]
+    GRACE_TICKS --> ENRICH
+    GRACE -->|Нет, ctx истёк| TIMEOUT[Вернуть ErrLookupTimedOut]
+```
+
+#### Жизненный цикл кеша
+
+```mermaid
+stateDiagram-v2
+    [*] --> Пустой: newPeerCache()
+    Пустой --> Активный: первый set() → запуск cleanup-горутины
+    Активный --> Активный: set() сбрасывает idle-счётчик
+    Активный --> Простой: CacheTTL/2 тик, все записи истекли
+    Простой --> Активный: set() сбрасывает idle-счётчик
+    Простой --> Остановлен: 10 пустых итераций подряд → горутина завершается
+    Остановлен --> Активный: следующий set() → новая cleanup-горутина
+    Активный --> [*]: close()
+    Простой --> [*]: close()
+    Остановлен --> [*]: close()
+```
+
+Cleanup-горутина запускается каждые `CacheTTL / 2`, удаляет истёкшие записи и самозавершается
+после 10 последовательных итераций с пустым кешем. Перезапускается при следующем `set()`.
+
+#### Конфигурационные переменные
+
+Это `var` уровня пакета — изменяйте до вызова `New()`.
+
+| Переменная         | Тип             | По умолчанию | Описание                                                             |
+|--------------------|-----------------|--------------|----------------------------------------------------------------------|
+| `MaxPeersPerNode`  | `int`           | `65535`      | Макс. пиров от одного узла. Превышение помечает узел как Unreachable |
+| `CacheTTL`         | `time.Duration` | `60s`        | Время жизни закешированных результатов опроса. Должен быть ≥ 1s      |
+| `PollInterval`     | `time.Duration` | `200ms`      | Частота опроса core в Trace                                          |
+| `LookupRetryEvery` | `time.Duration` | `1s`         | Частота повторных SendLookup при поллинге                            |
+| `HopsWaitTimeout`  | `time.Duration` | `2s`         | Время ожидания hops когда путь в tree уже найден                     |
+
+#### API
+
+| Метод                                                                                   | Описание                                                                                                      |
+|-----------------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------------|
+| `New(core, logger)`                                                                     | Создание модуля. Перехватывает `debug_remoteGetPeers` через `core.SetAdmin`                                   |
+| `Close()`                                                                               | Остановка cleanup-горутины кеша                                                                               |
+| `FlushCache()`                                                                          | Сброс всех закешированных результатов                                                                         |
+| `Tree(ctx, maxDepth, conc)`                                                             | BFS-сканирование топологии. Возвращает `TreeResultObj`                                                        |
+| `TreeChan(ctx, maxDepth, conc, ch)`                                                     | Аналог Tree с прогрессом через канал                                                                          |
+| `Path(key)`                                                                             | Путь в spanning tree: `[root, ..., target]`                                                                   |
+| `Hops(key)`                                                                             | Маршрут на уровне портов. Требует предварительного `Lookup()`                                                 |
+| `Lookup(key)`                                                                           | Запуск поиска пути. Результаты появятся в `Hops()` через некоторое время                                      |
+| `Trace(ctx, key)`                                                                       | Комбинированный поиск: tree + pathfinder + поллинг. **Нет дефолтного таймаута — передавайте ctx с дедлайном** |
+| `Self()`, `Address()`, `Subnet()`, `Peers()`, `Sessions()`, `SpanningTree()`, `Paths()` | Прокси-методы к `yggdrasil-go/core`                                                                           |
+
+#### Методы NodeObj
+
+| Метод         | Описание                                                              |
+|---------------|-----------------------------------------------------------------------|
+| `Find(key)`   | Рекурсивный поиск по ключу в поддереве. Возвращает nil если не найден |
+| `Flatten()`   | Плоский список всех узлов поддерева в порядке обхода в глубину        |
+| `PathTo(key)` | Возвращает `[root, ..., target]` или nil если ключ не в поддереве     |
+
+#### Подводные камни
+
+- **RTT приблизительный.** Для удалённых узлов RTT измеряет полный round-trip
+  `debug_remoteGetPeers` через все промежуточные хопы. Это не задержка до конкретного узла.
+- **Нет дефолтного таймаута у `Trace()`.** Всегда передавайте контекст с дедлайном:
+  `ctx, cancel := context.WithTimeout(ctx, 30*time.Second)`. Без дедлайна `Trace()` будет
+  опрашивать бесконечно если ключ не найден.
+- **`Path()` перестраивает дерево при каждом вызове.** Вызывает `core.GetTree()` и `buildTree()`
+  каждый раз. Для повторных запросов лучше кешировать результат или использовать `Tree()` и
+  `NodeObj.PathTo()`.
+- **Мутабельные глобальные переменные.** `MaxPeersPerNode`, `CacheTTL`, `PollInterval`,
+  `LookupRetryEvery`, `HopsWaitTimeout` — `var` уровня пакета. Изменение во время активных
+  операций небезопасно. Устанавливайте до вызова `New()`.
+
+#### Sentinel-ошибки
+
+| Ошибка                      | Когда                                                    |
+|-----------------------------|----------------------------------------------------------|
+| `ErrCoreRequired`           | `New()`: core == nil                                     |
+| `ErrLoggerRequired`         | `New()`: logger == nil                                   |
+| `ErrRemotePeersNotCaptured` | `New()`: `debug_remoteGetPeers` не зарегистрирован ядром |
+| `ErrInvalidCacheTTL`        | `New()`: `CacheTTL` < 1s                                 |
+| `ErrMaxDepthRequired`       | `Tree()`: maxDepth == 0                                  |
+| `ErrInvalidKeyLength`       | Ключ не 32 байта ed25519                                 |
+| `ErrKeyNotInTree`           | `Path()`: ключ не найден в spanning tree                 |
+| `ErrNoActivePath`           | `Hops()`: нет активного маршрута pathfinder к ключу      |
+| `ErrNodeUnreachable`        | Кешировано: узел не ответил на запрос пиров              |
+| `ErrRemotePeersDisabled`    | `callRemotePeers`: обработчик == nil                     |
+| `ErrTreeEmpty`              | `buildTree`: нет записей в `core.GetTree()`              |
+| `ErrNoRoot`                 | `buildTree`: собственный ключ не найден в записях дерева |
+| `ErrLookupTimedOut`         | `Trace()`: контекст истёк до нахождения ключа            |
+
+Все ошибки проверяются через `errors.Is()`.
 
 ## Конфигурация
 
@@ -779,6 +961,121 @@ log.Fatal(err)
 defer node.DisableAdmin()
 ```
 
+### Traceroute
+
+#### Сканирование топологии
+
+```go
+import "github.com/voluminor/ratatoskr/mod/traceroute"
+
+// Создание модуля traceroute — требует raw yggdrasil-go/core, не core.Interface
+tr, err := traceroute.New(node.UnsafeCore(), logger)
+if err != nil {
+log.Fatal(err)
+}
+defer tr.Close()
+
+// BFS-сканирование до 10 уровней глубины, 32 конкурентных воркера
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+result, err := tr.Tree(ctx, 10, 32)
+if err != nil {
+log.Fatal(err)
+}
+
+log.Printf("Обнаружено %d узлов", result.Total)
+for _, node := range result.Root.Flatten() {
+log.Printf("  depth=%d key=%x unreachable=%v rtt=%s",
+node.Depth, node.Key[:8], node.Unreachable, node.RTT)
+}
+```
+
+#### Сканирование с прогрессом
+
+```go
+ch := make(chan traceroute.TreeProgressObj, 10)
+go func () {
+for p := range ch {
+if p.Done {
+log.Printf("Сканирование завершено: %d узлов", p.Total)
+} else {
+log.Printf("Глубина %d: найдено %d узлов (%d всего)", p.Depth, p.Found, p.Total)
+}
+}
+}()
+
+result, err := tr.TreeChan(ctx, 10, 32, ch)
+close(ch) // TreeChan не закрывает канал
+```
+
+#### Трассировка конкретного узла
+
+```go
+// Всегда указывайте дедлайн — Trace() опрашивает бесконечно без него
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+targetKey := ed25519.PublicKey{...} // 32-байтный публичный ключ ed25519
+result, err := tr.Trace(ctx, targetKey)
+if err != nil {
+if errors.Is(err, traceroute.ErrLookupTimedOut) {
+// Частичный результат может быть доступен
+if result != nil && result.TreePath != nil {
+log.Println("Путь в tree найден, но hops не дождались")
+}
+}
+log.Fatal(err)
+}
+
+// Путь в spanning tree
+if result.TreePath != nil {
+log.Println("Путь в tree:")
+for _, n := range result.TreePath {
+log.Printf("  %x (depth=%d, rtt=%s)", n.Key[:8], n.Depth, n.RTT)
+}
+}
+
+// Хопы на уровне портов (маршрут pathfinder)
+if result.Hops != nil {
+log.Println("Хопы:")
+for _, h := range result.Hops {
+log.Printf("  port=%d key=%x", h.Port, h.Key[:8])
+}
+}
+```
+
+#### Путь в spanning tree и хопы отдельно
+
+```go
+// Путь из spanning tree — без сетевых вызовов, мгновенно
+path, err := tr.Path(targetKey)
+if errors.Is(err, traceroute.ErrKeyNotInTree) {
+log.Println("Цель не в текущем представлении spanning tree")
+}
+
+// Запуск поиска пути через pathfinder
+tr.Lookup(targetKey)
+time.Sleep(2 * time.Second)
+
+// Получить маршрут на уровне портов
+hops, err := tr.Hops(targetKey)
+if errors.Is(err, traceroute.ErrNoActivePath) {
+log.Println("Активного пути пока нет — попробуйте позже")
+}
+```
+
+#### Настройка конфигурации
+
+```go
+// Установить до вызова traceroute.New()
+traceroute.CacheTTL = 30 * time.Second // быстрое истечение кеша
+traceroute.MaxPeersPerNode = 1000 // ниже лимит для безопасности
+traceroute.PollInterval = 100 * time.Millisecond // более частый опрос
+traceroute.LookupRetryEvery = 500 * time.Millisecond
+traceroute.HopsWaitTimeout = 5 * time.Second // дольше ждать hops
+```
+
 ### Graceful shutdown
 
 Три способа завершить работу узла:
@@ -839,20 +1136,25 @@ node, _ = ratatoskr.New(ratatoskr.ConfigObj{Ctx: ctx})
 
 ### Методы возвращающие ошибки
 
-| Метод                 | Ошибки                                                                         |
-|-----------------------|--------------------------------------------------------------------------------|
-| `New`                 | Ошибка создания core, конфликт `Config.Peers` + `Peers`, ошибка старта peermgr |
-| `DialContext`         | `ErrNotAvailable` (узел закрыт), ошибки gVisor, невалидный адрес               |
-| `Listen`              | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                             |
-| `ListenPacket`        | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                             |
-| `EnableSOCKS`         | `"SOCKS already enabled"`, ошибка listen (занят порт / невалидный путь)        |
-| `DisableSOCKS`        | Ошибка закрытия listener                                                       |
-| `EnableMulticast`     | `"multicast already enabled"`, невалидный regex, ошибка `multicast.New`        |
-| `EnableAdmin`         | `"admin already enabled"`, невалидный адрес, `admin.New` вернул nil            |
-| `AddPeer`             | Невалидный URI, ошибка ядра                                                    |
-| `RemovePeer`          | Невалидный URI, ошибка ядра                                                    |
-| `PeerManagerOptimize` | `"peermgr: not running"` если менеджер не запущен                              |
-| `Close`               | Собирает ошибки всех компонентов через `errors.Join`; идемпотентный            |
+| Метод                 | Ошибки                                                                                    |
+|-----------------------|-------------------------------------------------------------------------------------------|
+| `New`                 | Ошибка создания core, конфликт `Config.Peers` + `Peers`, ошибка старта peermgr            |
+| `DialContext`         | `ErrNotAvailable` (узел закрыт), ошибки gVisor, невалидный адрес                          |
+| `Listen`              | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                                        |
+| `ListenPacket`        | `ErrNotAvailable`, ошибки gVisor, невалидный адрес                                        |
+| `EnableSOCKS`         | `"SOCKS already enabled"`, ошибка listen (занят порт / невалидный путь)                   |
+| `DisableSOCKS`        | Ошибка закрытия listener                                                                  |
+| `EnableMulticast`     | `"multicast already enabled"`, невалидный regex, ошибка `multicast.New`                   |
+| `EnableAdmin`         | `"admin already enabled"`, невалидный адрес, `admin.New` вернул nil                       |
+| `AddPeer`             | Невалидный URI, ошибка ядра                                                               |
+| `RemovePeer`          | Невалидный URI, ошибка ядра                                                               |
+| `PeerManagerOptimize` | `"peermgr: not running"` если менеджер не запущен                                         |
+| `Close`               | Собирает ошибки всех компонентов через `errors.Join`; идемпотентный                       |
+| `traceroute.New`      | `ErrCoreRequired`, `ErrLoggerRequired`, `ErrInvalidCacheTTL`, `ErrRemotePeersNotCaptured` |
+| `traceroute.Tree`     | `ErrMaxDepthRequired`, отмена контекста                                                   |
+| `traceroute.Path`     | `ErrInvalidKeyLength`, `ErrKeyNotInTree`, `ErrTreeEmpty`, `ErrNoRoot`                     |
+| `traceroute.Hops`     | `ErrInvalidKeyLength`, `ErrNoActivePath`                                                  |
+| `traceroute.Trace`    | `ErrInvalidKeyLength`, `ErrLookupTimedOut` (может содержать частичный результат)          |
 
 ### ErrNotAvailable
 
