@@ -73,6 +73,7 @@ func WriteFileFromTemplate(pathToFile string, textTemplate string, dataTemplate 
 
 // //
 
+// GenGoName converts a kebab/snake_case string to PascalCase.
 func GenGoName(p string) string {
 	var tokens []string
 	var tok strings.Builder

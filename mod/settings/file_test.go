@@ -24,9 +24,6 @@ func TestParseFile_JSON(t *testing.T) {
 	if dst.GetLog().GetFormat() != src.GetLog().GetFormat() {
 		t.Fatalf("format mismatch: got %v, want %v", dst.GetLog().GetFormat(), src.GetLog().GetFormat())
 	}
-	if dst.GetUi().GetLanguage() != src.GetUi().GetLanguage() {
-		t.Fatalf("language mismatch: got %v, want %v", dst.GetUi().GetLanguage(), src.GetUi().GetLanguage())
-	}
 }
 
 func TestParseFile_YAML(t *testing.T) {
@@ -54,8 +51,8 @@ func TestParseFile_HJSON(t *testing.T) {
 	if err := msettings.ParseFile(srcPath, dst); err != nil {
 		t.Fatal(err)
 	}
-	if dst.GetUi().GetDarkMode() != src.GetUi().GetDarkMode() {
-		t.Fatalf("dark_mode mismatch: got %v, want %v", dst.GetUi().GetDarkMode(), src.GetUi().GetDarkMode())
+	if dst.GetLog().GetCompress() != src.GetLog().GetCompress() {
+		t.Fatalf("compress mismatch: got %v, want %v", dst.GetLog().GetCompress(), src.GetLog().GetCompress())
 	}
 }
 
@@ -92,8 +89,8 @@ func TestSaveFile_YAML(t *testing.T) {
 	if err := msettings.ParseFile(path, dst); err != nil {
 		t.Fatal(err)
 	}
-	if dst.GetUi().GetTextSize() != src.GetUi().GetTextSize() {
-		t.Fatalf("text_size mismatch: got %v, want %v", dst.GetUi().GetTextSize(), src.GetUi().GetTextSize())
+	if dst.GetLog().GetMaxAge() != src.GetLog().GetMaxAge() {
+		t.Fatalf("max_age mismatch: got %v, want %v", dst.GetLog().GetMaxAge(), src.GetLog().GetMaxAge())
 	}
 }
 

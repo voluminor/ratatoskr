@@ -13,8 +13,6 @@ import (
 
 // // // // // // // // // //
 
-// ParseFile reads a config file and unmarshals it into dst.
-// Format is detected by file extension: .json, .yml/.yaml, .hjson/.conf
 func ParseFile(path string, dst Interface) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -35,8 +33,6 @@ func ParseFile(path string, dst Interface) error {
 
 // //
 
-// SaveFile marshals src and writes it to the given path.
-// Format is detected by file extension: .json, .yml/.yaml, .hjson/.conf
 func SaveFile(src Interface, path string) error {
 	var data []byte
 	var err error

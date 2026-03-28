@@ -102,7 +102,6 @@ type TemplateObj struct {
 
 // //
 
-// nativeFlagTypes lists types supported by stdlib flag package directly.
 var nativeFlagTypes = map[string]bool{
 	"string":   true,
 	"bool":     true,
@@ -436,7 +435,6 @@ func buildHelpText(flags []FlagObj, tree map[string]*TreeLeafObj) string {
 		maxWidth = w
 	}
 
-	// Build help text
 	b.WriteString("Usage: <program> [flags]\n")
 
 	for gi, gk := range groupOrder {

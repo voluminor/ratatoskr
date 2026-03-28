@@ -35,7 +35,6 @@ func New(run func(Interface) error) error {
 
 // //
 
-// Obj extracts the concrete *settings.Obj from an Interface.
 func Obj(i Interface) *gsettings.Obj {
 	return i.Self().(*gsettings.Obj)
 }
