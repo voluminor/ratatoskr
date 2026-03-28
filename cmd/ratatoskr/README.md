@@ -33,7 +33,7 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ### Convert hex key to PEM
 
 ```bash
-./ratatoskr -go.key.to_pem key.pem -go.key.addr <hex-private-128>
+./ratatoskr -go.key.to_pem key.pem -go.key.addr 5623515376dcafe397e79de5a5ba125adc71beb36f9659a189ee7cb8640855580000278fa1ad5448ce0217a6174f7894acdd921d1021e05758da518aaf73ad80
 ```
 
 ### Convert PEM to hex key
@@ -47,15 +47,15 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ### Generate default config
 
 ```bash
-./ratatoskr -go.conf.generate.path /etc/ratatoskr
+./ratatoskr -go.conf.generate.path ./
 ```
 
 ```bash
-./ratatoskr -go.conf.generate.path /etc/ratatoskr -go.conf.generate.preset medium
+./ratatoskr -go.conf.generate.path ./ -go.conf.generate.preset medium
 ```
 
 ```bash
-./ratatoskr -go.conf.generate.path /etc/ratatoskr -go.conf.generate.preset full -go.conf.generate.format json
+./ratatoskr -go.conf.generate.path ./ -go.conf.generate.preset full -go.conf.generate.format conf
 ```
 
 ### Import Yggdrasil config
@@ -73,11 +73,11 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ## Peer info
 
 ```bash
-./ratatoskr -go.peer_info.url tcp://1.2.3.4:5678,tcp://5.6.7.8:1234
+./ratatoskr -go.peer_info.url tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
 ```
 
 ```bash
-./ratatoskr -go.peer_info.url tcp://1.2.3.4:5678 -go.peer_info.format json
+./ratatoskr -go.peer_info.url tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
 ```
 
 ## Port forwarding

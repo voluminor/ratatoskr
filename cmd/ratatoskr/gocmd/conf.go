@@ -49,15 +49,17 @@ func confGenerate(cfg *gsettings.GoConfGenerateObj) error {
 	obj := msettings.FromNodeConfig(nodeCfg, gsettings.NewDefault())
 	base := msettings.Obj(obj)
 
+	var data any
 	switch cfg.Preset {
 	case gsettings.GoConfGeneratePresetBasic:
-		err = saveMap(presetBasic(base), outPath)
+		data = presetBasic(base)
 	case gsettings.GoConfGeneratePresetMedium:
-		err = saveMap(presetMedium(base), outPath)
+		data = presetMedium(base)
 	default:
-		err = msettings.SaveFile(base, outPath)
+		data = base
 	}
-	if err != nil {
+
+	if err := saveWithComments(data, outPath); err != nil {
 		return err
 	}
 
@@ -90,7 +92,7 @@ func confImport(cfg *gsettings.GoConfImportObj) error {
 	ext := confFormatExt(cfg.Format)
 	outPath := filepath.Join(outDir, configBaseName+ext)
 
-	if err := msettings.SaveFile(base, outPath); err != nil {
+	if err := saveWithComments(base, outPath); err != nil {
 		return err
 	}
 
@@ -178,7 +180,7 @@ func presetMedium(obj *gsettings.Obj) map[string]any {
 
 // //
 
-func saveMap(data map[string]any, path string) error {
+func saveWithComments(data any, path string) error {
 	var raw []byte
 	var err error
 
@@ -190,21 +192,139 @@ func saveMap(data map[string]any, path string) error {
 		}
 		raw = append(raw, '\n')
 	case ".yml", ".yaml":
-		raw, err = yaml.Marshal(data)
+		raw, err = marshalYAMLWithComments(data)
 		if err != nil {
 			return fmt.Errorf("marshal yaml: %w", err)
 		}
 	case ".hjson", ".conf":
-		raw, err = hjson.MarshalWithOptions(data, hjson.DefaultOptions())
+		raw, err = marshalHJSONWithComments(data)
 		if err != nil {
 			return fmt.Errorf("marshal hjson: %w", err)
 		}
-		raw = append(raw, '\n')
 	default:
 		return fmt.Errorf("unsupported format: %s", filepath.Ext(path))
 	}
 
 	return os.WriteFile(path, raw, 0644)
+}
+
+// //
+
+func marshalYAMLWithComments(data any) ([]byte, error) {
+	raw, err := yaml.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, err
+	}
+
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		annotateYAMLNode(doc.Content[0], "")
+	}
+
+	return yaml.Marshal(&doc)
+}
+
+// //
+
+func annotateYAMLNode(node *yaml.Node, prefix string) {
+	if node.Kind != yaml.MappingNode {
+		return
+	}
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		keyNode := node.Content[i]
+		valNode := node.Content[i+1]
+
+		path := keyNode.Value
+		if prefix != "" {
+			path = prefix + "." + keyNode.Value
+		}
+
+		if comment, ok := gsettings.Comments[path]; ok {
+			isGroup := valNode.Kind == yaml.MappingNode
+			if isGroup && i > 0 {
+				keyNode.HeadComment = "\n" + comment
+			} else {
+				keyNode.HeadComment = comment
+			}
+		}
+
+		if valNode.Kind == yaml.MappingNode {
+			annotateYAMLNode(valNode, path)
+		}
+	}
+}
+
+// //
+
+func marshalHJSONWithComments(data any) ([]byte, error) {
+	raw, err := hjson.MarshalWithOptions(data, hjson.DefaultOptions())
+	if err != nil {
+		return nil, err
+	}
+	return injectHJSONComments(raw), nil
+}
+
+// //
+
+func injectHJSONComments(raw []byte) []byte {
+	lines := strings.Split(string(raw), "\n")
+	var stack []string
+	result := make([]string, 0, len(lines)+len(gsettings.Comments))
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Closing brace — pop stack
+		if strings.HasPrefix(trimmed, "}") {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			result = append(result, line)
+			continue
+		}
+
+		// Skip empty lines, comments, opening brace
+		colonIdx := strings.Index(trimmed, ":")
+		if colonIdx <= 0 || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "//") {
+			result = append(result, line)
+			continue
+		}
+
+		key := trimmed[:colonIdx]
+		path := key
+		if len(stack) > 0 {
+			path = strings.Join(stack, ".") + "." + key
+		}
+
+		rest := strings.TrimSpace(trimmed[colonIdx+1:])
+		isGroup := strings.HasSuffix(rest, "{") || rest == "{"
+
+		if comment, ok := gsettings.Comments[path]; ok {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+
+			// Blank line before groups unless first in block
+			if isGroup && len(result) > 0 {
+				prev := strings.TrimSpace(result[len(result)-1])
+				if prev != "{" && prev != "" {
+					result = append(result, "")
+				}
+			}
+
+			result = append(result, indent+"# "+comment)
+		}
+
+		if isGroup {
+			stack = append(stack, key)
+		}
+
+		result = append(result, line)
+	}
+
+	return append([]byte(strings.Join(result, "\n")), '\n')
 }
 
 // //
