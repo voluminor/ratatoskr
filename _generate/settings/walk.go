@@ -183,6 +183,9 @@ func collectFieldOrder(node *yaml.Node, prefix string, entries *[]FieldOrderEntr
 	}
 
 	var keys []string
+	var branches []*yaml.Node // child mapping nodes to recurse into
+	var branchKeys []string
+
 	for i := 0; i < len(node.Content)-1; i += 2 {
 		key := node.Content[i].Value
 		val := node.Content[i+1]
@@ -199,31 +202,21 @@ func collectFieldOrder(node *yaml.Node, prefix string, entries *[]FieldOrderEntr
 		}
 
 		keys = append(keys, key)
+
+		if val.Kind == yaml.MappingNode {
+			branches = append(branches, val)
+			branchKeys = append(branchKeys, key)
+		}
 	}
 
 	if len(keys) > 0 {
 		*entries = append(*entries, FieldOrderEntryObj{Prefix: prefix, Keys: keys})
 	}
 
-	for i := 0; i < len(node.Content)-1; i += 2 {
-		key := node.Content[i].Value
-		val := node.Content[i+1]
-
-		if val.Kind != yaml.MappingNode {
-			continue
-		}
-
-		switch key {
-		case "type", "enum", "trigger", "usage", "value", "gen_interface", "config":
-			continue
-		}
-		if strings.HasPrefix(key, "_") {
-			continue
-		}
-
-		path := key
+	for i, val := range branches {
+		path := branchKeys[i]
 		if prefix != "" {
-			path = prefix + "." + key
+			path = prefix + "." + path
 		}
 		collectFieldOrder(val, path, entries)
 	}

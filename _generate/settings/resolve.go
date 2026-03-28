@@ -1,7 +1,6 @@
 package main
 
 import (
-	"slices"
 	"strings"
 
 	dep "github.com/voluminor/ratatoskr/_generate"
@@ -39,14 +38,7 @@ func ResolveFlags(flags []FlagObj, branchUsage map[string]string) ResolvedObj {
 	for i := range r.Flags {
 		f := &r.Flags[i]
 		resolveFlag(f, enumMap, &r)
-		insertFlagLeaf(f, r.Tree, branchUsage, enumMap)
-	}
-
-	// Defaults imports: check for time.Duration in default literals
-	for _, f := range r.Flags {
-		if !f.IsTrigger && strings.Contains(f.GoDefault, "time.Duration") {
-			r.DefaultsImports["time"] = true
-		}
+		insertFlagLeaf(f, r.Tree, branchUsage)
 	}
 
 	return r
@@ -79,7 +71,7 @@ func buildEnums(flags []FlagObj, enums *[]EnumObj) map[string]*EnumObj {
 
 		*enums = append(*enums, EnumObj{
 			TypeName:  typeName,
-			Values:    slices.Clone(f.Enum),
+			Values:    append([]string{}, f.Enum...),
 			GoConsts:  consts,
 			ParseFunc: "Parse" + typeName,
 			NamesVar:  lowerFirst(typeName) + "Names",
@@ -126,7 +118,6 @@ func resolveFlag(f *FlagObj, enumMap map[string]*EnumObj, r *ResolvedObj) {
 		r.HasCustomFlags = true
 	}
 	if f.IsMap {
-		r.HasCustomFlags = true
 		r.FlagsImports["encoding/json"] = true
 	}
 	if f.IsArray {
@@ -134,6 +125,9 @@ func resolveFlag(f *FlagObj, enumMap map[string]*EnumObj, r *ResolvedObj) {
 	}
 	if f.IsTrigger {
 		r.HasTriggerFlags = true
+	}
+	if !f.IsTrigger && strings.Contains(f.GoDefault, "time.Duration") {
+		r.DefaultsImports["time"] = true
 	}
 	if !f.IsEnum && !f.IsArray && !f.IsMap && !nativeFlagTypes[f.Type] {
 		r.FlagsImports["fmt"] = true
@@ -144,13 +138,8 @@ func resolveFlag(f *FlagObj, enumMap map[string]*EnumObj, r *ResolvedObj) {
 // //
 
 // insertFlagLeaf creates a tree leaf for the flag and inserts it into the struct tree.
-func insertFlagLeaf(f *FlagObj, tree map[string]*TreeLeafObj, branchUsage map[string]string, enumMap map[string]*EnumObj) {
+func insertFlagLeaf(f *FlagObj, tree map[string]*TreeLeafObj, branchUsage map[string]string) {
 	points := strings.Split(f.Name, ".")
-	enumTypeName := ""
-	if f.IsEnum {
-		enumTypeName = enumMap[f.Name].TypeName
-	}
-
 	insertLeaf(tree, points, &TreeLeafObj{
 		Name:      dep.GenGoName(points[len(points)-1]),
 		Type:      f.GoType,
@@ -159,6 +148,6 @@ func insertFlagLeaf(f *FlagObj, tree map[string]*TreeLeafObj, branchUsage map[st
 		IsArray:   f.IsArray,
 		IsMap:     f.IsMap,
 		IsTrigger: f.IsTrigger,
-		EnumType:  enumTypeName,
+		EnumType:  f.EnumType,
 	}, branchUsage)
 }

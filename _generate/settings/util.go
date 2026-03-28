@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -108,24 +107,15 @@ func buildFlagAccessor(flagName string) string {
 // buildComments merges branch usage and leaf flag usage into a sorted slice.
 // Trigger groups and their children are excluded.
 func buildComments(branchUsage map[string]string, flags []FlagObj) []CommentEntryObj {
-	// Collect trigger prefixes from flags
-	triggerPrefixes := make([]string, 0)
+	triggerGroups := make(map[string]bool)
 	for _, f := range flags {
 		if f.IsTrigger {
-			parts := strings.Split(f.Name, ".")
-			triggerPrefixes = append(triggerPrefixes, parts[0]+".")
+			triggerGroups[strings.SplitN(f.Name, ".", 2)[0]] = true
 		}
 	}
-	slices.Sort(triggerPrefixes)
-	triggerPrefixes = slices.Compact(triggerPrefixes)
 
 	isTriggerPath := func(path string) bool {
-		for _, p := range triggerPrefixes {
-			if path+"." == p || strings.HasPrefix(path, p) {
-				return true
-			}
-		}
-		return false
+		return triggerGroups[strings.SplitN(path, ".", 2)[0]]
 	}
 
 	all := make(map[string]string, len(branchUsage)+len(flags))
