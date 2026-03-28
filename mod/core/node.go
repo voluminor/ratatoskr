@@ -23,8 +23,6 @@ import (
 
 // // // // // // // // // //
 
-var ErrNotAvailable = fmt.Errorf("netstack is not available")
-
 var _ Interface = (*Obj)(nil)
 
 // Obj — Yggdrasil node with a userspace TCP/UDP stack.
@@ -110,7 +108,7 @@ func (o *Obj) Close() error {
 				o.logger.Warnf("[core] close timed out after %s", o.coreTimeout)
 				o.netstackPtr.Store(nil)
 				o.corePtr.Store(nil)
-				o.closeErr = fmt.Errorf("close timed out after %s", o.coreTimeout)
+				o.closeErr = fmt.Errorf("%w after %s", ErrCloseTimedOut, o.coreTimeout)
 			}
 		} else {
 			o.closeErr = o.closeSequence()
@@ -340,7 +338,7 @@ func (o *Obj) EnableAdmin(addr string) error {
 			return nil, nil, fmt.Errorf("admin.New: %w", err)
 		}
 		if as == nil {
-			return nil, nil, fmt.Errorf("admin socket disabled for address %q", addr)
+			return nil, nil, fmt.Errorf("%w for address %q", ErrAdminDisabled, addr)
 		}
 		as.SetupAdminHandlers()
 		return as, as.Stop, nil

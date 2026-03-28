@@ -66,14 +66,14 @@ func parseAddress(address string) (tcpip.FullAddress, tcpip.NetworkProtocolNumbe
 			return tcpip.FullAddress{}, 0, fmt.Errorf("strconv.Atoi: %w", err)
 		}
 		if port < 0 || port > 65535 {
-			return tcpip.FullAddress{}, 0, fmt.Errorf("port %d out of range 0-65535", port)
+			return tcpip.FullAddress{}, 0, fmt.Errorf("%w: %d", ErrPortOutOfRange, port)
 		}
 	}
 	addr := tcpip.Address{}
 	if host != "" {
 		ip := net.ParseIP(host)
 		if ip == nil {
-			return tcpip.FullAddress{}, 0, fmt.Errorf("invalid IP address %q", host)
+			return tcpip.FullAddress{}, 0, fmt.Errorf("%w %q", ErrInvalidAddress, host)
 		}
 		addr = tcpip.AddrFromSlice(ip.To16())
 	}
@@ -94,7 +94,7 @@ func (s *netstackObj) DialContext(ctx context.Context, network, address string) 
 	case "udp", "udp6":
 		return gonet.DialUDP(s.stack, nil, &fa, pn)
 	default:
-		return nil, fmt.Errorf("unsupported network %q", network)
+		return nil, fmt.Errorf("%w %q", ErrUnsupportedNetwork, network)
 	}
 }
 
@@ -108,7 +108,7 @@ func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
 	case "tcp", "tcp6":
 		return gonet.ListenTCP(s.stack, fa, pn)
 	default:
-		return nil, fmt.Errorf("unsupported network %q for Listen", network)
+		return nil, fmt.Errorf("%w %q for Listen", ErrUnsupportedNetwork, network)
 	}
 }
 
@@ -122,7 +122,7 @@ func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, err
 	case "udp", "udp6":
 		return gonet.DialUDP(s.stack, &fa, nil, pn)
 	default:
-		return nil, fmt.Errorf("unsupported network %q for ListenPacket", network)
+		return nil, fmt.Errorf("%w %q for ListenPacket", ErrUnsupportedNetwork, network)
 	}
 }
 

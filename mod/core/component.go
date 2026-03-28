@@ -21,7 +21,7 @@ func (c *componentObj) enable(start func() (any, func() error, error)) error {
 	defer c.mu.Unlock()
 
 	if c.value != nil {
-		return fmt.Errorf("%s already enabled", c.name)
+		return fmt.Errorf("%w: %s", ErrAlreadyEnabled, c.name)
 	}
 	val, stop, err := start()
 	if err != nil {

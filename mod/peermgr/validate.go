@@ -33,24 +33,24 @@ func ValidatePeers(peers []string) ([]peerEntryObj, []error) {
 		}
 
 		if seen[s] {
-			errs = append(errs, fmt.Errorf("duplicate peer %q", s))
+			errs = append(errs, fmt.Errorf("%w %q", ErrDuplicatePeer, s))
 			continue
 		}
 		seen[s] = true
 
 		u, err := url.Parse(s)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("invalid URI %q: %w", s, err))
+			errs = append(errs, fmt.Errorf("%w %q: %w", ErrInvalidURI, s, err))
 			continue
 		}
 
 		if u.Host == "" {
-			errs = append(errs, fmt.Errorf("missing host in %q", s))
+			errs = append(errs, fmt.Errorf("%w in %q", ErrMissingHost, s))
 			continue
 		}
 
 		if !slices.Contains(AllowedSchemes, u.Scheme) {
-			errs = append(errs, fmt.Errorf("unsupported scheme %q in %q, allowed: %v", u.Scheme, s, AllowedSchemes))
+			errs = append(errs, fmt.Errorf("%w %q in %q, allowed: %v", ErrUnsupportedScheme, u.Scheme, s, AllowedSchemes))
 			continue
 		}
 

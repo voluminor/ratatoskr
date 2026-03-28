@@ -2,7 +2,6 @@ package peermgr
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -67,7 +66,7 @@ type Obj struct {
 // New creates the manager; peers are not added until Start()
 func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 	if cfg.Logger == nil {
-		return nil, fmt.Errorf("peermgr: logger is required")
+		return nil, ErrLoggerRequired
 	}
 	if cfg.MaxPerProto == 0 {
 		cfg.MaxPerProto = 1
@@ -81,7 +80,7 @@ func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 		cfg.Logger.Warnf("[peermgr] %v", err)
 	}
 	if len(peers) == 0 {
-		return nil, fmt.Errorf("peermgr: no valid peers after validation")
+		return nil, ErrNoPeers
 	}
 
 	return &Obj{cfg: cfg, node: node, peers: peers}, nil
@@ -94,7 +93,7 @@ func (m *Obj) Start() error {
 	m.mu.Lock()
 	if m.cancel != nil {
 		m.mu.Unlock()
-		return fmt.Errorf("peermgr: already running")
+		return ErrAlreadyRunning
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.ctx = ctx
@@ -151,7 +150,7 @@ func (m *Obj) Optimize() error {
 	ctx := m.ctx
 	m.mu.Unlock()
 	if ctx == nil {
-		return fmt.Errorf("peermgr: not running")
+		return ErrNotRunning
 	}
 	return m.optimizeLocked(ctx)
 }
