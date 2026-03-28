@@ -23,6 +23,8 @@
             type {{ $leaf.Type }} struct {
             {{- template "structFields" $leaf.Branch }}
             }
+
+            func (o *{{ $leaf.Type }}) Self() any { return o }
             {{- template "nestedStructs" $leaf.Branch }}
         {{- end }}
     {{- end }}
@@ -60,6 +62,10 @@ type Obj struct {
 {{- template "structFields" .Tree }}
 }
 {{ template "nestedStructs" .Tree }}
+
+// //
+
+func (o *Obj) Self() any { return o }
 
 // //
 {{ range $key, $leaf := .Tree }}
