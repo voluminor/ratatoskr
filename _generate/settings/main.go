@@ -85,6 +85,9 @@ type TreeLeafObj struct {
 	IsMap     bool
 	IsTrigger bool
 	EnumType  string // "LogFormatEnum" if enum
+
+	GenInterface  bool   // generate an interface for this branch
+	InterfaceType string // "YggdrasilInterface" when GenInterface is set
 }
 
 type TemplateObj struct {
@@ -95,6 +98,7 @@ type TemplateObj struct {
 	Tree            map[string]*TreeLeafObj
 	TypesImports    []string
 	FlagsImports    []string
+	DefaultsImports []string
 	HasCustomFlags  bool
 	HasEnums        bool
 	HasTriggerFlags bool
@@ -174,7 +178,7 @@ func hasChildNodes(node map[string]any) bool {
 			continue
 		}
 		switch k {
-		case "type", "enum", "trigger", "usage", "value":
+		case "type", "enum", "trigger", "usage", "value", "gen_interface":
 			continue
 		}
 		if _, ok := v.(map[string]any); ok {
@@ -412,6 +416,30 @@ func buildFlagAccessor(flagName string) string {
 
 // //
 
+// insertLeaf navigates/creates branch nodes along the path and places the leaf at the end.
+func insertLeaf(tree map[string]*TreeLeafObj, points []string, leaf *TreeLeafObj, branchUsage map[string]string) {
+	current := tree
+	for i := 0; i < len(points)-1; i++ {
+		key := points[i]
+		branch, ok := current[key]
+		if !ok {
+			usageKey := strings.Join(points[:i+1], ".")
+			branch = &TreeLeafObj{
+				Branch: make(map[string]*TreeLeafObj),
+				Name:   dep.GenGoName(key),
+				Type:   dep.GenGoName(key) + "Obj",
+				Key:    key,
+				Usage:  branchUsage[usageKey],
+			}
+			current[key] = branch
+		}
+		current = branch.Branch
+	}
+	current[points[len(points)-1]] = leaf
+}
+
+// //
+
 // propagateTrigger marks branch nodes as trigger when all their children are triggers.
 func propagateTrigger(tree map[string]*TreeLeafObj) {
 	for _, node := range tree {
@@ -429,6 +457,56 @@ func propagateTrigger(tree map[string]*TreeLeafObj) {
 		if allTrigger {
 			node.IsTrigger = true
 		}
+	}
+}
+
+// //
+
+// collectGenInterface walks YAML and returns dot-paths of branches with gen_interface: true.
+func collectGenInterface(node map[string]any, prefix string) map[string]bool {
+	result := make(map[string]bool)
+	for k, v := range node {
+		if strings.HasPrefix(k, "_") {
+			continue
+		}
+		child, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		fullKey := k
+		if prefix != "" {
+			fullKey = prefix + "." + k
+		}
+		if gi, ok := child["gen_interface"]; ok {
+			if b, ok := gi.(bool); ok && b {
+				result[fullKey] = true
+			}
+		}
+		if hasChildNodes(child) {
+			for mk, mv := range collectGenInterface(child, fullKey) {
+				result[mk] = mv
+			}
+		}
+	}
+	return result
+}
+
+// propagateGenInterface sets GenInterface on matching tree nodes and inherits to all descendant branches.
+func propagateGenInterface(tree map[string]*TreeLeafObj, paths map[string]bool, prefix string, inherited bool) {
+	for key, node := range tree {
+		if node.Branch == nil {
+			continue
+		}
+		fullKey := key
+		if prefix != "" {
+			fullKey = prefix + "." + key
+		}
+		active := inherited || paths[fullKey]
+		if active {
+			node.GenInterface = true
+			node.InterfaceType = node.Name + "Interface"
+		}
+		propagateGenInterface(node.Branch, paths, fullKey, active)
 	}
 }
 
@@ -667,80 +745,32 @@ func main() {
 
 		// Build tree
 		points := strings.Split(f.Name, ".")
-		switch len(points) {
-		case 1:
-			tree[points[0]] = &TreeLeafObj{
-				Name:      dep.GenGoName(points[0]),
-				Type:      f.GoType,
-				Key:       points[0],
-				IsEnum:    f.IsEnum,
-				IsArray:   f.IsArray,
-				IsMap:     f.IsMap,
-				IsTrigger: f.IsTrigger,
-				EnumType:  enumTypeName,
-			}
-		case 2:
-			branch, ok := tree[points[0]]
-			if !ok {
-				branch = &TreeLeafObj{
-					Branch: make(map[string]*TreeLeafObj),
-					Name:   dep.GenGoName(points[0]),
-					Type:   dep.GenGoName(points[0]) + "Obj",
-					Key:    points[0],
-					Usage:  branchUsage[points[0]],
-				}
-				tree[points[0]] = branch
-			}
-			branch.Branch[points[1]] = &TreeLeafObj{
-				Name:      dep.GenGoName(points[1]),
-				Type:      f.GoType,
-				Key:       points[1],
-				IsEnum:    f.IsEnum,
-				IsArray:   f.IsArray,
-				IsMap:     f.IsMap,
-				IsTrigger: f.IsTrigger,
-				EnumType:  enumTypeName,
-			}
-		case 3:
-			branch, ok := tree[points[0]]
-			if !ok {
-				branch = &TreeLeafObj{
-					Branch: make(map[string]*TreeLeafObj),
-					Name:   dep.GenGoName(points[0]),
-					Type:   dep.GenGoName(points[0]) + "Obj",
-					Key:    points[0],
-					Usage:  branchUsage[points[0]],
-				}
-				tree[points[0]] = branch
-			}
-			leaf, ok := branch.Branch[points[1]]
-			if !ok {
-				leaf = &TreeLeafObj{
-					Branch: make(map[string]*TreeLeafObj),
-					Name:   dep.GenGoName(points[1]),
-					Type:   dep.GenGoName(points[1]) + "Obj",
-					Key:    points[1],
-					Usage:  branchUsage[points[0]+"."+points[1]],
-				}
-				branch.Branch[points[1]] = leaf
-			}
-			leaf.Branch[points[2]] = &TreeLeafObj{
-				Name:      dep.GenGoName(points[2]),
-				Type:      f.GoType,
-				Key:       points[2],
-				IsEnum:    f.IsEnum,
-				IsArray:   f.IsArray,
-				IsMap:     f.IsMap,
-				IsTrigger: f.IsTrigger,
-				EnumType:  enumTypeName,
-			}
-		default:
-			fmt.Println("The settings tree is too deep! Can't go deeper than 3\t", f.Name)
-			return
-		}
+		insertLeaf(tree, points, &TreeLeafObj{
+			Name:      dep.GenGoName(points[len(points)-1]),
+			Type:      f.GoType,
+			Key:       points[len(points)-1],
+			IsEnum:    f.IsEnum,
+			IsArray:   f.IsArray,
+			IsMap:     f.IsMap,
+			IsTrigger: f.IsTrigger,
+			EnumType:  enumTypeName,
+		}, branchUsage)
 	}
 
 	propagateTrigger(tree)
+
+	genIfacePaths := collectGenInterface(parseTree, "")
+	propagateGenInterface(tree, genIfacePaths, "", false)
+
+	defaultsImports := map[string]bool{}
+	for _, f := range flags {
+		if f.IsTrigger {
+			continue
+		}
+		if strings.Contains(f.GoDefault, "time.Duration") {
+			defaultsImports["time"] = true
+		}
+	}
 
 	data := TemplateObj{
 		GenerationTime:  time.Now().Format(time.RFC3339),
@@ -749,6 +779,7 @@ func main() {
 		Tree:            tree,
 		TypesImports:    sortedKeys(typesImports),
 		FlagsImports:    sortedKeys(flagsImports),
+		DefaultsImports: sortedKeys(defaultsImports),
 		HasCustomFlags:  hasCustomFlags,
 		HasEnums:        len(enums) > 0,
 		HasTriggerFlags: hasTriggerFlags,

@@ -2,6 +2,14 @@
 // Generation time: {{.GenerationTime}}
 
 package settings
+{{- if .DefaultsImports }}
+
+    import (
+    {{- range .DefaultsImports }}
+        "{{ . }}"
+    {{- end }}
+    )
+{{- end }}
 
 // // // // // // // // // //
 

@@ -51,22 +51,53 @@ go:
 
 yggdrasil:
   usage: "Yggdrasil network node configuration"
+  gen_interface: true
 
-  private_key:
-    type: string
-    usage: "hex-encoded Ed25519 private key (128 hex chars); empty → random"
-
-  private_key_path:
-    type: string
-    usage: "path to private key file in PEM format (alternative to private_key)"
+  key:
+    usage: "node private key; empty → auto-generated; if both set, path takes priority"
+    text:
+      type: string
+      usage: "hex-encoded Ed25519 private key (128 hex chars)"
+    path:
+      type: string
+      usage: "path to private key file in PEM format (alternative to private_key)"
 
   listen:
     type: "[]string"
     usage: "listener addresses for incoming connections (e.g. tls://0.0.0.0:0)"
 
-  peers:
+  inputs:
     type: "[]string"
-    usage: "outbound peer URIs (e.g. tls://a.b.c.d:e, tcp://1.2.3.4:5678)"
+    usage: "real externally reachable addresses (e.g. public IPs); optional, for internal use"
+
+  peers:
+    usage: "peer connections"
+    url:
+      type: "[]string"
+      usage: "outbound peer URIs (e.g. tls://a.b.c.d:e, tcp://1.2.3.4:5678)"
+    interface:
+      type: "map[string][]string"
+      usage: "outbound peers bound to network interfaces"
+    manager:
+      usage: "smart peer manager (replaces standard Yggdrasil peering)"
+      enable:
+        type: bool
+        value: true
+        usage: "when disabled, all peer URLs are passed directly to Yggdrasil Peers"
+
+      probe_timeout:
+        type: duration
+        usage: "probe connection timeout (default: 10s)"
+      refresh_interval:
+        type: duration
+        usage: "re-evaluation interval (0 → startup only)"
+      max_per_proto:
+        type: int
+        usage: "best peers per protocol (0/1 → one, -1 → passive mode)"
+      batch_size:
+        type: int
+        usage: "probing batch size (0/1 → all at once, ≥2 → sliding window)"
+
 
   allowed_public_keys:
     type: "[]string"
@@ -77,26 +108,28 @@ yggdrasil:
     value: "none"
     usage: "admin socket listen address; 'none' to disable"
 
-  if_name:
-    type: string
-    value: "none"
-    usage: "TUN interface name; 'auto', 'none', or specific name"
+  if:
+    usage: "TUN adapter"
+    name:
+      type: string
+      value: "none"
+      usage: "TUN interface name; 'auto', 'none', or specific name"
+    mtu:
+      type: uint64
+      usage: "TUN interface MTU (min 1280; 0 → platform default)"
 
-  if_mtu:
-    type: uint64
-    usage: "TUN interface MTU (min 1280; 0 → platform default)"
-
-  node_info:
-    type: "map[string]any"
-    usage: "node metadata visible to the network"
-
-  node_info_privacy:
-    type: bool
-    usage: "hide default nodeinfo (platform, architecture, version)"
-
-  interface_peers:
-    type: "map[string][]string"
-    usage: "outbound peers bound to network interfaces"
+  node:
+    usage: "node identity and metadata"
+    info:
+      type: "map[string]any"
+      usage: "node metadata visible to the network"
+    privacy:
+      type: bool
+      usage: "hide default nodeinfo (platform, architecture, version)"
+    auto:
+      type: bool
+      value: true
+      usage: "auto-populate NodeInfo; merges with info if set; returns error on key conflicts"
 
   log_lookups:
     type: bool
@@ -104,6 +137,7 @@ yggdrasil:
 
   core_stop_timeout:
     type: duration
+    value: "5s"
     usage: "core.Stop() timeout (0 → unlimited)"
 
   rst_queue_size:
@@ -134,32 +168,11 @@ yggdrasil:
       type: string
       usage: "multicast peering password"
 
-  peer_manager:
-    usage: "smart peer manager (replaces standard Yggdrasil peering)"
-    probe_timeout:
-      type: duration
-      usage: "probe connection timeout (default: 10s)"
-    refresh_interval:
-      type: duration
-      usage: "re-evaluation interval (0 → startup only)"
-    max_per_proto:
-      type: int
-      usage: "best peers per protocol (0/1 → one, -1 → passive mode)"
-    batch_size:
-      type: int
-      usage: "probing batch size (0/1 → all at once, ≥2 → sliding window)"
-
   socks:
     usage: "SOCKS5 proxy configuration"
     addr:
       type: string
       usage: "listen address (TCP '127.0.0.1:1080' or Unix '/tmp/ygg.sock')"
-    nameserver:
-      type: string
-      usage: "DNS server for .ygg domains ([ipv6]:port); empty → pk.ygg only"
-    verbose:
-      type: bool
-      usage: "verbose SOCKS connection logging"
     max_connections:
       type: int
       usage: "max simultaneous connections (0 → unlimited)"
