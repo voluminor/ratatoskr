@@ -1,0 +1,90 @@
+// Code generated using '_generate/settings'; DO NOT EDIT.
+// Generation time: {{.GenerationTime}}
+
+package settings
+
+import (
+"encoding/json"
+"fmt"
+"strings"
+
+"gopkg.in/yaml.v3"
+)
+
+// // // // // // // // // //
+{{ range $enum := .Enums }}
+    type {{ $enum.TypeName }} uint16
+
+    const (
+    {{- range $i, $c := $enum.GoConsts }}
+        {{- if eq $i 0 }}
+            {{ $c }} {{ $enum.TypeName }} = iota
+        {{- else }}
+            {{ $c }}
+        {{- end }}
+    {{- end }}
+    )
+
+    // //
+
+    var {{ .NamesVar }} = [...]string{
+    {{- range .Values }}
+        "{{ . }}",
+    {{- end }}
+    }
+
+    // //
+
+    func (e {{ .TypeName }}) String() string {
+    if int(e) < len({{ .NamesVar }}) {
+    return {{ .NamesVar }}[e]
+    }
+    return fmt.Sprintf("{{ .TypeName }}(%d)", e)
+    }
+
+    // //
+
+    func (e {{ .TypeName }}) MarshalJSON() ([]byte, error) {
+    return json.Marshal(e.String())
+    }
+
+    func (e *{{ .TypeName }}) UnmarshalJSON(b []byte) error {
+    var s string
+    if err := json.Unmarshal(b, &s); err != nil {
+    return err
+    }
+    v, err := {{ .ParseFunc }}(s)
+    if err != nil {
+    return err
+    }
+    *e = v
+    return nil
+    }
+
+    // //
+
+    func (e {{ .TypeName }}) MarshalYAML() (interface{}, error) {
+    return e.String(), nil
+    }
+
+    func (e *{{ .TypeName }}) UnmarshalYAML(node *yaml.Node) error {
+    v, err := {{ .ParseFunc }}(node.Value)
+    if err != nil {
+    return err
+    }
+    *e = v
+    return nil
+    }
+
+    // //
+
+    func {{ .ParseFunc }}(s string) ({{ .TypeName }}, error) {
+    s = strings.TrimSpace(strings.ToLower(s))
+    for i, name := range {{ .NamesVar }} {
+    if name == s {
+    return {{ .TypeName }}(i), nil
+    }
+    }
+    return 0, fmt.Errorf("invalid {{ .TypeName }}: %q", s)
+    }
+{{ end }}

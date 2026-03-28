@@ -1,0 +1,33 @@
+// Code generated using '_generate/settings'; DO NOT EDIT.
+// Generation time: {{.GenerationTime}}
+
+package settings
+{{- if .DefaultsImports }}
+
+    import (
+    {{- range .DefaultsImports }}
+        "{{ . }}"
+    {{- end }}
+    )
+{{- end }}
+
+// // // // // // // // // //
+
+// NewDefault creates an Obj pre-filled with default values.
+func NewDefault() *Obj {
+o := &Obj{}
+{{- range .Flags }}
+    {{- if not .IsTrigger }}
+        {{- if ne .GoDefault "0" }}
+            {{- if ne .GoDefault "false" }}
+                {{- if ne .GoDefault `""` }}
+                    {{- if ne .GoDefault "nil" }}
+                        o.{{ .FlagAccessor }} = {{ .GoDefault }}
+                    {{- end }}
+                {{- end }}
+            {{- end }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+return o
+}

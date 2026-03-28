@@ -40,6 +40,7 @@ a node is created with `ratatoskr.New()`, everything is controlled through the G
 - **Resolver** (`mod/resolver`) — `.pk.ygg` address resolver
 - **Forward** (`mod/forward`) — TCP/UDP forwarding
 - **Traceroute** (`mod/traceroute`) — network topology exploration and path tracing
+- **Settings** (`mod/settings`) — code-generated CLI flags and multi-format config files from a YAML schema
 
 ### Examples
 
@@ -62,6 +63,7 @@ Also [`cmd/yggstack/`](cmd/yggstack/) — yggstack implementation built on ratat
 - [Module structure](#module-structure)
 - [Packages](#packages)
     - [traceroute](#traceroute)
+  - [settings](#settings)
 - [Configuration](#configuration)
 - [Usage examples](#usage-examples)
 - [Snapshot](#snapshot)
@@ -295,6 +297,11 @@ subgraph "traceroute"
 TR[Obj — topology explorer]
 CACHE[peerCacheObj — TTL cache]
 POOL[workerPoolObj — BFS pool]
+end
+
+subgraph "settings"
+SINIT[Init — flag & config bootstrap]
+SFILE[ParseFile / SaveFile — multi-format I/O]
 end
 
 A -->|embeds|E
@@ -589,6 +596,105 @@ These are package-level `var` — change them before calling `New()`.
 | `ErrLookupTimedOut`         | `Trace()`: context expired before finding the key          |
 
 All errors can be checked with `errors.Is()`.
+
+### `settings`
+
+Code-generated settings pipeline. A YAML schema (`settings.yml`) is the single source of truth —
+the generator (`_generate/settings`) produces Go structs, typed enums, default values, CLI flag
+definitions, config file parsing, save logic, and formatted help text. The handwritten
+`mod/settings` package wires the generated code into the application entry point.
+
+#### How it works
+
+```mermaid
+flowchart LR
+    YAML[settings.yml] -->|go generate| GEN[_generate/settings]
+    GEN -->|writes| TARGET[target/settings/]
+TARGET --> INIT["Init(): defaults → config file → CLI flags"]
+INIT --> APP[Application receives typed Obj]
+```
+
+**Three-layer resolution** — each layer overrides the previous one:
+
+1. **Defaults** — baked into `NewDefault()` at generation time.
+2. **Config file** — JSON, YAML, or HJSON loaded by `ParseFile()`. Format is detected by extension.
+3. **CLI flags** — `flag.FlagSet` registered by `DefineFlags()`. Always wins.
+
+#### Advantages
+
+- Single source of truth — one change in `settings.yml` updates everything
+- Typed enums instead of raw strings
+- No reflection — direct struct field access
+
+#### Config file formats
+
+| Extension          | Format |
+|--------------------|--------|
+| `.json`            | JSON   |
+| `.yml` / `.yaml`   | YAML   |
+| `.hjson` / `.conf` | HJSON  |
+
+`SaveFile()` writes the current settings back in the same format, auto-detected by extension.
+
+#### Triggers
+
+Fields marked `trigger: true` in the schema become CLI-only boolean flags. They are never
+read from or written to config files — useful for one-shot actions like `--gen_private_key`.
+
+#### Entry point
+
+```go
+msettings.New(func (cfg msettings.Interface) error {
+obj := msettings.Obj(cfg)
+// obj is a fully resolved *target/settings.Obj
+// ready to use with typed fields and enums
+return nil
+})
+```
+
+`New()` calls the generated `Init()`, handles `--help` / `--info`, and passes the resolved
+settings object to the application callback. Returns `nil` on help/info (normal exit),
+error on init failure.
+
+#### Config chain resolution
+
+`ParseFile()` supports config-to-config redirects. If a config file contains a `config` field
+pointing to another file, the parser follows the chain until it reaches a terminal file
+(one without `config`). Intermediate files' fields are ignored — only the terminal file is parsed.
+
+- Relative paths resolve from the directory of the referring file
+- Cycle detection via visited set
+- Hard limit: 32 hops
+
+```mermaid
+flowchart LR
+    A[a.yml<br/>config: b.yml] -->|redirect| B[b.yml<br/>config: c.json]
+    B -->|redirect| C[c.json<br/>no config field]
+    C -->|parse| OBJ[Obj]
+```
+
+#### Duration normalization
+
+Fields marked as `duration` in the schema are listed in the generated `DurationKeys` map.
+All three parsers (JSON, YAML, HJSON) normalize duration values before unmarshalling into the struct:
+
+1. Decode raw data into `map[string]any`
+2. Walk the map, converting known duration paths to nanosecond `int64`
+3. Re-encode as JSON and unmarshal into the typed `Obj`
+
+This allows config files to use human-readable strings (`"5s"`, `"100ms"`) in any format,
+while the struct always receives `time.Duration` (nanoseconds).
+
+#### Save modes
+
+| Function           | Field order | Comments | Type safety |
+|--------------------|-------------|----------|-------------|
+| `SaveFile`         | encoder     | no       | typed `Obj` |
+| `SaveFilePretty`   | schema      | yes      | typed `Obj` |
+| `SaveUnsafePretty` | schema      | yes      | `any`       |
+
+All save functions strip the `config` key from output to prevent redirect loops.
+Comments and field order come from the generated `Comments` and `FieldOrder` maps.
 
 ## Configuration
 

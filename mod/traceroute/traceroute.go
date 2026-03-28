@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"fmt"
+	"math"
 	"net"
 	"time"
 
@@ -105,6 +106,9 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 	}
 	if concurrency <= 0 {
 		concurrency = defaultPoolSize
+	}
+	if concurrency >= math.MaxUint16 {
+		concurrency = math.MaxUint16 - 1
 	}
 
 	pool := newWorkerPool(concurrency, o.callRemotePeers)

@@ -1,0 +1,310 @@
+# Supported types:
+#   scalar:  string, bool, int, int8, int16, int32, int64,
+#            uint, uint8, uint16, uint32, uint64,
+#            float (alias for float32), float32, float64, duration
+#   array:   []string, []bool, []int, []int64, []uint, []uint64,
+#            []float32, []float64, []duration
+#   enum:    add "enum: [val1, val2, ...]" — generates uint16 const type
+#            (type field is optional for enums)
+#   []enum:  array of enum values
+#   map:     map[string]any, map[string][]string — JSON on CLI, native in config files
+#   trigger: true — CLI-only bool flag, not saved/parsed from config files
+
+# Config file redirect chain:
+#   When a config file contains a non-empty "config" field, it acts as a pure
+#   redirect — all other fields in that file are ignored and the referenced
+#   file is loaded instead. Chains are followed up to 32 hops; circular
+#   references are detected and rejected.
+#   Relative paths are resolved from the directory of the referring file.
+#   The "config" field is never written to generated config files.
+config:
+  type: string
+  usage: "path to config file (json/yml/yaml/hjson/conf)"
+
+# ==== #
+
+go:
+  usage: "executable commands"
+  trigger: true
+
+  key:
+    usage: "key utilities"
+    gen:
+      type: duration
+      usage: "mine a private key with max leading zeros for the given duration (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
+    addr:
+      type: string
+      usage: "show Yggdrasil IPv6 address and subnet for a given key (hex private 128 chars, hex public 64 chars, or PEM file path)"
+    to_pem:
+      type: string
+      usage: "convert hex private key (128 chars) to PEM file; value is output file path"
+    from_pem:
+      type: string
+      usage: "convert PEM file to hex private key; value is input file path"
+
+  conf:
+    usage: "configuration utilities"
+    generate:
+      usage: "generate a default ratatoskr config file"
+      path:
+        type: string
+        usage: "output directory path (file is always ratatoskr-config.{format})"
+      format:
+        usage: "output file format (default: yml)"
+        enum: &conf_format [ yml, json, conf ]
+      preset:
+        usage: "config preset (default: basic)"
+        enum: [ basic, medium, full ]
+    import:
+      usage: "convert Yggdrasil config to ratatoskr format"
+      from:
+        type: string
+        usage: "input Yggdrasil config file path"
+      to:
+        type: string
+        usage: "output directory path"
+      format:
+        usage: "output file format (default: yml)"
+        enum: *conf_format
+    export:
+      usage: "convert ratatoskr config to Yggdrasil format"
+      from:
+        type: string
+        usage: "input ratatoskr config file path"
+      to:
+        type: string
+        usage: "output directory path"
+      format:
+        usage: "output file format (default: json)"
+        enum: *conf_format
+
+  peer_info:
+    usage: "probe peers and report status"
+    url:
+      type: "[]string"
+      usage: "peer URIs to probe (e.g. tcp://1.2.3.4:5678)"
+    timeout:
+      type: duration
+      usage: "probe timeout per peer (default: 10s)"
+    format:
+      usage: "output format (default: text)"
+      enum: &output_format [ text, json ]
+
+  forward:
+    usage: "port forwarding through Yggdrasil"
+    from:
+      type: string
+      usage: "local listen address (e.g. 127.0.0.1:8080)"
+    to:
+      type: string
+      usage: "remote Yggdrasil address:port (e.g. [200:abc::1]:8080)"
+    proto:
+      usage: "protocol (default: tcp)"
+      enum: [ tcp, udp ]
+    peer:
+      type: "[]string"
+      usage: "yggdrasil peer URIs to connect through (e.g. tcp://1.2.3.4:5678)"
+
+  traceroute:
+    scan:
+      type: bool
+      usage: "BFS network topology scan"
+    trace:
+      type: string
+      usage: "traceroute to target public key (64-char hex)"
+    ping:
+      type: string
+      usage: "ping a node by public key and measure RTT (64-char hex)"
+    peer:
+      type: string
+      usage: "yggdrasil peer URI to connect through (e.g. tcp://1.2.3.4:5678)"
+    timeout:
+      type: duration
+      usage: "context timeout (default: 5m, min: 100ms)"
+    max_depth:
+      type: uint16
+      usage: "BFS max depth for scan (default: 3)"
+    concurrency:
+      type: int
+      usage: "parallel workers for scan (default: 64)"
+    count:
+      type: int
+      usage: "number of pings (default: 4)"
+    format:
+      usage: "output format (default: text)"
+      enum: *output_format
+
+# ==== #
+
+yggdrasil:
+  usage: "Yggdrasil network node configuration"
+  gen_interface: true
+
+  key:
+    usage: "node private key; empty → auto-generated; if both set, path takes priority"
+    text:
+      type: string
+      usage: "hex-encoded Ed25519 private key (128 hex chars)"
+    path:
+      type: string
+      usage: "path to private key file in PEM format (alternative to private_key)"
+
+  listen:
+    type: "[]string"
+    usage: "listener addresses for incoming connections (e.g. tls://0.0.0.0:0)"
+
+  inputs:
+    type: "[]string"
+    usage: "real externally reachable addresses (e.g. public IPs); optional, for internal use"
+
+  peers:
+    usage: "peer connections"
+    url:
+      type: "[]string"
+      usage: "outbound peer URIs (e.g. tls://a.b.c.d:e, tcp://1.2.3.4:5678)"
+    interface:
+      type: "map[string][]string"
+      usage: "outbound peers bound to network interfaces"
+    manager:
+      usage: "smart peer manager (replaces standard Yggdrasil peering)"
+      enable:
+        type: bool
+        value: true
+        usage: "when disabled, all peer URLs are passed directly to Yggdrasil Peers"
+
+      probe_timeout:
+        type: duration
+        value: "10s"
+        usage: "probe connection timeout"
+      refresh_interval:
+        type: duration
+        usage: "re-evaluation interval (0 → startup only)"
+      max_per_proto:
+        type: int
+        usage: "best peers per protocol (0/1 → one, -1 → passive mode)"
+      batch_size:
+        type: int
+        usage: "probing batch size (0/1 → all at once, ≥2 → sliding window)"
+
+
+  allowed_public_keys:
+    type: "[]string"
+    usage: "hex-encoded public keys allowed for incoming peering; empty → allow all"
+
+  admin_listen:
+    type: string
+    value: "none"
+    usage: "admin socket listen address; 'none' to disable"
+
+  if:
+    usage: "TUN adapter"
+    name:
+      type: string
+      value: "none"
+      usage: "TUN interface name; 'auto', 'none', or specific name"
+    mtu:
+      type: uint64
+      value: 65535
+      usage: "TUN interface MTU (min 1280)"
+
+  node:
+    usage: "node identity and metadata"
+    info:
+      type: "map[string]any"
+      usage: "node metadata visible to the network"
+    privacy:
+      type: bool
+      usage: "hide default nodeinfo (platform, architecture, version)"
+    auto:
+      type: bool
+      value: true
+      usage: "auto-populate NodeInfo; merges with info if set; returns error on key conflicts"
+
+  log_lookups:
+    type: bool
+    usage: "log address lookups"
+
+  core_stop_timeout:
+    type: duration
+    value: "5s"
+    usage: "core.Stop() timeout (0 → unlimited)"
+
+  rst_queue_size:
+    type: int
+    value: 100
+    usage: "RST packet deferred queue size"
+
+  multicast:
+    usage: "multicast peer discovery"
+    regex:
+      type: string
+      value: ".*"
+      usage: "interface name regex for multicast discovery"
+    beacon:
+      type: bool
+      value: true
+      usage: "advertise presence via multicast"
+    listen:
+      type: bool
+      value: true
+      usage: "listen for multicast advertisements"
+    port:
+      type: uint16
+      usage: "multicast port (0 → default)"
+    priority:
+      type: uint16
+      usage: "peer priority (lower = preferred)"
+    password:
+      type: string
+      usage: "multicast peering password"
+
+  socks:
+    usage: "SOCKS5 proxy configuration"
+    addr:
+      type: string
+      usage: "listen address (TCP '127.0.0.1:1080' or Unix '/tmp/ygg.sock')"
+    max_connections:
+      type: int
+      usage: "max simultaneous connections (0 → unlimited)"
+
+# ==== #
+
+log:
+  usage: "logging configuration"
+  compress:
+    type: bool
+    value: true
+    usage: "compress rotated log files"
+  file_path:
+    type: string
+    usage: "log file path (auto-detected if empty)"
+  format:
+    value: "text"
+    usage: "console format"
+    enum: *output_format
+  level:
+    usage: "log level thresholds"
+    console:
+      value: "debug"
+      usage: "console log level"
+      enum: &log_levels [ debug, info, warn, error, fatal, panic, disabled ]
+    file:
+      value: "info"
+      usage: "file log level"
+      enum: *log_levels
+  max_age:
+    type: int
+    value: 30
+    usage: "log file max age (days)"
+  max_backups:
+    type: int
+    value: 3
+    usage: "log file max backups"
+  max_size:
+    type: int
+    value: 32
+    usage: "log file max size (MB)"
+  output:
+    value: "both"
+    usage: "log output mode"
+    enum: [ console, file, both ]

@@ -1,0 +1,29 @@
+// Code generated using '_generate/settings'; DO NOT EDIT.
+// Generation time: {{.GenerationTime}}
+
+package settings
+
+import (
+"errors"
+"fmt"
+"os"
+)
+
+// // // // // // // // // //
+
+// ErrInfo is returned by Init when -i/-info flag is used.
+var ErrInfo = errors.New("info requested")
+
+// //
+
+var helpText = {{backtick}}{{.HelpText}}{{backtick}}
+
+// //
+
+func printHelp() {
+fmt.Fprint(os.Stderr, helpText)
+}
+
+func printInfo(text string) {
+fmt.Fprintln(os.Stderr, text)
+}

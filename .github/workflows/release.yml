@@ -156,9 +156,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          ./_run/scripts/go_tidy_all.sh
           mkdir -p target tmp
-          GOWORK=off GOFLAGS=-mod=mod go generate ./...
+          go work sync
+          go generate .
+          ./_run/scripts/go_tidy_all.sh
 
       - uses: ./.github/actions/generate-build-env
 
