@@ -13,8 +13,8 @@ func Run(cfg *gsettings.GoObj) (bool, error) {
 		return true, keygen(cfg.Keygen)
 	}
 
-	if cfg.Trace.Scan || cfg.Trace.Trace != "" {
-		return true, traceCmd(&cfg.Trace)
+	if cfg.Traceroute.Scan || cfg.Traceroute.Trace != "" {
+		return true, traceCmd(&cfg.Traceroute)
 	}
 
 	return false, nil

@@ -23,7 +23,7 @@ go:
     type: duration
     usage: "mine a private key with max leading zeros for the given duration (e.g. 10s, 1m; recommended ≥10s, enforced min 100ms)"
 
-  trace:
+  traceroute:
     scan:
       type: bool
       usage: "BFS network topology scan"

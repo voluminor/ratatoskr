@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
@@ -31,7 +30,7 @@ const (
 
 // //
 
-func traceCmd(cfg *gsettings.TraceObj) error {
+func traceCmd(cfg *gsettings.TracerouteObj) error {
 	if err := validateTraceParams(cfg); err != nil {
 		return err
 	}
@@ -40,12 +39,22 @@ func traceCmd(cfg *gsettings.TraceObj) error {
 	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
 	defer cancel()
 
+	fmt.Fprintf(os.Stderr, "  booting node...\n")
 	node, tr, err := bootNode(ctx, cfg.Peer)
 	if err != nil {
 		return err
 	}
-	defer node.Close()
-	defer tr.Close()
+	defer func() {
+		go func() {
+			tr.Close()
+			node.Close()
+		}()
+	}()
+
+	if err := waitForPeers(ctx, node); err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "  peer connected\n")
 
 	if cfg.Scan {
 		return runScan(ctx, tr, cfg)
@@ -55,16 +64,16 @@ func traceCmd(cfg *gsettings.TraceObj) error {
 
 // //
 
-func validateTraceParams(cfg *gsettings.TraceObj) error {
+func validateTraceParams(cfg *gsettings.TracerouteObj) error {
 	if cfg.Scan && cfg.Trace != "" {
-		return fmt.Errorf("specify either -go.trace.scan or -go.trace.trace, not both")
+		return fmt.Errorf("specify either -go.traceroute.scan or -go.traceroute.trace, not both")
 	}
 	if !cfg.Scan && cfg.Trace == "" {
-		return fmt.Errorf("specify -go.trace.scan or -go.trace.trace <pubkey>")
+		return fmt.Errorf("specify -go.traceroute.scan or -go.traceroute.trace <pubkey>")
 	}
 
 	if cfg.Peer == "" {
-		return fmt.Errorf("missing -go.trace.peer (yggdrasil peer URI)")
+		return fmt.Errorf("missing -go.traceroute.peer (yggdrasil peer URI)")
 	}
 	if _, errs := peermgr.ValidatePeers([]string{cfg.Peer}); len(errs) > 0 {
 		return fmt.Errorf("invalid peer: %w", errs[0])
@@ -84,7 +93,7 @@ func validateTraceParams(cfg *gsettings.TraceObj) error {
 	return nil
 }
 
-func applyTraceDefaults(cfg *gsettings.TraceObj) {
+func applyTraceDefaults(cfg *gsettings.TracerouteObj) {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = defaultTraceTimeout
 	}
@@ -129,115 +138,137 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 
 // //
 
-func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TraceObj) error {
-	ch := make(chan traceroute.TreeProgressObj, 16)
-
-	var result *traceroute.TreeResultObj
-	var scanErr error
-	var done atomic.Bool
-
-	go func() {
-		result, scanErr = tr.TreeChan(ctx, cfg.MaxDepth, cfg.Concurrency, ch)
-		done.Store(true)
-	}()
-
+func waitForPeers(ctx context.Context, node *ratatoskr.Obj) error {
 	frame := 0
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	lastTotal := 0
-	lastDepth := 0
-
 	for {
 		select {
-		case p := <-ch:
-			if p.Found > 0 {
-				lastTotal = p.Total
-				lastDepth = p.Depth
-			}
-			if p.Done {
-				clearLine()
-				goto finish
-			}
 		case <-ticker.C:
-			if done.Load() {
-				for len(ch) > 0 {
-					<-ch
-				}
+			if len(node.GetPeers()) > 0 {
 				clearLine()
-				goto finish
+				return nil
 			}
-			dl, _ := ctx.Deadline()
-			remaining := time.Until(dl)
-			if remaining < 0 {
-				remaining = 0
-			}
-			fmt.Fprintf(os.Stderr, "\r%c scanning... %s remaining | depth: %d | nodes: %d  ",
-				spinnerFrames[frame%len(spinnerFrames)], formatRemaining(remaining), lastDepth, lastTotal)
+			fmt.Fprintf(os.Stderr, "\r  %c connecting to peer...  ",
+				spinnerFrames[frame%len(spinnerFrames)])
 			frame++
 		case <-ctx.Done():
 			clearLine()
-			goto finish
+			return fmt.Errorf("timeout waiting for peer connection")
+		}
+	}
+}
+
+// //
+
+func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteObj) error {
+	ch := make(chan traceroute.TreeProgressObj, 16)
+
+	var result *traceroute.TreeResultObj
+	var scanErr error
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		result, scanErr = tr.TreeChan(ctx, cfg.MaxDepth, cfg.Concurrency, ch)
+	}()
+
+	frame := 0
+	ticker := time.NewTicker(100 * time.Millisecond)
+
+	lastTotal := 0
+	lastDepth := 0
+	printedDepth := 0
+
+	loop := true
+	for loop {
+		select {
+		case p, ok := <-ch:
+			if !ok || p.Done {
+				clearLine()
+				loop = false
+				continue
+			}
+			if p.Found > 0 {
+				lastTotal = p.Total
+				if p.Depth > lastDepth {
+					clearLine()
+					fmt.Fprintf(os.Stderr, "  depth %d: %d nodes found\n", lastDepth, lastTotal)
+					printedDepth = lastDepth
+				}
+				lastDepth = p.Depth
+			}
+		case <-ticker.C:
+			fmt.Fprintf(os.Stderr, "\r  %c scanning depth %d... (%d nodes)  ",
+				spinnerFrames[frame%len(spinnerFrames)], lastDepth, lastTotal)
+			frame++
+		case <-ctx.Done():
+			clearLine()
+			loop = false
 		}
 	}
 
-finish:
+	ticker.Stop()
+	<-done
+
+	if lastDepth > printedDepth && lastTotal > 0 {
+		fmt.Fprintf(os.Stderr, "  depth %d: %d nodes total\n", lastDepth, lastTotal)
+	}
 	if scanErr != nil {
 		return scanErr
 	}
 	if result == nil {
 		return fmt.Errorf("scan returned no result")
 	}
+	fmt.Fprintf(os.Stderr, "  scan complete: %d nodes\n", result.Total)
 	return outputScan(result, cfg.Format)
 }
 
 // //
 
-func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TraceObj) error {
+func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.TracerouteObj) error {
 	keyBytes, _ := hex.DecodeString(cfg.Trace)
 	pubKey := ed25519.PublicKey(keyBytes)
 
 	var result *traceroute.TraceResultObj
 	var traceErr error
-	var done atomic.Bool
 
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		result, traceErr = tr.Trace(ctx, pubKey)
-		done.Store(true)
 	}()
 
 	frame := 0
 	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
 
-	for {
+	loop := true
+	for loop {
 		select {
+		case <-done:
+			clearLine()
+			loop = false
 		case <-ticker.C:
-			if done.Load() {
-				clearLine()
-				goto finish
-			}
-			dl, _ := ctx.Deadline()
-			remaining := time.Until(dl)
-			if remaining < 0 {
-				remaining = 0
-			}
-			fmt.Fprintf(os.Stderr, "\r%c tracing... %s remaining  ",
-				spinnerFrames[frame%len(spinnerFrames)], formatRemaining(remaining))
+			fmt.Fprintf(os.Stderr, "\r  %c tracing %s...  ",
+				spinnerFrames[frame%len(spinnerFrames)], cfg.Trace[:16])
 			frame++
 		case <-ctx.Done():
 			clearLine()
-			goto finish
+			loop = false
 		}
 	}
 
-finish:
+	ticker.Stop()
+	<-done
+
 	if traceErr != nil {
 		return traceErr
 	}
 	if result == nil {
 		return fmt.Errorf("trace returned no result")
 	}
+	fmt.Fprintf(os.Stderr, "  trace complete\n")
 	return outputTrace(cfg.Trace, result, cfg.Format)
 }
 
@@ -288,8 +319,8 @@ func nodeToScanJSON(n *traceroute.NodeObj) *scanNodeJSON {
 
 // //
 
-func outputScan(result *traceroute.TreeResultObj, format gsettings.GoTraceFormatEnum) error {
-	if format == gsettings.GoTraceFormatJson {
+func outputScan(result *traceroute.TreeResultObj, format gsettings.GoTracerouteFormatEnum) error {
+	if format == gsettings.GoTracerouteFormatJson {
 		data, err := json.MarshalIndent(nodeToScanJSON(result.Root), "", "  ")
 		if err != nil {
 			return err
@@ -313,8 +344,8 @@ func outputScan(result *traceroute.TreeResultObj, format gsettings.GoTraceFormat
 	return nil
 }
 
-func outputTrace(target string, result *traceroute.TraceResultObj, format gsettings.GoTraceFormatEnum) error {
-	if format == gsettings.GoTraceFormatJson {
+func outputTrace(target string, result *traceroute.TraceResultObj, format gsettings.GoTracerouteFormatEnum) error {
+	if format == gsettings.GoTracerouteFormatJson {
 		out := struct {
 			Target string          `json:"target"`
 			Path   []*scanNodeJSON `json:"path,omitempty"`
