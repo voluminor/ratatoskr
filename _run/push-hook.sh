@@ -8,6 +8,19 @@ root_path=$(cd "$run_dir/.." && pwd)
 
 #############################################################################
 
+set -Eeuo pipefail
+cd "$root_path"
+export CGO_ENABLED=1
+
+echo "==> Running tests with race detector..."
+go test -race -v ./...
+
+echo ""
+echo "==> Running benchmarks..."
+go test -bench=. -run=NONE -benchmem -v ./...
+
+echo ""
+echo "[HOOK] All tests and benchmarks passed"
+
 #############################################################################
 exit 0
-

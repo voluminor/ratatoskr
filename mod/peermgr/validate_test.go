@@ -1,7 +1,7 @@
 package peermgr
 
 import (
-	"strings"
+	"errors"
 	"testing"
 )
 
@@ -60,8 +60,8 @@ func TestValidatePeers_duplicate(t *testing.T) {
 	if len(res) != 1 {
 		t.Fatalf("expected 1 valid entry; got %d", len(res))
 	}
-	if !strings.Contains(errs[0].Error(), "duplicate") {
-		t.Errorf("unexpected error message: %v", errs[0])
+	if !errors.Is(errs[0], ErrDuplicatePeer) {
+		t.Errorf("expected ErrDuplicatePeer, got: %v", errs[0])
 	}
 }
 
@@ -78,8 +78,8 @@ func TestValidatePeers_unsupportedScheme(t *testing.T) {
 	if len(errs) == 0 {
 		t.Fatal("expected unsupported-scheme error")
 	}
-	if !strings.Contains(errs[0].Error(), "unsupported scheme") {
-		t.Errorf("unexpected error: %v", errs[0])
+	if !errors.Is(errs[0], ErrUnsupportedScheme) {
+		t.Errorf("expected ErrUnsupportedScheme, got: %v", errs[0])
 	}
 }
 

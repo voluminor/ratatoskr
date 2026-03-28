@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 	"github.com/voluminor/ratatoskr"
+	"github.com/voluminor/ratatoskr/mod/traceroute"
 )
 
 // // // // // // // // // //
@@ -29,6 +31,13 @@ type bandwidthJSON struct {
 	TxBytes uint64 `json:"tx_bytes"`
 }
 
+type sessionJSON struct {
+	Key       string  `json:"key"`
+	RxBytes   uint64  `json:"rx_bytes"`
+	TxBytes   uint64  `json:"tx_bytes"`
+	UptimeSec float64 `json:"uptime_sec"`
+}
+
 type infoJSON struct {
 	PublicKey     string        `json:"public_key"`
 	YggAddress    string        `json:"ygg_address"`
@@ -38,6 +47,7 @@ type infoJSON struct {
 	UptimeSeconds float64       `json:"uptime_seconds"`
 	Bandwidth     bandwidthJSON `json:"bandwidth"`
 	Peers         []peerJSON    `json:"peers"`
+	Sessions      []sessionJSON `json:"sessions"`
 	CachedAt      time.Time     `json:"cached_at"`
 }
 
@@ -51,6 +61,7 @@ type cachedMetricsObj struct {
 
 type InfoHandlerObj struct {
 	node      *ratatoskr.Obj
+	tr        *traceroute.Obj
 	cfg       *ConfigObj
 	log       yggcore.Logger
 	startTime time.Time
@@ -60,8 +71,8 @@ type InfoHandlerObj struct {
 
 // //
 
-func newInfoHandler(node *ratatoskr.Obj, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
-	return &InfoHandlerObj{node: node, cfg: cfg, log: log, startTime: time.Now()}
+func newInfoHandler(node *ratatoskr.Obj, tr *traceroute.Obj, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
+	return &InfoHandlerObj{node: node, tr: tr, cfg: cfg, log: log, startTime: time.Now()}
 }
 
 func (h *InfoHandlerObj) refreshMetrics() *cachedMetricsObj {
@@ -82,7 +93,7 @@ func (h *InfoHandlerObj) refreshMetrics() *cachedMetricsObj {
 func (h *InfoHandlerObj) getMetrics() *cachedMetricsObj {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if h.cached == nil || time.Since(h.cached.at) >= 10*time.Second {
+	if h.cached == nil || time.Since(h.cached.at) >= time.Second {
 		h.cached = h.refreshMetrics()
 	}
 	return h.cached
@@ -120,6 +131,18 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 			peers[i] = entry
 		}
 
+		// Sessions from the traceroute module.
+		rawSessions := h.tr.Sessions()
+		sessions := make([]sessionJSON, len(rawSessions))
+		for i, s := range rawSessions {
+			sessions[i] = sessionJSON{
+				Key:       hex.EncodeToString(s.Key),
+				RxBytes:   s.RXBytes,
+				TxBytes:   s.TXBytes,
+				UptimeSec: s.Uptime.Seconds(),
+			}
+		}
+
 		resp := infoJSON{
 			PublicKey:     m.snap.PublicKey,
 			YggAddress:    m.snap.Address,
@@ -129,11 +152,12 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 			UptimeSeconds: time.Since(h.startTime).Seconds(),
 			Bandwidth:     m.bw,
 			Peers:         peers,
+			Sessions:      sessions,
 			CachedAt:      m.at,
 		}
 		data, _ := json.Marshal(resp)
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "max-age=10")
-		w.Write(data)
+		w.Header().Set("Cache-Control", "max-age=1")
+		_, _ = w.Write(data)
 	})
 }

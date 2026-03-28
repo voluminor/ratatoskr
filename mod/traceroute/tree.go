@@ -1,0 +1,97 @@
+package traceroute
+
+import (
+	"crypto/ed25519"
+
+	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
+)
+
+// // // // // // // // // //
+
+// buildTree builds a tree from flat TreeEntryInfo. Root is the self-parented node.
+func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj, error) {
+	if len(entries) == 0 {
+		return nil, ErrTreeEmpty
+	}
+
+	nodes := make([]NodeObj, len(entries))
+	index := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(entries))
+	for i, e := range entries {
+		nodes[i] = NodeObj{
+			Key:      e.Key,
+			Parent:   e.Parent,
+			Sequence: e.Sequence,
+		}
+		index[toKeyArray(e.Key)] = &nodes[i]
+	}
+
+	orphans := 0
+	var root *NodeObj
+	for k, node := range index {
+		pk := toKeyArray(node.Parent)
+		if pk == k {
+			root = node
+			continue
+		}
+		if parent, ok := index[pk]; ok {
+			parent.Children = append(parent.Children, node)
+		} else {
+			orphans++
+		}
+	}
+
+	if orphans > 0 && logger != nil {
+		logger.Warnf("[traceroute] buildTree: %d orphan nodes (parent not in tree)", orphans)
+	}
+
+	if root == nil {
+		return nil, ErrNoRoot
+	}
+	setDepth(root, 0, 1024)
+	return root, nil
+}
+
+// //
+
+// setDepth recursively assigns depth. maxDepth guards against cycles.
+func setDepth(n *NodeObj, d, maxDepth int) {
+	n.Depth = d
+	if d >= maxDepth {
+		n.Children = nil
+		return
+	}
+	for _, ch := range n.Children {
+		setDepth(ch, d+1, maxDepth)
+	}
+}
+
+// // // // // // // // // //
+
+// resolveHops converts PathEntryInfo to HopObj slice, resolving ports to keys via peers.
+func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj {
+	portToKey := make(map[uint64]ed25519.PublicKey, len(peers))
+	for _, p := range peers {
+		if p.Up && p.Port > 0 {
+			portToKey[p.Port] = p.Key
+		}
+	}
+
+	hops := make([]HopObj, 0, len(path.Path))
+	for i, port := range path.Path {
+		hop := HopObj{Port: port, Index: i}
+		if key, ok := portToKey[port]; ok {
+			hop.Key = key
+		}
+		hops = append(hops, hop)
+	}
+	return hops
+}
+
+// // // // // // // // // //
+
+// toKeyArray converts ed25519.PublicKey to a fixed-size array for map keys.
+func toKeyArray(key ed25519.PublicKey) [ed25519.PublicKeySize]byte {
+	var arr [ed25519.PublicKeySize]byte
+	copy(arr[:], key)
+	return arr
+}

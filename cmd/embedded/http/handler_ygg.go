@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/hex"
-	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -133,15 +132,10 @@ func (h *yggFileHandlerObj) serveChunked(
 	flusher http.Flusher,
 ) {
 	buf := make([]byte, chunkSize)
-	var chunkIdx int
 	for {
 		n, readErr := io.ReadFull(f, buf)
 		if n > 0 {
 			chunk := buf[:n]
-			sum := blake3.Sum256(chunk)
-			trailerKey := fmt.Sprintf("X-Chunk-Hash-%d", chunkIdx)
-			chunkIdx++
-
 			var payload []byte
 			if compress {
 				payload = h.enc.EncodeAll(chunk, nil)
@@ -149,7 +143,6 @@ func (h *yggFileHandlerObj) serveChunked(
 				payload = chunk
 			}
 			_, _ = w.Write(payload)
-			w.Header().Set(trailerKey, hex.EncodeToString(sum[:]))
 			if flusher != nil {
 				flusher.Flush()
 			}

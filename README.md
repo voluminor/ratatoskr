@@ -39,6 +39,7 @@ a node is created with `ratatoskr.New()`, everything is controlled through the G
 - **Peer manager** (`peermgr`) — peer rotation and optimization; enabled via `ConfigObj.Peers`
 - **Resolver** (`mod/resolver`) — `.pk.ygg` address resolver
 - **Forward** (`mod/forward`) — TCP/UDP forwarding
+- **Traceroute** (`mod/traceroute`) — network topology exploration and path tracing
 
 ### Examples
 
@@ -60,6 +61,7 @@ Also [`cmd/yggstack/`](cmd/yggstack/) — yggstack implementation built on ratat
 - [Architecture](#architecture)
 - [Module structure](#module-structure)
 - [Packages](#packages)
+    - [traceroute](#traceroute)
 - [Configuration](#configuration)
 - [Usage examples](#usage-examples)
 - [Snapshot](#snapshot)
@@ -161,6 +163,10 @@ Resolver[Resolver .pk.ygg / DNS]
 PeerMgr[PeerManager — peer selection]
     end
 
+subgraph traceroute
+TR[traceroute.Obj]
+end
+
 subgraph core
 CoreObj[core.Obj]
 Netstack[netstack — userspace TCP/UDP]
@@ -182,6 +188,9 @@ SOCKS --> Resolver
 SOCKS -->|DialContext|CoreObj
 Resolver -->|DialContext for DNS|CoreObj
 PeerMgr -->|AddPeer / RemovePeer|CoreObj
+
+TR -->|SetAdmin capture|YggCore
+TR -->|GetTree / GetPeers / GetPaths|YggCore
 
 CoreObj --> Netstack
 CoreObj --> Multicast
@@ -282,6 +291,12 @@ J[Obj — SOCKS5 server]
 K[Interface — contract]
 end
 
+subgraph "traceroute"
+TR[Obj — topology explorer]
+CACHE[peerCacheObj — TTL cache]
+POOL[workerPoolObj — BFS pool]
+end
+
 A -->|embeds|E
 A -->|uses|J
 A -->|creates|I
@@ -293,6 +308,9 @@ D -->|contains|F
 F -->|contains|G
 D -->|contains|H
 J -->|implements|K
+TR -->|SetAdmin capture|D
+TR --> CACHE
+TR --> POOL
 ```
 
 ## Packages
@@ -410,6 +428,167 @@ stateDiagram-v2
     Enabled --> Enabled: Enable() → error
     Created --> Created: Disable() → no-op
 ```
+
+### `traceroute`
+
+Network topology explorer and path tracer for Yggdrasil. Works directly with `yggdrasil-go/core`
+(not via `core.Interface`) — captures the internal `debug_remoteGetPeers` handler via `core.SetAdmin`
+without requiring a real admin socket.
+
+| Type              | Purpose                                                                        |
+|-------------------|--------------------------------------------------------------------------------|
+| `Obj`             | Topology explorer: Tree (BFS), Path (spanning tree), Hops (pathfinder), Trace  |
+| `NodeObj`         | Node in the topology tree. Find, Flatten, PathTo for subtree operations        |
+| `HopObj`          | Single hop in port-level route. Key may be nil if port is unresolvable         |
+| `TraceResultObj`  | Combined result: TreePath (spanning tree) + Hops (pathfinder). Both may be set |
+| `TreeResultObj`   | BFS result: Root node + Total discovered count                                 |
+| `TreeProgressObj` | Progress callback per BFS depth level: Depth, Found, Total, Done               |
+
+#### How it works
+
+The module combines two independent Yggdrasil routing subsystems:
+
+1. **Spanning tree** — `core.GetTree()` returns the local view of the global spanning tree.
+   `Path()` builds a tree from this data and finds the path `[root, ..., target]`.
+
+2. **Pathfinder** — `core.GetPaths()` returns active source-routed paths.
+   `Hops()` resolves port-level routes for a given key. Requires a prior `Lookup()` to trigger
+   path discovery in the core.
+
+3. **BFS topology scan** — `Tree()` uses `debug_remoteGetPeers` to query each node's peers
+   and build a full topology tree. This is a network-wide scan, not local data.
+
+**Key difference from classic traceroute:** classic traceroute sends packets with incrementing TTL
+and listens for ICMP Time Exceeded replies. Yggdrasil does not support TTL or ICMP. Instead,
+this module uses BFS over `debug_remoteGetPeers` for topology and `core.GetPaths()` for
+port-level routes. RTT is approximate — it measures the full `debug_remoteGetPeers` round-trip
+through all intermediate hops, not individual hop latency.
+
+#### BFS algorithm (Tree)
+
+```mermaid
+flowchart TD
+    START[Get own PublicKey as root] --> L1[Level 1: core.GetPeers — direct peers]
+L1 --> SUBMIT[Submit level nodes to worker pool]
+SUBMIT --> QUERY[Each worker: callRemotePeers via debug_remoteGetPeers]
+QUERY --> CACHE{Cached?}
+CACHE -->|Yes|RETURN[Return cached result]
+CACHE -->|No|CALL[JSON-RPC to remote node]
+CALL --> PARSE[Parse response → peer keys]
+PARSE --> STORE[Cache result with TTL]
+STORE --> COLLECT[Collect all level results]
+RETURN --> COLLECT
+COLLECT --> FILTER[Filter: skip visited, check MaxPeersPerNode]
+FILTER --> PROGRESS[Send TreeProgressObj to channel]
+PROGRESS --> NEXT{depth < maxDepth?}
+NEXT -->|Yes|SUBMIT
+NEXT -->|No|DONE[Return TreeResultObj]
+```
+
+#### Trace strategy
+
+```mermaid
+flowchart TD
+    START[Trace key] --> COLLECT1[collect: check tree + paths]
+    COLLECT1 --> BOTH{Both found?}
+    BOTH -->|Yes| ENRICH[enrichPath: fill RTT] --> RETURN[Return result]
+    BOTH -->|No| LOOKUP1[SendLookup to core]
+    LOOKUP1 --> TREE{Tree path found?}
+    TREE -->|Yes| POLL_HOPS[pollHops: wait up to HopsWaitTimeout]
+    POLL_HOPS --> ENRICH
+    TREE -->|No| POLL_FULL[pollFull: poll both until ctx expires]
+    POLL_FULL --> GRACE{Tree found during poll?}
+    GRACE -->|Yes| GRACE_TICKS[Give hopsGracePeriod extra ticks]
+    GRACE_TICKS --> ENRICH
+    GRACE -->|No, ctx expired| TIMEOUT[Return ErrLookupTimedOut]
+```
+
+#### Cache lifecycle
+
+```mermaid
+stateDiagram-v2
+    [*] --> Empty: newPeerCache()
+    Empty --> Active: first set() → starts cleanup goroutine
+    Active --> Active: set() resets idle counter
+    Active --> Idle: CacheTTL/2 tick, all entries expired
+    Idle --> Active: set() resets idle counter
+    Idle --> Stopped: 10 consecutive empty ticks → goroutine exits
+    Stopped --> Active: next set() → starts new cleanup goroutine
+    Active --> [*]: close()
+    Idle --> [*]: close()
+    Stopped --> [*]: close()
+```
+
+The cleanup goroutine runs every `CacheTTL / 2`, deletes expired entries, and self-terminates
+after 10 consecutive iterations with an empty cache. It restarts on the next `set()` call.
+
+#### Configuration variables
+
+These are package-level `var` — change them before calling `New()`.
+
+| Variable           | Type            | Default | Description                                                           |
+|--------------------|-----------------|---------|-----------------------------------------------------------------------|
+| `MaxPeersPerNode`  | `int`           | `65535` | Max peers from a single node. Exceeding marks the node as Unreachable |
+| `CacheTTL`         | `time.Duration` | `60s`   | How long peer query results are cached. Must be ≥ 1s                  |
+| `PollInterval`     | `time.Duration` | `200ms` | How often Trace polls core for results                                |
+| `LookupRetryEvery` | `time.Duration` | `1s`    | How often SendLookup is retried during polling                        |
+| `HopsWaitTimeout`  | `time.Duration` | `2s`    | How long Trace waits for hops when tree path is already found         |
+
+#### API
+
+| Method                                                                                  | Description                                                                                   |
+|-----------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------|
+| `New(core, logger)`                                                                     | Create module. Captures `debug_remoteGetPeers` via `core.SetAdmin`                            |
+| `Close()`                                                                               | Stop cache cleanup goroutine                                                                  |
+| `FlushCache()`                                                                          | Drop all cached peer query results                                                            |
+| `Tree(ctx, maxDepth, conc)`                                                             | BFS topology scan. Returns `TreeResultObj`                                                    |
+| `TreeChan(ctx, maxDepth, conc, ch)`                                                     | Same as Tree, with progress via channel                                                       |
+| `Path(key)`                                                                             | Path in spanning tree: `[root, ..., target]`                                                  |
+| `Hops(key)`                                                                             | Port-level route. Requires prior `Lookup()`                                                   |
+| `Lookup(key)`                                                                           | Trigger pathfinder search. Results appear in `Hops()` after some time                         |
+| `Trace(ctx, key)`                                                                       | Combined search: tree + pathfinder + polling. **No default timeout — pass ctx with deadline** |
+| `Self()`, `Address()`, `Subnet()`, `Peers()`, `Sessions()`, `SpanningTree()`, `Paths()` | Proxy methods to `yggdrasil-go/core`                                                          |
+
+#### NodeObj methods
+
+| Method        | Description                                                  |
+|---------------|--------------------------------------------------------------|
+| `Find(key)`   | Recursive search by key in subtree. Returns nil if not found |
+| `Flatten()`   | Depth-first flat list of all nodes in subtree                |
+| `PathTo(key)` | Returns `[root, ..., target]` or nil if key not in subtree   |
+
+#### Caveats
+
+- **RTT is approximate.** For remote nodes, RTT measures the full `debug_remoteGetPeers` round-trip
+  through all intermediate hops. It is not the latency to that specific node.
+- **No default timeout on `Trace()`.** Always pass a context with a deadline:
+  `ctx, cancel := context.WithTimeout(ctx, 30*time.Second)`. Without a deadline, `Trace()` will
+  poll indefinitely if the key is not found.
+- **`Path()` rebuilds the tree on each call.** It calls `core.GetTree()` and `buildTree()` every time.
+  For repeated lookups, consider caching the result or using `Tree()` and `NodeObj.PathTo()`.
+- **Mutable globals.** `MaxPeersPerNode`, `CacheTTL`, `PollInterval`, `LookupRetryEvery`,
+  `HopsWaitTimeout` are package-level `var`. Changing them during active operations is not safe.
+  Set them before calling `New()`.
+
+#### Sentinel errors
+
+| Error                       | When                                                       |
+|-----------------------------|------------------------------------------------------------|
+| `ErrCoreRequired`           | `New()`: core is nil                                       |
+| `ErrLoggerRequired`         | `New()`: logger is nil                                     |
+| `ErrRemotePeersNotCaptured` | `New()`: `debug_remoteGetPeers` was not registered by core |
+| `ErrInvalidCacheTTL`        | `New()`: `CacheTTL` < 1s                                   |
+| `ErrMaxDepthRequired`       | `Tree()`: maxDepth == 0                                    |
+| `ErrInvalidKeyLength`       | Key is not 32 bytes ed25519                                |
+| `ErrKeyNotInTree`           | `Path()`: key not found in spanning tree                   |
+| `ErrNoActivePath`           | `Hops()`: no active pathfinder route to key                |
+| `ErrNodeUnreachable`        | Cached: node did not respond to peer query                 |
+| `ErrRemotePeersDisabled`    | `callRemotePeers`: handler is nil                          |
+| `ErrTreeEmpty`              | `buildTree`: no entries in `core.GetTree()`                |
+| `ErrNoRoot`                 | `buildTree`: own key not found in tree entries             |
+| `ErrLookupTimedOut`         | `Trace()`: context expired before finding the key          |
+
+All errors can be checked with `errors.Is()`.
 
 ## Configuration
 
@@ -779,6 +958,121 @@ log.Fatal(err)
 defer node.DisableAdmin()
 ```
 
+### Traceroute
+
+#### Topology scan
+
+```go
+import "github.com/voluminor/ratatoskr/mod/traceroute"
+
+// Create traceroute module — requires raw yggdrasil-go/core, not core.Interface
+tr, err := traceroute.New(node.UnsafeCore(), logger)
+if err != nil {
+log.Fatal(err)
+}
+defer tr.Close()
+
+// BFS scan up to 10 hops deep, 32 concurrent workers
+ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+defer cancel()
+
+result, err := tr.Tree(ctx, 10, 32)
+if err != nil {
+log.Fatal(err)
+}
+
+log.Printf("Discovered %d nodes", result.Total)
+for _, node := range result.Root.Flatten() {
+log.Printf("  depth=%d key=%x unreachable=%v rtt=%s",
+node.Depth, node.Key[:8], node.Unreachable, node.RTT)
+}
+```
+
+#### Topology scan with progress
+
+```go
+ch := make(chan traceroute.TreeProgressObj, 10)
+go func () {
+for p := range ch {
+if p.Done {
+log.Printf("Scan complete: %d nodes total", p.Total)
+} else {
+log.Printf("Depth %d: found %d nodes (%d total)", p.Depth, p.Found, p.Total)
+}
+}
+}()
+
+result, err := tr.TreeChan(ctx, 10, 32, ch)
+close(ch) // TreeChan does not close the channel
+```
+
+#### Trace a specific node
+
+```go
+// Always provide a deadline — Trace() polls indefinitely without one
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+targetKey := ed25519.PublicKey{...} // 32-byte ed25519 public key
+result, err := tr.Trace(ctx, targetKey)
+if err != nil {
+if errors.Is(err, traceroute.ErrLookupTimedOut) {
+// Partial result may be available
+if result != nil && result.TreePath != nil {
+log.Println("Tree path found, but hops timed out")
+}
+}
+log.Fatal(err)
+}
+
+// Spanning tree path
+if result.TreePath != nil {
+log.Println("Tree path:")
+for _, n := range result.TreePath {
+log.Printf("  %x (depth=%d, rtt=%s)", n.Key[:8], n.Depth, n.RTT)
+}
+}
+
+// Port-level hops (pathfinder route)
+if result.Hops != nil {
+log.Println("Hops:")
+for _, h := range result.Hops {
+log.Printf("  port=%d key=%x", h.Port, h.Key[:8])
+}
+}
+```
+
+#### Spanning tree path and hops separately
+
+```go
+// Path from spanning tree — no network calls, instant
+path, err := tr.Path(targetKey)
+if errors.Is(err, traceroute.ErrKeyNotInTree) {
+log.Println("Target not in current spanning tree view")
+}
+
+// Trigger pathfinder lookup
+tr.Lookup(targetKey)
+time.Sleep(2 * time.Second)
+
+// Get port-level route
+hops, err := tr.Hops(targetKey)
+if errors.Is(err, traceroute.ErrNoActivePath) {
+log.Println("No active path yet — retry later")
+}
+```
+
+#### Tuning configuration
+
+```go
+// Set before calling traceroute.New()
+traceroute.CacheTTL = 30 * time.Second // faster cache expiry
+traceroute.MaxPeersPerNode = 1000 // lower limit for safety
+traceroute.PollInterval = 100 * time.Millisecond // faster polling
+traceroute.LookupRetryEvery = 500 * time.Millisecond
+traceroute.HopsWaitTimeout = 5 * time.Second // wait longer for hops
+```
+
 ### Graceful shutdown
 
 Three ways to shut down a node:
@@ -839,20 +1133,25 @@ All public methods of `Obj` and `core.Obj` are safe for concurrent use.
 
 ### Methods returning errors
 
-| Method                | Errors                                                                      |
-|-----------------------|-----------------------------------------------------------------------------|
-| `New`                 | Core creation error, `Config.Peers` + `Peers` conflict, peermgr start error |
-| `DialContext`         | `ErrNotAvailable` (node closed), gVisor errors, invalid address             |
-| `Listen`              | `ErrNotAvailable`, gVisor errors, invalid address                           |
-| `ListenPacket`        | `ErrNotAvailable`, gVisor errors, invalid address                           |
-| `EnableSOCKS`         | `"SOCKS already enabled"`, listen error (port busy / invalid path)          |
-| `DisableSOCKS`        | Listener close error                                                        |
-| `EnableMulticast`     | `"multicast already enabled"`, invalid regex, `multicast.New` error         |
-| `EnableAdmin`         | `"admin already enabled"`, invalid address, `admin.New` returned nil        |
-| `AddPeer`             | Invalid URI, core error                                                     |
-| `RemovePeer`          | Invalid URI, core error                                                     |
-| `PeerManagerOptimize` | `"peermgr: not running"` if manager is not started                          |
-| `Close`               | Collects errors from all components via `errors.Join`; idempotent           |
+| Method                | Errors                                                                                    |
+|-----------------------|-------------------------------------------------------------------------------------------|
+| `New`                 | Core creation error, `Config.Peers` + `Peers` conflict, peermgr start error               |
+| `DialContext`         | `ErrNotAvailable` (node closed), gVisor errors, invalid address                           |
+| `Listen`              | `ErrNotAvailable`, gVisor errors, invalid address                                         |
+| `ListenPacket`        | `ErrNotAvailable`, gVisor errors, invalid address                                         |
+| `EnableSOCKS`         | `"SOCKS already enabled"`, listen error (port busy / invalid path)                        |
+| `DisableSOCKS`        | Listener close error                                                                      |
+| `EnableMulticast`     | `"multicast already enabled"`, invalid regex, `multicast.New` error                       |
+| `EnableAdmin`         | `"admin already enabled"`, invalid address, `admin.New` returned nil                      |
+| `AddPeer`             | Invalid URI, core error                                                                   |
+| `RemovePeer`          | Invalid URI, core error                                                                   |
+| `PeerManagerOptimize` | `"peermgr: not running"` if manager is not started                                        |
+| `Close`               | Collects errors from all components via `errors.Join`; idempotent                         |
+| `traceroute.New`      | `ErrCoreRequired`, `ErrLoggerRequired`, `ErrInvalidCacheTTL`, `ErrRemotePeersNotCaptured` |
+| `traceroute.Tree`     | `ErrMaxDepthRequired`, context cancellation                                               |
+| `traceroute.Path`     | `ErrInvalidKeyLength`, `ErrKeyNotInTree`, `ErrTreeEmpty`, `ErrNoRoot`                     |
+| `traceroute.Hops`     | `ErrInvalidKeyLength`, `ErrNoActivePath`                                                  |
+| `traceroute.Trace`    | `ErrInvalidKeyLength`, `ErrLookupTimedOut` (may include partial result)                   |
 
 ### ErrNotAvailable
 

@@ -64,14 +64,14 @@ func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP
 
 	// DNS — only if nameserver is configured
 	if !r.hasDNS {
-		return ctx, nil, fmt.Errorf("cannot resolve %q: no nameserver configured", name)
+		return ctx, nil, fmt.Errorf("%w: cannot resolve %q", ErrNoNameserver, name)
 	}
 	addrs, err := r.resolver.LookupIP(ctx, "ip6", name)
 	if err != nil {
 		return ctx, nil, fmt.Errorf("lookup %q: %w", name, err)
 	}
 	if len(addrs) == 0 {
-		return ctx, nil, fmt.Errorf("no addresses for %q", name)
+		return ctx, nil, fmt.Errorf("%w for %q", ErrNoAddresses, name)
 	}
 	return ctx, addrs[0], nil
 }
@@ -88,7 +88,7 @@ func resolvePublicKey(name string) (net.IP, error) {
 		return nil, fmt.Errorf("hex.DecodeString: %w", err)
 	}
 	if len(b) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("public key must be %d bytes, got %d", ed25519.PublicKeySize, len(b))
+		return nil, fmt.Errorf("%w: expected %d bytes, got %d", ErrInvalidKeyLength, ed25519.PublicKeySize, len(b))
 	}
 	var pk [ed25519.PublicKeySize]byte
 	copy(pk[:], b)

@@ -56,7 +56,7 @@ func (s *Obj) Enable(cfg EnableConfigObj) error {
 	defer s.mu.Unlock()
 
 	if s.listener != nil {
-		return fmt.Errorf("SOCKS already enabled on %s", s.addr)
+		return fmt.Errorf("%w on %s", ErrAlreadyEnabled, s.addr)
 	}
 
 	opts := []socks5.Option{
@@ -163,7 +163,7 @@ func listenUnix(path string) (net.Listener, error) {
 	probe, dialErr := net.Dial("unix", path)
 	if dialErr == nil {
 		_ = probe.Close()
-		return nil, fmt.Errorf("another instance is listening on %q", path)
+		return nil, fmt.Errorf("%w on %q", ErrAlreadyListening, path)
 	}
 	// Process is dead — remove the stale socket and listen immediately
 	if rmErr := removeUnixSocket(path); rmErr != nil {
@@ -179,7 +179,7 @@ func removeUnixSocket(path string) error {
 		return fmt.Errorf("os.Lstat %s: %w", path, err)
 	}
 	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("refusing to remove %s: is a symlink", path)
+		return fmt.Errorf("%w: %s", ErrSymlinkRefusal, path)
 	}
 	return os.Remove(path)
 }
