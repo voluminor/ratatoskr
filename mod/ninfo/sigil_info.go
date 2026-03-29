@@ -26,6 +26,11 @@ type ConfigSigilInfo struct {
 	Peerings string
 }
 
+const (
+	maxContactGroups    = 8
+	maxContactsPerGroup = 8
+)
+
 var (
 	reSigilInfoName     = regexp.MustCompile(`^[a-z0-9._-]{4,64}$`)
 	reSigilInfoType     = regexp.MustCompile(`^[a-z0-9.-]{2,32}$`)
@@ -57,9 +62,19 @@ func NewSigilInfo(conf ConfigSigilInfo) (*SigilInfoObj, error) {
 		return nil, errors.New("invalid peering")
 	}
 
+	if len(conf.Contacts) > maxContactGroups {
+		return nil, fmt.Errorf("too many contact groups: %d (max %d)", len(conf.Contacts), maxContactGroups)
+	}
+
 	for group, contacts := range conf.Contacts {
 		if !reSigilInfoType.MatchString(group) {
 			return nil, fmt.Errorf("invalid contact name: %s", group)
+		}
+		if len(contacts) == 0 {
+			return nil, fmt.Errorf("empty contact group: %s", group)
+		}
+		if len(contacts) > maxContactsPerGroup {
+			return nil, fmt.Errorf("too many contacts in group %s: %d (max %d)", group, len(contacts), maxContactsPerGroup)
 		}
 		for pos, contact := range contacts {
 			if !reSigilInfoContacts.MatchString(contact) {
@@ -150,8 +165,20 @@ func (sg *SigilInfoObj) Match(NodeInfo map[string]any) bool {
 				return false
 			}
 		case "contact":
-			if _, ok := data.(map[string][]string); !ok {
+			m, ok := data.(map[string]any)
+			if !ok {
 				return false
+			}
+			for _, v := range m {
+				arr, ok := v.([]any)
+				if !ok {
+					return false
+				}
+				for _, item := range arr {
+					if _, ok := item.(string); !ok {
+						return false
+					}
+				}
 			}
 		}
 	}
