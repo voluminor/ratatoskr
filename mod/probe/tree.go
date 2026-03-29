@@ -1,4 +1,4 @@
-package traceroute
+package probe
 
 import (
 	"crypto/ed25519"
@@ -41,7 +41,7 @@ func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj
 	}
 
 	if orphans > 0 && logger != nil {
-		logger.Warnf("[traceroute] buildTree: %d orphan nodes (parent not in tree)", orphans)
+		logger.Warnf("[probe] buildTree: %d orphan nodes (parent not in tree)", orphans)
 	}
 
 	if root == nil {

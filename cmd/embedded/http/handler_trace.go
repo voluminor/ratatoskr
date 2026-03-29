@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/voluminor/ratatoskr/mod/traceroute"
+	"github.com/voluminor/ratatoskr/mod/probe"
 )
 
 // // // // // // // // // //
@@ -33,7 +33,7 @@ type traceHopJSON struct {
 	Index int    `json:"index"`
 }
 
-// traceResponseJSON is the /traceroute.json response.
+// traceResponseJSON is the /probe.json response.
 type traceResponseJSON struct {
 	Target   string           `json:"target"`
 	Path     []*traceNodeJSON `json:"path,omitempty"`
@@ -44,7 +44,7 @@ type traceResponseJSON struct {
 
 // //
 
-func nodeToJSON(n *traceroute.NodeObj) *traceNodeJSON {
+func nodeToJSON(n *probe.NodeObj) *traceNodeJSON {
 	if n == nil {
 		return nil
 	}
@@ -67,7 +67,7 @@ func nodeToJSON(n *traceroute.NodeObj) *traceNodeJSON {
 
 // nodeToJSONFlat converts a NodeObj to JSON without children or unreachable flag.
 // Used for path serialization where only the linear chain matters.
-func nodeToJSONFlat(n *traceroute.NodeObj) *traceNodeJSON {
+func nodeToJSONFlat(n *probe.NodeObj) *traceNodeJSON {
 	return &traceNodeJSON{
 		Key:      hex.EncodeToString(n.Key),
 		Parent:   hex.EncodeToString(n.Parent),
@@ -81,7 +81,7 @@ func nodeToJSONFlat(n *traceroute.NodeObj) *traceNodeJSON {
 
 // newTraceHandler traces a route to the given key.
 // GET ?key=<hex>. Returns path (spanning tree) with RTT, hops (pathfinder), subtree.
-func newTraceHandler(tr *traceroute.Obj) http.Handler {
+func newTraceHandler(tr *probe.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyHex := r.URL.Query().Get("key")
 		if keyHex == "" {
@@ -144,7 +144,7 @@ func newTraceHandler(tr *traceroute.Obj) http.Handler {
 // newTreeHandler returns the BFS peer topology tree.
 // GET ?depth=N&concurrency=N. depth is required and must be > 0.
 // 30s timeout — BFS can take a while on large networks.
-func newTreeHandler(tr *traceroute.Obj) http.Handler {
+func newTreeHandler(tr *probe.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var depth int
 		var concurrency int

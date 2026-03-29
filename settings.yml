@@ -105,13 +105,13 @@ go:
       type: "[]string"
       usage: "yggdrasil peer URIs to connect through (e.g. tcp://1.2.3.4:5678)"
 
-  traceroute:
+  probe:
     scan:
       type: bool
       usage: "BFS network topology scan"
     trace:
       type: string
-      usage: "traceroute to target public key (64-char hex)"
+      usage: "trace route to target public key (64-char hex)"
     ping:
       type: string
       usage: "ping a node by public key and measure RTT (64-char hex)"

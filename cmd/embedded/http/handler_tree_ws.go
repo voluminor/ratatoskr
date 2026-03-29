@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/voluminor/ratatoskr/mod/traceroute"
+	"github.com/voluminor/ratatoskr/mod/probe"
 	"golang.org/x/net/websocket"
 )
 
@@ -32,7 +32,7 @@ type treeWSMsgJSON struct {
 // newTreeWSHandler creates a persistent WebSocket handler for tree scans.
 // One connection per modal session; closed when the modal closes.
 // Each Refresh sends a new scan request over the same connection.
-func newTreeWSHandler(tr *traceroute.Obj) http.Handler {
+func newTreeWSHandler(tr *probe.Obj) http.Handler {
 	return websocket.Server{
 		// Accept connections from any origin — embedded server serves its own UI.
 		Handshake: func(cfg *websocket.Config, r *http.Request) error {
@@ -52,7 +52,7 @@ func newTreeWSHandler(tr *traceroute.Obj) http.Handler {
 // treeWSLoop processes tree scan requests from the WebSocket connection.
 // A dedicated reader goroutine detects disconnect immediately and cancels ctx,
 // so in-flight BFS scans abort without waiting for the next progress Send.
-func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn, tr *traceroute.Obj) {
+func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn, tr *probe.Obj) {
 	requests := make(chan treeWSReqJSON, 1)
 	go func() {
 		defer cancel()
@@ -83,11 +83,11 @@ func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Co
 				return
 			}
 
-			ch := make(chan traceroute.TreeProgressObj, 16)
+			ch := make(chan probe.TreeProgressObj, 16)
 			start := time.Now()
 			done := make(chan struct{})
 
-			var result *traceroute.TreeResultObj
+			var result *probe.TreeResultObj
 			var scanErr error
 			go func() {
 				defer close(done)
@@ -122,7 +122,7 @@ func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Co
 
 // streamTreeProgress reads progress from ch until Done=true, ctx cancellation, or goroutine exit.
 // Returns true if the connection was lost (ctx cancelled by reader goroutine).
-func streamTreeProgress(ws *websocket.Conn, ctx context.Context, ch <-chan traceroute.TreeProgressObj, done <-chan struct{}) bool {
+func streamTreeProgress(ws *websocket.Conn, ctx context.Context, ch <-chan probe.TreeProgressObj, done <-chan struct{}) bool {
 	for {
 		select {
 		case <-ctx.Done():

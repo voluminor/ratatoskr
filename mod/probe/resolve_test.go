@@ -1,4 +1,4 @@
-package traceroute
+package probe
 
 import (
 	"crypto/ed25519"

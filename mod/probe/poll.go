@@ -1,4 +1,4 @@
-package traceroute
+package probe
 
 import (
 	"context"
@@ -51,7 +51,7 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 		return result, nil
 	}
 
-	o.logger.Infof("[traceroute] lookup started for %x", key[:8])
+	o.logger.Infof("[probe] lookup started for %x", key[:8])
 	result, err := o.pollFull(ctx, key)
 	if result != nil && result.TreePath != nil {
 		o.enrichPath(ctx, result.TreePath)

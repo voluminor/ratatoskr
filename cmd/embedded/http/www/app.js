@@ -456,7 +456,7 @@ async function doTrace() {
     resultEl.classList.add('hidden');
 
     try {
-        const resp = await fetch('/traceroute.json?key=' + key);
+        const resp = await fetch('/probe.json?key=' + key);
         const data = await resp.json();
 
         if (data.error) {

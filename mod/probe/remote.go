@@ -1,4 +1,4 @@
-package traceroute
+package probe
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 		return nil, 0, ctx.Err()
 	case r := <-ch:
 		if r.err != nil {
-			o.logger.Debugf("[traceroute] remoteGetPeers failed for %x: %v", key[:8], r.err)
+			o.logger.Debugf("[probe] remoteGetPeers failed for %x: %v", key[:8], r.err)
 			o.cache.set(k, nil, r.rtt)
 			return nil, r.rtt, r.err
 		}
@@ -90,7 +90,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 func parseRemotePeersResponse(raw interface{}) ([]ed25519.PublicKey, error) {
 	outer, ok := raw.(yggcore.DebugGetPeersResponse)
 	if !ok {
-		return nil, fmt.Errorf("traceroute: unexpected response type %T", raw)
+		return nil, fmt.Errorf("probe: unexpected response type %T", raw)
 	}
 
 	var peers []ed25519.PublicKey

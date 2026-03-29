@@ -1,4 +1,4 @@
-package traceroute
+package probe
 
 import (
 	"context"
@@ -42,7 +42,7 @@ func validateKey(key ed25519.PublicKey) error {
 
 // // // // // // // // // //
 
-// New creates a traceroute module.
+// New creates a probe module.
 // Captures debug_remoteGetPeers via core.SetAdmin.
 func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 	if core == nil {
@@ -204,7 +204,7 @@ func (o *Obj) scanLevel(ctx context.Context, pool *workerPoolObj, nodes []*NodeO
 		}
 		if limit > 0 && len(r.peers) > limit {
 			parent.Unreachable = true
-			o.logger.Warnf("[traceroute] node %x reported %d peers (limit %d), marked unreachable", r.key[:8], len(r.peers), limit)
+			o.logger.Warnf("[probe] node %x reported %d peers (limit %d), marked unreachable", r.key[:8], len(r.peers), limit)
 			continue
 		}
 		for _, peerKey := range r.peers {

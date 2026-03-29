@@ -11,7 +11,7 @@ import (
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 	"github.com/voluminor/ratatoskr"
-	"github.com/voluminor/ratatoskr/mod/traceroute"
+	"github.com/voluminor/ratatoskr/mod/probe"
 )
 
 // // // // // // // // // //
@@ -61,7 +61,7 @@ type cachedMetricsObj struct {
 
 type InfoHandlerObj struct {
 	node      *ratatoskr.Obj
-	tr        *traceroute.Obj
+	tr        *probe.Obj
 	cfg       *ConfigObj
 	log       yggcore.Logger
 	startTime time.Time
@@ -71,7 +71,7 @@ type InfoHandlerObj struct {
 
 // //
 
-func newInfoHandler(node *ratatoskr.Obj, tr *traceroute.Obj, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
+func newInfoHandler(node *ratatoskr.Obj, tr *probe.Obj, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
 	return &InfoHandlerObj{node: node, tr: tr, cfg: cfg, log: log, startTime: time.Now()}
 }
 
@@ -131,7 +131,7 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 			peers[i] = entry
 		}
 
-		// Sessions from the traceroute module.
+		// Sessions from the probe module.
 		rawSessions := h.tr.Sessions()
 		sessions := make([]sessionJSON, len(rawSessions))
 		for i, s := range rawSessions {

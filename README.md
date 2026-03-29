@@ -39,7 +39,7 @@ a node is created with `ratatoskr.New()`, everything is controlled through the G
 - **Peer manager** (`peermgr`) — peer rotation and optimization; enabled via `ConfigObj.Peers`
 - **Resolver** (`mod/resolver`) — `.pk.ygg` address resolver
 - **Forward** (`mod/forward`) — TCP/UDP forwarding
-- **Traceroute** (`mod/traceroute`) — network topology exploration and path tracing
+- **Probe** (`mod/probe`) — network topology exploration and path tracing
 - **Settings** (`mod/settings`) — code-generated CLI flags and multi-format config files from a YAML schema
 
 ### Examples
@@ -62,7 +62,7 @@ Also [`cmd/yggstack/`](cmd/yggstack/) — yggstack implementation built on ratat
 - [Architecture](#architecture)
 - [Module structure](#module-structure)
 - [Packages](#packages)
-    - [traceroute](#traceroute)
+    - [probe](#probe)
   - [settings](#settings)
 - [Configuration](#configuration)
 - [Usage examples](#usage-examples)
@@ -165,8 +165,8 @@ Resolver[Resolver .pk.ygg / DNS]
 PeerMgr[PeerManager — peer selection]
     end
 
-subgraph traceroute
-TR[traceroute.Obj]
+subgraph probe
+TR[probe.Obj]
 end
 
 subgraph core
@@ -293,7 +293,7 @@ J[Obj — SOCKS5 server]
 K[Interface — contract]
 end
 
-subgraph "traceroute"
+subgraph "probe"
 TR[Obj — topology explorer]
 CACHE[peerCacheObj — TTL cache]
 POOL[workerPoolObj — BFS pool]
@@ -436,7 +436,7 @@ stateDiagram-v2
     Created --> Created: Disable() → no-op
 ```
 
-### `traceroute`
+### `probe`
 
 Network topology explorer and path tracer for Yggdrasil. Works directly with `yggdrasil-go/core`
 (not via `core.Interface`) — captures the internal `debug_remoteGetPeers` handler via `core.SetAdmin`
@@ -1069,10 +1069,10 @@ defer node.DisableAdmin()
 #### Topology scan
 
 ```go
-import "github.com/voluminor/ratatoskr/mod/traceroute"
+import "github.com/voluminor/ratatoskr/mod/probe"
 
-// Create traceroute module — requires raw yggdrasil-go/core, not core.Interface
-tr, err := traceroute.New(node.UnsafeCore(), logger)
+// Create probe module — requires raw yggdrasil-go/core, not core.Interface
+tr, err := probe.New(node.UnsafeCore(), logger)
 if err != nil {
 log.Fatal(err)
 }
@@ -1097,7 +1097,7 @@ node.Depth, node.Key[:8], node.Unreachable, node.RTT)
 #### Topology scan with progress
 
 ```go
-ch := make(chan traceroute.TreeProgressObj, 10)
+ch := make(chan probe.TreeProgressObj, 10)
 go func () {
 for p := range ch {
 if p.Done {
@@ -1122,7 +1122,7 @@ defer cancel()
 targetKey := ed25519.PublicKey{...} // 32-byte ed25519 public key
 result, err := tr.Trace(ctx, targetKey)
 if err != nil {
-if errors.Is(err, traceroute.ErrLookupTimedOut) {
+if errors.Is(err, probe.ErrLookupTimedOut) {
 // Partial result may be available
 if result != nil && result.TreePath != nil {
 log.Println("Tree path found, but hops timed out")
@@ -1153,7 +1153,7 @@ log.Printf("  port=%d key=%x", h.Port, h.Key[:8])
 ```go
 // Path from spanning tree — no network calls, instant
 path, err := tr.Path(targetKey)
-if errors.Is(err, traceroute.ErrKeyNotInTree) {
+if errors.Is(err, probe.ErrKeyNotInTree) {
 log.Println("Target not in current spanning tree view")
 }
 
@@ -1163,7 +1163,7 @@ time.Sleep(2 * time.Second)
 
 // Get port-level route
 hops, err := tr.Hops(targetKey)
-if errors.Is(err, traceroute.ErrNoActivePath) {
+if errors.Is(err, probe.ErrNoActivePath) {
 log.Println("No active path yet — retry later")
 }
 ```
@@ -1171,12 +1171,12 @@ log.Println("No active path yet — retry later")
 #### Tuning configuration
 
 ```go
-// Set before calling traceroute.New()
-traceroute.CacheTTL = 30 * time.Second // faster cache expiry
-traceroute.MaxPeersPerNode = 1000 // lower limit for safety
-traceroute.PollInterval = 100 * time.Millisecond // faster polling
-traceroute.LookupRetryEvery = 500 * time.Millisecond
-traceroute.HopsWaitTimeout = 5 * time.Second // wait longer for hops
+// Set before calling probe.New()
+probe.CacheTTL = 30 * time.Second // faster cache expiry
+probe.MaxPeersPerNode = 1000 // lower limit for safety
+probe.PollInterval = 100 * time.Millisecond // faster polling
+probe.LookupRetryEvery = 500 * time.Millisecond
+probe.HopsWaitTimeout = 5 * time.Second // wait longer for hops
 ```
 
 ### Graceful shutdown
@@ -1253,11 +1253,11 @@ All public methods of `Obj` and `core.Obj` are safe for concurrent use.
 | `RemovePeer`          | Invalid URI, core error                                                                   |
 | `PeerManagerOptimize` | `"peermgr: not running"` if manager is not started                                        |
 | `Close`               | Collects errors from all components via `errors.Join`; idempotent                         |
-| `traceroute.New`      | `ErrCoreRequired`, `ErrLoggerRequired`, `ErrInvalidCacheTTL`, `ErrRemotePeersNotCaptured` |
-| `traceroute.Tree`     | `ErrMaxDepthRequired`, context cancellation                                               |
-| `traceroute.Path`     | `ErrInvalidKeyLength`, `ErrKeyNotInTree`, `ErrTreeEmpty`, `ErrNoRoot`                     |
-| `traceroute.Hops`     | `ErrInvalidKeyLength`, `ErrNoActivePath`                                                  |
-| `traceroute.Trace`    | `ErrInvalidKeyLength`, `ErrLookupTimedOut` (may include partial result)                   |
+| `probe.New`           | `ErrCoreRequired`, `ErrLoggerRequired`, `ErrInvalidCacheTTL`, `ErrRemotePeersNotCaptured` |
+| `probe.Tree`          | `ErrMaxDepthRequired`, context cancellation                                               |
+| `probe.Path`          | `ErrInvalidKeyLength`, `ErrKeyNotInTree`, `ErrTreeEmpty`, `ErrNoRoot`                     |
+| `probe.Hops`          | `ErrInvalidKeyLength`, `ErrNoActivePath`                                                  |
+| `probe.Trace`         | `ErrInvalidKeyLength`, `ErrLookupTimedOut` (may include partial result)                   |
 
 ### ErrNotAvailable
 

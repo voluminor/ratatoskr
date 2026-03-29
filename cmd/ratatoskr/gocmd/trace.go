@@ -14,7 +14,7 @@ import (
 	"github.com/voluminor/ratatoskr"
 	"github.com/voluminor/ratatoskr/mod/core"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
-	"github.com/voluminor/ratatoskr/mod/traceroute"
+	"github.com/voluminor/ratatoskr/mod/probe"
 	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
@@ -29,7 +29,7 @@ const (
 
 // //
 
-func traceCmd(cfg *gsettings.GoTracerouteObj) error {
+func traceCmd(cfg *gsettings.GoProbeObj) error {
 	if err := validateTraceParams(cfg); err != nil {
 		return err
 	}
@@ -71,14 +71,14 @@ func traceCmd(cfg *gsettings.GoTracerouteObj) error {
 
 // //
 
-func validateTraceParams(cfg *gsettings.GoTracerouteObj) error {
+func validateTraceParams(cfg *gsettings.GoProbeObj) error {
 	modes := boolToInt(cfg.Scan) + boolToInt(cfg.Trace != "") + boolToInt(cfg.Ping != "")
 	if modes != 1 {
-		return fmt.Errorf("specify exactly one of -go.traceroute.scan, -go.traceroute.trace, or -go.traceroute.ping")
+		return fmt.Errorf("specify exactly one of -go.probe.scan, -go.probe.trace, or -go.probe.ping")
 	}
 
 	if cfg.Peer == "" {
-		return fmt.Errorf("missing -go.traceroute.peer (yggdrasil peer URI)")
+		return fmt.Errorf("missing -go.probe.peer (yggdrasil peer URI)")
 	}
 	if _, errs := peermgr.ValidatePeers([]string{cfg.Peer}); len(errs) > 0 {
 		return fmt.Errorf("invalid peer: %w", errs[0])
@@ -104,7 +104,7 @@ const defaultPingCount = 4
 
 // //
 
-func applyTraceDefaults(cfg *gsettings.GoTracerouteObj) {
+func applyTraceDefaults(cfg *gsettings.GoProbeObj) {
 	if cfg.Timeout == 0 {
 		cfg.Timeout = defaultTraceTimeout
 	}
@@ -121,7 +121,7 @@ func applyTraceDefaults(cfg *gsettings.GoTracerouteObj) {
 
 // //
 
-func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.Obj, error) {
+func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *probe.Obj, error) {
 	nodeCfg := yggconfig.GenerateConfig()
 	nodeCfg.AdminListen = "none"
 
@@ -142,10 +142,10 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 	}
 
 	coreNode := node.Interface.(*core.Obj)
-	tr, err := traceroute.New(coreNode.UnsafeCore(), logger)
+	tr, err := probe.New(coreNode.UnsafeCore(), logger)
 	if err != nil {
 		node.Close()
-		return nil, nil, fmt.Errorf("init traceroute: %w", err)
+		return nil, nil, fmt.Errorf("init probe: %w", err)
 	}
 
 	return node, tr, nil
@@ -153,7 +153,7 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *traceroute.
 
 // //
 
-func waitForPeers(ctx context.Context, tr *traceroute.Obj) error {
+func waitForPeers(ctx context.Context, tr *probe.Obj) error {
 	frame := 0
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -205,7 +205,7 @@ func waitForPeers(ctx context.Context, tr *traceroute.Obj) error {
 
 // waitForRouting probes the direct peer with Tree(depth=2) until
 // debug_remoteGetPeers responds. Sends Lookups to stimulate DHT convergence.
-func waitForRouting(ctx context.Context, tr *traceroute.Obj) error {
+func waitForRouting(ctx context.Context, tr *probe.Obj) error {
 	var peerKey ed25519.PublicKey
 	for _, p := range tr.Peers() {
 		if p.Up && len(p.Key) == ed25519.PublicKeySize {
@@ -260,7 +260,7 @@ func waitForRouting(ctx context.Context, tr *traceroute.Obj) error {
 	}
 }
 
-func hasUnreachable(root *traceroute.NodeObj) bool {
+func hasUnreachable(root *probe.NodeObj) bool {
 	if root == nil {
 		return false
 	}
@@ -274,10 +274,10 @@ func hasUnreachable(root *traceroute.NodeObj) bool {
 
 // //
 
-func runScan(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerouteObj) error {
-	ch := make(chan traceroute.TreeProgressObj, 16)
+func runScan(ctx context.Context, tr *probe.Obj, cfg *gsettings.GoProbeObj) error {
+	ch := make(chan probe.TreeProgressObj, 16)
 
-	var result *traceroute.TreeResultObj
+	var result *probe.TreeResultObj
 	var scanErr error
 
 	done := make(chan struct{})
@@ -347,11 +347,11 @@ scan:
 
 // //
 
-func runTrace(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerouteObj) error {
+func runTrace(ctx context.Context, tr *probe.Obj, cfg *gsettings.GoProbeObj) error {
 	keyBytes, _ := hex.DecodeString(cfg.Trace)
 	pubKey := ed25519.PublicKey(keyBytes)
 
-	var result *traceroute.TraceResultObj
+	var result *probe.TraceResultObj
 	var traceErr error
 
 	done := make(chan struct{})
@@ -399,7 +399,7 @@ trace:
 
 // //
 
-func runPing(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerouteObj) error {
+func runPing(ctx context.Context, tr *probe.Obj, cfg *gsettings.GoProbeObj) error {
 	keyBytes, _ := hex.DecodeString(cfg.Ping)
 	pubKey := ed25519.PublicKey(keyBytes)
 
@@ -494,7 +494,7 @@ func runPing(ctx context.Context, tr *traceroute.Obj, cfg *gsettings.GoTracerout
 
 // //
 
-func printTree(n *traceroute.NodeObj, prefix string, isRoot bool) {
+func printTree(n *probe.NodeObj, prefix string, isRoot bool) {
 	if n == nil {
 		return
 	}
@@ -547,7 +547,7 @@ type traceHopJSON struct {
 
 // //
 
-func nodeToScanJSON(n *traceroute.NodeObj) *scanNodeJSON {
+func nodeToScanJSON(n *probe.NodeObj) *scanNodeJSON {
 	if n == nil {
 		return nil
 	}
@@ -569,7 +569,7 @@ func nodeToScanJSON(n *traceroute.NodeObj) *scanNodeJSON {
 
 // //
 
-func outputScan(result *traceroute.TreeResultObj, format gsettings.GoPeerInfoFormatEnum) error {
+func outputScan(result *probe.TreeResultObj, format gsettings.GoPeerInfoFormatEnum) error {
 	if format == gsettings.GoPeerInfoFormatJson {
 		data, err := json.MarshalIndent(nodeToScanJSON(result.Root), "", "  ")
 		if err != nil {
@@ -584,7 +584,7 @@ func outputScan(result *traceroute.TreeResultObj, format gsettings.GoPeerInfoFor
 	return nil
 }
 
-func outputTrace(target string, result *traceroute.TraceResultObj, format gsettings.GoPeerInfoFormatEnum) error {
+func outputTrace(target string, result *probe.TraceResultObj, format gsettings.GoPeerInfoFormatEnum) error {
 	if format == gsettings.GoPeerInfoFormatJson {
 		out := struct {
 			Target string          `json:"target"`

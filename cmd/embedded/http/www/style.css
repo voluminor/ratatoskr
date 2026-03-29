@@ -294,7 +294,7 @@ canvas {
     margin-left: 6px;
 }
 
-/* traceroute */
+/* probe */
 .trace-input-row {
     display: flex;
     gap: 8px;
