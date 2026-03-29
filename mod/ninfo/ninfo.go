@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/target"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
@@ -17,14 +18,14 @@ type Obj struct {
 	core   *yggcore.Core
 
 	localNodeInfo map[string]any
-	sigils        map[string]SigilInterface
+	sigils        map[string]sigils.Interface
 }
 
 // New creates an ninfo module.
 // NodeInfo is the base map (may be nil); sigils are applied on top.
 // Returned errors are non-fatal: each failed sigil is skipped,
 // the rest are applied normally.
-func New(core *yggcore.Core, logger yggcore.Logger, NodeInfo map[string]any, sigils ...SigilInterface) (*Obj, []error) {
+func New(core *yggcore.Core, logger yggcore.Logger, NodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 	if core == nil {
 		return nil, []error{errors.New("core is required")}
 	}
@@ -35,7 +36,7 @@ func New(core *yggcore.Core, logger yggcore.Logger, NodeInfo map[string]any, sig
 	obj := new(Obj)
 	obj.logger = logger
 	obj.core = core
-	obj.sigils = make(map[string]SigilInterface)
+	obj.sigils = make(map[string]sigils.Interface)
 
 	if NodeInfo == nil {
 		NodeInfo = make(map[string]any)
@@ -43,8 +44,8 @@ func New(core *yggcore.Core, logger yggcore.Logger, NodeInfo map[string]any, sig
 	obj.localNodeInfo = NodeInfo
 
 	errs := make([]error, 0)
-	if len(sigils) > 0 {
-		errs = append(errs, obj.Add(sigils...)...)
+	if len(sg) > 0 {
+		errs = append(errs, obj.Add(sg...)...)
 	}
 
 	return obj, errs
@@ -69,30 +70,30 @@ func (obj *Obj) String() string {
 // applied via SetParams. On success the sigil is registered;
 // on failure it is skipped and the error is collected.
 // After all sigils are processed, the ratatoskr metadata key is updated.
-func (obj *Obj) Add(sigils ...SigilInterface) []error {
+func (obj *Obj) Add(sg ...sigils.Interface) []error {
 	errs := make([]error, 0)
 	defer func() {
 		obj.localNodeInfo[target.GlobalName] = compileRatatoskrInfo(obj.sigils)
 	}()
 
-	for _, sg := range sigils {
-		if !ValidateSigilName(sg.GetName()) {
-			errs = append(errs, fmt.Errorf("sigil[%s] is invalid", sg.GetName()))
+	for _, s := range sg {
+		if !sigils.ValidateName(s.GetName()) {
+			errs = append(errs, fmt.Errorf("sigil[%s] is invalid", s.GetName()))
 			continue
 		}
 
-		if _, ok := obj.sigils[sg.GetName()]; ok {
-			errs = append(errs, fmt.Errorf("duplicated sigil[%s]", sg.GetName()))
+		if _, ok := obj.sigils[s.GetName()]; ok {
+			errs = append(errs, fmt.Errorf("duplicated sigil[%s]", s.GetName()))
 			continue
 		}
 
-		bufMap, err := sg.SetParams(obj.localNodeInfo)
+		bufMap, err := s.SetParams(obj.localNodeInfo)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("sigil[%s] not add: %v", sg.GetName(), err))
+			errs = append(errs, fmt.Errorf("sigil[%s] not add: %v", s.GetName(), err))
 			continue
 		}
 
-		obj.sigils[sg.GetName()] = sg
+		obj.sigils[s.GetName()] = s
 		obj.localNodeInfo = bufMap
 	}
 
@@ -100,7 +101,7 @@ func (obj *Obj) Add(sigils ...SigilInterface) []error {
 }
 
 // Get returns a registered sigil by name, or nil if not found.
-func (obj *Obj) Get(name string) SigilInterface {
+func (obj *Obj) Get(name string) sigils.Interface {
 	sg, ok := obj.sigils[name]
 	if !ok {
 		return nil

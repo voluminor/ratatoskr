@@ -5,14 +5,15 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/target"
 )
 
 // // // // // // // // // //
 
-func compileRatatoskrInfo(sigils map[string]SigilInterface) string {
-	names := make([]string, 0, len(sigils))
-	for name := range sigils {
+func compileRatatoskrInfo(sg map[string]sigils.Interface) string {
+	names := make([]string, 0, len(sg))
+	for name := range sg {
 		names = append(names, name)
 	}
 	slices.Sort(names)
