@@ -17,6 +17,6 @@ type SigilInterface interface {
 
 var reSigilName = regexp.MustCompile(`^[a-z0-9._-]{3,32}$`)
 
-func ValidateSigilIName(name string) bool {
+func ValidateSigilName(name string) bool {
 	return reSigilName.MatchString(name)
 }

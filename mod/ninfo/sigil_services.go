@@ -100,16 +100,8 @@ func (sg *SigilServicesObj) Match(NodeInfo map[string]any) bool {
 		if !reSigilServiceName.MatchString(name) {
 			return false
 		}
-		switch port := v.(type) {
-		case float64:
-			if port <= 0 || port > 65535 {
-				return false
-			}
-		case int:
-			if port <= 0 || port > 65535 {
-				return false
-			}
-		default:
+		port, ok := v.(float64)
+		if !ok || port <= 0 || port > 65535 || port != float64(int(port)) {
 			return false
 		}
 	}

@@ -58,7 +58,7 @@ func NewSigilInfo(conf ConfigSigilInfo) (*SigilInfoObj, error) {
 	if !reSigilInfoType.MatchString(conf.Type) {
 		return nil, errors.New("invalid type")
 	}
-	if !reSigilInfoText.MatchString(conf.Peerings) {
+	if conf.Peerings != "" && !reSigilInfoText.MatchString(conf.Peerings) {
 		return nil, errors.New("invalid peering")
 	}
 
@@ -120,27 +120,33 @@ func (sg *SigilInfoObj) SetParams(NodeInfo map[string]any) (map[string]any, erro
 		bufMap[k] = v
 	}
 
-	for _, key := range sg.GetParams() {
-		if _, ok := bufMap[key]; ok {
-			return nil, fmt.Errorf("conflict key: %s", key)
+	pairs := []struct {
+		key string
+		val any
+	}{
+		{"name", sg.conf.Name},
+		{"type", sg.conf.Type},
+		{"location", sg.conf.Location},
+		{"contact", sg.conf.Contacts},
+		{"peering", sg.conf.Peerings},
+	}
+
+	for _, p := range pairs {
+		switch v := p.val.(type) {
+		case string:
+			if v == "" {
+				continue
+			}
+		case map[string][]string:
+			if len(v) == 0 {
+				continue
+			}
 		}
 
-		var data any
-		switch key {
-		case "name":
-			data = sg.conf.Name
-		case "type":
-			data = sg.conf.Type
-		case "location":
-			data = sg.conf.Location
-		case "contact":
-			data = sg.conf.Contacts
-		case "peering":
-			data = sg.conf.Peerings
-		default:
-			return nil, fmt.Errorf("unknown param: %s", key)
+		if _, ok := bufMap[p.key]; ok {
+			return nil, fmt.Errorf("conflict key: %s", p.key)
 		}
-		bufMap[key] = data
+		bufMap[p.key] = p.val
 	}
 
 	return bufMap, nil

@@ -64,7 +64,7 @@ func (obj *Obj) Add(sigils ...SigilInterface) []error {
 	}()
 
 	for _, sg := range sigils {
-		if !ValidateSigilIName(sg.GetName()) {
+		if !ValidateSigilName(sg.GetName()) {
 			errors = append(errors, fmt.Errorf("sigil[%s] is invalid", sg.GetName()))
 			continue
 		}
@@ -74,16 +74,13 @@ func (obj *Obj) Add(sigils ...SigilInterface) []error {
 			continue
 		}
 
-		obj.sigils[sg.GetName()] = sg
-	}
-
-	for name, sg := range obj.sigils {
 		bufMap, err := sg.SetParams(obj.localNodeInfo)
 		if err != nil {
-			errors = append(errors, fmt.Errorf("sigil[%s] not add: %v", name, err))
+			errors = append(errors, fmt.Errorf("sigil[%s] not add: %v", sg.GetName(), err))
 			continue
 		}
 
+		obj.sigils[sg.GetName()] = sg
 		obj.localNodeInfo = bufMap
 	}
 
