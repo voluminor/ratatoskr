@@ -12,30 +12,29 @@ const nameSigilInet = "inet"
 
 var keysSigilInet = []string{nameSigilInet}
 
-var reSigilInetAddr = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{4,256}$`)
-
 const maxInetAddrs = 32
+
+var reSigilInetAddr = regexp.MustCompile(`^[a-zA-Z0-9._:/-]{4,256}$`)
 
 // //
 
-type ConfigSigilInetObj struct {
-	Addrs []string
-}
-
 type SigilInetObj struct {
-	conf *ConfigSigilInetObj
+	addrs []string
 }
 
-func NewSigilInet(conf ConfigSigilInetObj) (*SigilInetObj, error) {
-	if len(conf.Addrs) == 0 {
+// NewSigilInet creates the "inet" sigil — real internet addresses of this node.
+// addrs is a list of domains or IPs (e.g. "example.com", "203.0.113.55").
+// Max 32, no duplicates.
+func NewSigilInet(addrs []string) (*SigilInetObj, error) {
+	if len(addrs) == 0 {
 		return nil, errors.New("empty addrs")
 	}
-	if len(conf.Addrs) > maxInetAddrs {
-		return nil, fmt.Errorf("too many addrs: %d (max %d)", len(conf.Addrs), maxInetAddrs)
+	if len(addrs) > maxInetAddrs {
+		return nil, fmt.Errorf("too many addrs: %d (max %d)", len(addrs), maxInetAddrs)
 	}
 
-	seen := make(map[string]bool, len(conf.Addrs))
-	for i, addr := range conf.Addrs {
+	seen := make(map[string]bool, len(addrs))
+	for i, addr := range addrs {
 		if !reSigilInetAddr.MatchString(addr) {
 			return nil, fmt.Errorf("invalid addr [%d]: %s", i, addr)
 		}
@@ -46,7 +45,7 @@ func NewSigilInet(conf ConfigSigilInetObj) (*SigilInetObj, error) {
 	}
 
 	sg := new(SigilInetObj)
-	sg.conf = &conf
+	sg.addrs = addrs
 	return sg, nil
 }
 
@@ -60,15 +59,7 @@ func (sg *SigilInetObj) GetParams() []string {
 	return keysSigilInet
 }
 
-//
-
-func (sg *SigilInetObj) ParseParams(NodeInfo map[string]any) map[string]any {
-	bufMap := make(map[string]any)
-	if data, ok := NodeInfo[nameSigilInet]; ok {
-		bufMap[nameSigilInet] = data
-	}
-	return bufMap
-}
+// //
 
 func (sg *SigilInetObj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 	bufMap := make(map[string]any, len(NodeInfo)+1)
@@ -80,8 +71,16 @@ func (sg *SigilInetObj) SetParams(NodeInfo map[string]any) (map[string]any, erro
 		return nil, fmt.Errorf("conflict key: %s", nameSigilInet)
 	}
 
-	bufMap[nameSigilInet] = sg.conf.Addrs
+	bufMap[nameSigilInet] = sg.addrs
 	return bufMap, nil
+}
+
+func (sg *SigilInetObj) ParseParams(NodeInfo map[string]any) map[string]any {
+	bufMap := make(map[string]any)
+	if data, ok := NodeInfo[nameSigilInet]; ok {
+		bufMap[nameSigilInet] = data
+	}
+	return bufMap
 }
 
 func (sg *SigilInetObj) Match(NodeInfo map[string]any) bool {
@@ -99,7 +98,7 @@ func (sg *SigilInetObj) Match(NodeInfo map[string]any) bool {
 	}
 
 	for _, item := range arr {
-		if _, ok = item.(string); !ok {
+		if _, ok := item.(string); !ok {
 			return false
 		}
 	}

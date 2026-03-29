@@ -22,5 +22,3 @@ func compileRatatoskrInfo(sigils map[string]SigilInterface) string {
 		target.GlobalVersion,
 	)
 }
-
-// // // //

@@ -12,29 +12,28 @@ const nameSigilServices = "services"
 
 var keysSigilServices = []string{nameSigilServices}
 
-var reSigilServiceName = regexp.MustCompile(`^[a-z0-9_-]{2,32}$`)
-
 const maxServices = 32
+
+var reSigilServiceName = regexp.MustCompile(`^[a-z0-9_-]{2,32}$`)
 
 // //
 
-type ConfigSigilServicesObj struct {
-	Services map[string]uint16
-}
-
 type SigilServicesObj struct {
-	conf *ConfigSigilServicesObj
+	services map[string]uint16
 }
 
-func NewSigilServices(conf ConfigSigilServicesObj) (*SigilServicesObj, error) {
-	if len(conf.Services) == 0 {
+// NewSigilServices creates the "services" sigil — ports open on this node inside Yggdrasil.
+// services maps a service name (e.g. "http", "ssh") to its port number (1–65535).
+// Max 32 services.
+func NewSigilServices(services map[string]uint16) (*SigilServicesObj, error) {
+	if len(services) == 0 {
 		return nil, errors.New("empty services")
 	}
-	if len(conf.Services) > maxServices {
-		return nil, fmt.Errorf("too many services: %d (max %d)", len(conf.Services), maxServices)
+	if len(services) > maxServices {
+		return nil, fmt.Errorf("too many services: %d (max %d)", len(services), maxServices)
 	}
 
-	for name, port := range conf.Services {
+	for name, port := range services {
 		if !reSigilServiceName.MatchString(name) {
 			return nil, fmt.Errorf("invalid service name: %s", name)
 		}
@@ -44,7 +43,7 @@ func NewSigilServices(conf ConfigSigilServicesObj) (*SigilServicesObj, error) {
 	}
 
 	sg := new(SigilServicesObj)
-	sg.conf = &conf
+	sg.services = services
 	return sg, nil
 }
 
@@ -58,15 +57,7 @@ func (sg *SigilServicesObj) GetParams() []string {
 	return keysSigilServices
 }
 
-//
-
-func (sg *SigilServicesObj) ParseParams(NodeInfo map[string]any) map[string]any {
-	bufMap := make(map[string]any)
-	if data, ok := NodeInfo[nameSigilServices]; ok {
-		bufMap[nameSigilServices] = data
-	}
-	return bufMap
-}
+// //
 
 func (sg *SigilServicesObj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 	bufMap := make(map[string]any, len(NodeInfo)+1)
@@ -78,8 +69,16 @@ func (sg *SigilServicesObj) SetParams(NodeInfo map[string]any) (map[string]any, 
 		return nil, fmt.Errorf("conflict key: %s", nameSigilServices)
 	}
 
-	bufMap[nameSigilServices] = sg.conf.Services
+	bufMap[nameSigilServices] = sg.services
 	return bufMap, nil
+}
+
+func (sg *SigilServicesObj) ParseParams(NodeInfo map[string]any) map[string]any {
+	bufMap := make(map[string]any)
+	if data, ok := NodeInfo[nameSigilServices]; ok {
+		bufMap[nameSigilServices] = data
+	}
+	return bufMap
 }
 
 func (sg *SigilServicesObj) Match(NodeInfo map[string]any) bool {

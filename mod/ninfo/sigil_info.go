@@ -18,14 +18,6 @@ var keysSigilInfo = []string{
 	"peering",
 }
 
-type ConfigSigilInfo struct {
-	Name     string
-	Type     string
-	Location string
-	Contacts map[string][]string
-	Peerings string
-}
-
 const (
 	maxContactGroups    = 8
 	maxContactsPerGroup = 8
@@ -40,11 +32,33 @@ var (
 
 // //
 
-type SigilInfoObj struct {
-	conf *ConfigSigilInfo
+// ConfigSigilInfoObj holds the node's public identity card.
+type ConfigSigilInfoObj struct {
+	// Name is the FQDN or friendly name of the node (e.g. "home.y.example.net").
+	// Required. Lowercase, 4–64 chars.
+	Name string
+	// Type is the device/role label (e.g. "server", "laptop", "router").
+	// Required. Lowercase, 2–32 chars.
+	Type string
+	// Location is a free-text physical location (e.g. "Gravelines, France").
+	// Optional. 2–514 chars if set.
+	Location string
+	// Contacts groups contact addresses by category.
+	// Key is the group name (e.g. "email", "xmpp"), value is a list of addresses.
+	// Optional. Max 8 groups, max 8 entries per group.
+	Contacts map[string][]string
+	// Peerings is a free-text peering policy (e.g. "open", "ask me").
+	// Optional. 2–514 chars if set.
+	Peerings string
 }
 
-func NewSigilInfo(conf ConfigSigilInfo) (*SigilInfoObj, error) {
+type SigilInfoObj struct {
+	conf *ConfigSigilInfoObj
+}
+
+// NewSigilInfo creates the "info" sigil — node identity card.
+// Name and Type are required; Location, Contacts and Peerings are optional.
+func NewSigilInfo(conf ConfigSigilInfoObj) (*SigilInfoObj, error) {
 	if conf.Name == "" {
 		return nil, errors.New("missing name")
 	}
@@ -83,11 +97,8 @@ func NewSigilInfo(conf ConfigSigilInfo) (*SigilInfoObj, error) {
 		}
 	}
 
-	//
-
 	sg := new(SigilInfoObj)
 	sg.conf = &conf
-
 	return sg, nil
 }
 
@@ -101,21 +112,10 @@ func (sg *SigilInfoObj) GetParams() []string {
 	return keysSigilInfo
 }
 
-//
-
-func (sg *SigilInfoObj) ParseParams(NodeInfo map[string]any) map[string]any {
-	bufMap := make(map[string]any)
-	for _, key := range keysSigilInfo {
-		data, ok := NodeInfo[key]
-		if ok {
-			bufMap[key] = data
-		}
-	}
-	return bufMap
-}
+// //
 
 func (sg *SigilInfoObj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
-	bufMap := make(map[string]any, len(NodeInfo)+len(sg.GetParams()))
+	bufMap := make(map[string]any, len(NodeInfo)+len(keysSigilInfo))
 	for k, v := range NodeInfo {
 		bufMap[k] = v
 	}
@@ -150,6 +150,16 @@ func (sg *SigilInfoObj) SetParams(NodeInfo map[string]any) (map[string]any, erro
 	}
 
 	return bufMap, nil
+}
+
+func (sg *SigilInfoObj) ParseParams(NodeInfo map[string]any) map[string]any {
+	bufMap := make(map[string]any)
+	for _, key := range keysSigilInfo {
+		if data, ok := NodeInfo[key]; ok {
+			bufMap[key] = data
+		}
+	}
+	return bufMap
 }
 
 func (sg *SigilInfoObj) Match(NodeInfo map[string]any) bool {
