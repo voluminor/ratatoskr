@@ -3,6 +3,8 @@ package services
 import (
 	"errors"
 	"fmt"
+
+	"github.com/voluminor/ratatoskr/mod/sigils"
 )
 
 // // // // // // // // // //
@@ -82,6 +84,14 @@ func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 
 func (o *Obj) Match(NodeInfo map[string]any) bool {
 	return Match(NodeInfo)
+}
+
+func (o *Obj) Clone() sigils.Interface {
+	svc := make(map[string]uint16, len(o.services))
+	for k, v := range o.services {
+		svc[k] = v
+	}
+	return &Obj{services: svc}
 }
 
 func (o *Obj) Params() map[string]any {

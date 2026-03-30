@@ -23,6 +23,7 @@ detection, and assembly into the final NodeInfo.
     - [ParseParams](#parseparams)
     - [Match](#match)
     - [Params](#params)
+  - [Clone](#clone)
 - [Package-level functions](#package-level-functions)
 - [Built-in sigils](#built-in-sigils)
     - [info](#info)
@@ -108,6 +109,7 @@ SetParams(map[string]any) (map[string]any, error)
 ParseParams(map[string]any) map[string]any
 Match(map[string]any) bool
 Params() map[string]any
+Clone() Interface
 }
 ```
 
@@ -186,6 +188,24 @@ Params() map[string]any
 ```
 
 Returns the sigil's current data as a NodeInfo fragment. Empty when the object has no data.
+
+### Clone
+
+```go
+Clone() Interface
+```
+
+Returns a deep copy of the sigil with its current state. All internal data (maps, slices) is copied — the clone is fully
+independent of the original.
+
+Allows a single `Interface` value to act as both a contract and a data carrier for third-party sigils: the same object
+defines the schema (name, keys, match rules) and holds parsed data. Clone lets callers duplicate the object to carry
+independent data without losing the contract.
+
+**Implementation rules:**
+
+- Copy every mutable field. For maps of slices (`map[string][]string`), copy both the map and each slice.
+- The returned object must satisfy `Interface` — return `*Obj`, not a bare `Obj`.
 
 ---
 

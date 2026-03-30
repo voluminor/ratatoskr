@@ -96,7 +96,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		}
 
 		parsed, err := fn(nodeInfo)
-		if err != nil {
+		if err != nil || parsed == nil {
 			continue
 		}
 
@@ -124,10 +124,11 @@ func wrapUserSigil(s sigils.Interface) func(map[string]any) (sigils.Interface, e
 		if !s.Match(m) {
 			return nil, nil
 		}
-		_, err := s.SetParams(s.ParseParams(m))
+		c := s.Clone()
+		_, err := c.SetParams(c.ParseParams(m))
 		if err != nil {
 			return nil, err
 		}
-		return s, nil
+		return c, nil
 	}
 }

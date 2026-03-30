@@ -3,6 +3,8 @@ package inet
 import (
 	"errors"
 	"fmt"
+
+	"github.com/voluminor/ratatoskr/mod/sigils"
 )
 
 // // // // // // // // // //
@@ -84,6 +86,10 @@ func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 
 func (o *Obj) Match(NodeInfo map[string]any) bool {
 	return Match(NodeInfo)
+}
+
+func (o *Obj) Clone() sigils.Interface {
+	return &Obj{addrs: append([]string(nil), o.addrs...)}
 }
 
 func (o *Obj) Params() map[string]any {

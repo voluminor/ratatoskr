@@ -70,6 +70,10 @@ func parseHexKey(s string) (ed25519.PublicKey, error) {
 // LookupInterval controls how often resolveIPv6 polls for a resolved key.
 var LookupInterval = 100 * time.Millisecond
 
+// MaxLookupTime is the upper bound for resolveIPv6 polling,
+// applied even when the caller's context has no deadline.
+var MaxLookupTime = 30 * time.Second
+
 // //
 
 func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey, error) {
@@ -91,6 +95,9 @@ func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey
 
 	partial := yggIP.GetKey()
 	obj.core.PacketConn.PacketConn.SendLookup(partial)
+
+	ctx, cancel := context.WithTimeout(ctx, MaxLookupTime)
+	defer cancel()
 
 	ticker := time.NewTicker(LookupInterval)
 	defer ticker.Stop()

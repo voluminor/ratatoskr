@@ -105,5 +105,7 @@ func (s *SigilsObj) Del(name string) error {
 		delete(s.localNodeInfo, key)
 	}
 
+	s.localNodeInfo[target.GlobalName] = compileRatatoskrInfo(s.sigils)
+
 	return nil
 }

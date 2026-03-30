@@ -23,6 +23,11 @@ type Interface interface {
 
 	// Params returns the sigil's current data as a NodeInfo fragment.
 	Params() map[string]any
+
+	// Clone returns a deep copy of the sigil with its current state.
+	// Allows a single Interface value to act as both a contract
+	// and a data carrier for third-party sigils.
+	Clone() Interface
 }
 
 // //

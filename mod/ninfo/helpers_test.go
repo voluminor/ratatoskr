@@ -70,6 +70,14 @@ func (m *mockSigilObj) ParseParams(mp map[string]any) map[string]any {
 	return out
 }
 
+func (m *mockSigilObj) Clone() sigils.Interface {
+	data := make(map[string]any, len(m.data))
+	for k, v := range m.data {
+		data[k] = v
+	}
+	return &mockSigilObj{name: m.name, params: append([]string(nil), m.params...), data: data}
+}
+
 // //
 
 func newMockSigil(name string, keys ...string) *mockSigilObj {
