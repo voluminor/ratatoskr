@@ -11,8 +11,8 @@ import (
 
 // // // // // // // // // //
 
-// BuildInfoObj holds build metadata exposed when NodeInfoPrivacy is off.
-type BuildInfoObj struct {
+// SoftwareObj holds build metadata exposed when NodeInfoPrivacy is off.
+type SoftwareObj struct {
 	Name     string
 	Version  string
 	Platform string
@@ -23,9 +23,9 @@ type BuildInfoObj struct {
 
 // AskResultObj is the result of a single getNodeInfo request.
 type AskResultObj struct {
-	RTT    time.Duration
-	Parsed *ParsedObj
-	Build  *BuildInfoObj
+	RTT      time.Duration
+	Node     *ParsedObj
+	Software *SoftwareObj
 }
 
 // // // // // // // // // //
@@ -79,18 +79,18 @@ func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskRe
 	}
 
 	result := &AskResultObj{
-		RTT:    rtt,
-		Parsed: Parse(nodeInfo, obj.sigilSlice()...),
+		RTT:  rtt,
+		Node: Parse(nodeInfo, obj.sigilSlice()...),
 	}
 
-	result.Build = extractBuildInfo(result.Parsed.Extra)
+	result.Software = extractSoftware(result.Node.Extra)
 
 	return result, nil
 }
 
 // //
 
-func extractBuildInfo(extra map[string]any) *BuildInfoObj {
+func extractSoftware(extra map[string]any) *SoftwareObj {
 	name, _ := extra[keyBuildName].(string)
 	version, _ := extra[keyBuildVersion].(string)
 	platform, _ := extra[keyBuildPlatform].(string)
@@ -105,7 +105,7 @@ func extractBuildInfo(extra map[string]any) *BuildInfoObj {
 	delete(extra, keyBuildPlatform)
 	delete(extra, keyBuildArch)
 
-	return &BuildInfoObj{
+	return &SoftwareObj{
 		Name:     name,
 		Version:  version,
 		Platform: platform,

@@ -25,9 +25,9 @@ func TestAdminCapture(t *testing.T) {
 }
 
 // // // // // // // // // //
-// extractBuildInfo
+// extractSoftware
 
-func TestExtractBuildInfo_allFields(t *testing.T) {
+func TestExtractSoftware_allFields(t *testing.T) {
 	extra := map[string]any{
 		"buildname":     "yggdrasil",
 		"buildversion":  "0.5.13",
@@ -35,9 +35,9 @@ func TestExtractBuildInfo_allFields(t *testing.T) {
 		"buildarch":     "amd64",
 		"custom":        "value",
 	}
-	bi := extractBuildInfo(extra)
+	bi := extractSoftware(extra)
 	if bi == nil {
-		t.Fatal("expected non-nil BuildInfoObj")
+		t.Fatal("expected non-nil SoftwareObj")
 	}
 	if bi.Name != "yggdrasil" || bi.Version != "0.5.13" || bi.Platform != "linux" || bi.Arch != "amd64" {
 		t.Fatalf("unexpected build info: %+v", bi)
@@ -50,11 +50,11 @@ func TestExtractBuildInfo_allFields(t *testing.T) {
 	}
 }
 
-func TestExtractBuildInfo_partial(t *testing.T) {
+func TestExtractSoftware_partial(t *testing.T) {
 	extra := map[string]any{
 		"buildname": "yggdrasil",
 	}
-	bi := extractBuildInfo(extra)
+	bi := extractSoftware(extra)
 	if bi == nil {
 		t.Fatal("expected non-nil for partial build info")
 	}
@@ -66,19 +66,19 @@ func TestExtractBuildInfo_partial(t *testing.T) {
 	}
 }
 
-func TestExtractBuildInfo_nil_when_empty(t *testing.T) {
+func TestExtractSoftware_nil_when_empty(t *testing.T) {
 	extra := map[string]any{"custom": "value"}
-	bi := extractBuildInfo(extra)
+	bi := extractSoftware(extra)
 	if bi != nil {
 		t.Fatalf("expected nil, got %+v", bi)
 	}
 }
 
-func TestExtractBuildInfo_nonString_ignored(t *testing.T) {
+func TestExtractSoftware_nonString_ignored(t *testing.T) {
 	extra := map[string]any{
 		"buildname": 123,
 	}
-	bi := extractBuildInfo(extra)
+	bi := extractSoftware(extra)
 	if bi != nil {
 		t.Fatal("expected nil when build fields are not strings")
 	}
@@ -130,7 +130,7 @@ func TestCallNodeInfo_validResponse(t *testing.T) {
 
 // // // // // // // // // //
 
-func BenchmarkExtractBuildInfo(b *testing.B) {
+func BenchmarkExtractSoftware(b *testing.B) {
 	for b.Loop() {
 		extra := map[string]any{
 			"buildname":     "yggdrasil",
@@ -139,6 +139,6 @@ func BenchmarkExtractBuildInfo(b *testing.B) {
 			"buildarch":     "amd64",
 			"custom":        "value",
 		}
-		extractBuildInfo(extra)
+		extractSoftware(extra)
 	}
 }
