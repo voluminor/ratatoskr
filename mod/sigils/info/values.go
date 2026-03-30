@@ -11,7 +11,7 @@ var sigKeys = []string{
 	"type",
 	"location",
 	"contact",
-	"peering",
+	"description",
 }
 
 const (

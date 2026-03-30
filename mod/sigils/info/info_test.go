@@ -46,7 +46,7 @@ func TestNew_full(t *testing.T) {
 			"email": {"admin@example.com"},
 			"xmpp":  {"admin@jabber.example.com"},
 		},
-		Peerings: "open peering policy",
+		Description: "open peering policy",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -159,9 +159,9 @@ func TestNew_typeUppercase(t *testing.T) {
 
 func TestNew_invalidPeering_singleChar(t *testing.T) {
 	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Peerings: "a", // reText requires at least 2 non-space chars
+		Name:        "test.node",
+		Type:        "server",
+		Description: "a", // reText requires at least 2 non-space chars
 	})
 	if err == nil {
 		t.Fatal("expected error for single-char peering")
@@ -170,9 +170,9 @@ func TestNew_invalidPeering_singleChar(t *testing.T) {
 
 func TestNew_invalidPeering_leadingSpace(t *testing.T) {
 	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Peerings: " leading space",
+		Name:        "test.node",
+		Type:        "server",
+		Description: " leading space",
 	})
 	if err == nil {
 		t.Fatal("expected error for leading space in peering")
@@ -181,9 +181,9 @@ func TestNew_invalidPeering_leadingSpace(t *testing.T) {
 
 func TestNew_invalidPeering_trailingSpace(t *testing.T) {
 	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Peerings: "trailing space ",
+		Name:        "test.node",
+		Type:        "server",
+		Description: "trailing space ",
 	})
 	if err == nil {
 		t.Fatal("expected error for trailing space in peering")
@@ -192,9 +192,9 @@ func TestNew_invalidPeering_trailingSpace(t *testing.T) {
 
 func TestNew_validPeering_minimal(t *testing.T) {
 	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Peerings: "ok",
+		Name:        "test.node",
+		Type:        "server",
+		Description: "ok",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -204,9 +204,9 @@ func TestNew_validPeering_minimal(t *testing.T) {
 func TestNew_peeringTooLong(t *testing.T) {
 	// reText: ^\S[\S ]{0,512}\S$ — so total max is 514 chars
 	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Peerings: "x" + strings.Repeat(" ", 513) + "x", // 515 chars
+		Name:        "test.node",
+		Type:        "server",
+		Description: "x" + strings.Repeat(" ", 513) + "x", // 515 chars
 	})
 	if err == nil {
 		t.Fatal("expected error for too long peering")
@@ -328,11 +328,11 @@ func TestMatch_valid_nameAndType(t *testing.T) {
 
 func TestMatch_valid_full(t *testing.T) {
 	ni := map[string]any{
-		"name":     "test",
-		"type":     "server",
-		"location": "Moscow",
-		"contact":  map[string]any{"email": []any{"foo@bar.com"}},
-		"peering":  "open",
+		"name":        "test",
+		"type":        "server",
+		"location":    "Moscow",
+		"contact":     map[string]any{"email": []any{"foo@bar.com"}},
+		"description": "open",
 	}
 	if !Match(ni) {
 		t.Fatal("expected match with full data")
@@ -409,7 +409,7 @@ func TestMatch_empty(t *testing.T) {
 }
 
 func TestMatch_peeringNotString(t *testing.T) {
-	ni := map[string]any{"name": "test", "type": "server", "peering": 42}
+	ni := map[string]any{"name": "test", "type": "server", "description": 42}
 	if Match(ni) {
 		t.Fatal("expected no match for non-string peering")
 	}
@@ -420,10 +420,10 @@ func TestMatch_peeringNotString(t *testing.T) {
 
 func TestParse_valid(t *testing.T) {
 	ni := map[string]any{
-		"name":     "test.node",
-		"type":     "server",
-		"location": "EU",
-		"peering":  "open",
+		"name":        "test.node",
+		"type":        "server",
+		"location":    "EU",
+		"description": "open",
 		"contact": map[string]any{
 			"email": []any{"a@b.com"},
 		},
@@ -521,7 +521,7 @@ func TestSetParams_skipsEmpty(t *testing.T) {
 	if _, ok := result["location"]; ok {
 		t.Fatal("empty location should not be set")
 	}
-	if _, ok := result["peering"]; ok {
+	if _, ok := result["description"]; ok {
 		t.Fatal("empty peering should not be set")
 	}
 	if _, ok := result["contact"]; ok {
@@ -574,11 +574,11 @@ func TestParams_emptyFields(t *testing.T) {
 
 func TestParams_allFields(t *testing.T) {
 	obj, _ := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Location: "EU",
-		Peerings: "open policy",
-		Contacts: map[string][]string{"email": {"a@b.com"}},
+		Name:        "test.node",
+		Type:        "server",
+		Location:    "EU",
+		Description: "open policy",
+		Contacts:    map[string][]string{"email": {"a@b.com"}},
 	})
 	p := obj.Params()
 	if p["name"] != "test.node" {
@@ -590,7 +590,7 @@ func TestParams_allFields(t *testing.T) {
 	if p["location"] != "EU" {
 		t.Fatal("missing location")
 	}
-	if p["peering"] != "open policy" {
+	if p["description"] != "open policy" {
 		t.Fatal("missing peering")
 	}
 	if p["contact"] == nil {
@@ -602,11 +602,11 @@ func TestParams_allFields(t *testing.T) {
 
 func BenchmarkNew(b *testing.B) {
 	conf := ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Location: "Moscow",
-		Contacts: map[string][]string{"email": {"admin@example.com"}},
-		Peerings: "open peering",
+		Name:        "test.node",
+		Type:        "server",
+		Location:    "Moscow",
+		Contacts:    map[string][]string{"email": {"admin@example.com"}},
+		Description: "open peering",
 	}
 	for b.Loop() {
 		New(conf)
@@ -615,11 +615,11 @@ func BenchmarkNew(b *testing.B) {
 
 func BenchmarkMatch(b *testing.B) {
 	ni := map[string]any{
-		"name":     "test",
-		"type":     "server",
-		"location": "EU",
-		"contact":  map[string]any{"email": []any{"a@b.com"}},
-		"peering":  "open",
+		"name":        "test",
+		"type":        "server",
+		"location":    "EU",
+		"contact":     map[string]any{"email": []any{"a@b.com"}},
+		"description": "open",
 	}
 	for b.Loop() {
 		Match(ni)

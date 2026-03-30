@@ -1,65 +1,194 @@
 # mod/sigils
 
-Пакет `sigils` реализует систему типизированных блоков данных для Yggdrasil NodeInfo.
+Typed data blocks for Yggdrasil NodeInfo.
 
-NodeInfo — это JSON-объект размером до 16 КБ, который каждый узел Yggdrasil может прикрепить к себе.
-Другие узлы могут запросить этот объект через протокол Yggdrasil.
-Сигилы позволяют структурированно работать с этими данными: строить свой NodeInfo из Go-структур,
-распознавать и парсить чужой NodeInfo, полученный из JSON.
+NodeInfo is a JSON object (max 16 KB) attached to each Yggdrasil node. Other nodes can request it via the Yggdrasil
+protocol. Sigils provide structured access to this data: building local NodeInfo from Go types, and parsing foreign
+NodeInfo received as JSON.
 
-## Интерфейс
+Each sigil owns one or more top-level keys in the NodeInfo map. The `ninfo` module manages sigil registration, conflict
+detection, and assembly into the final NodeInfo.
 
-Определён в `interface.go`. Каждый сигил реализует `sigils.Interface`:
+## Table of contents
 
-| Метод                   | Описание                                                                                                                                                                                                                          |
-|-------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `GetName()`             | Уникальный идентификатор сигила (например `"info"`, `"services"`). Имя валидируется через `ValidateName`: `[a-z0-9._-]{3,32}`.                                                                                                    |
-| `GetParams()`           | Список top-level ключей в NodeInfo, которыми владеет этот сигил. Используется для обнаружения конфликтов при добавлении и для удаления.                                                                                           |
-| `SetParams(NodeInfo)`   | Записывает данные сигила в **копию** переданного NodeInfo. Никогда не мутирует входную карту. При конфликте ключей возвращает ошибку, оригинал остаётся нетронутым. Пустые опциональные поля пропускаются.                        |
-| `ParseParams(NodeInfo)` | Извлекает ключи этого сигила из чужого NodeInfo и **сохраняет результат внутри объекта** для последующего получения через `Params()`. Возвращает карту только с извлечёнными ключами.                                             |
-| `Match(NodeInfo)`       | Проверяет, содержит ли чужой NodeInfo данный сигил с корректной структурой и типами. Не валидирует содержимое — только форму. Учитывает JSON-типы: массивы приходят как `[]any`, карты как `map[string]any`, числа как `float64`. |
-| `Params()`              | Возвращает текущие данные объекта как фрагмент NodeInfo (`map[string]any`).                                                                                                                                                       |
-
-## Структура каждого пакета-сигила
-
-Все сигилы имеют одинаковую файловую структуру:
-
-```
-sigils/<name>/
-├── values.go  — константы, переменные, regexp-ы
-├── func.go    — публичные функции: Name(), Keys(), ParseParams(), Match(), Parse(), validate*()
-└── obj.go     — Obj, (ConfigObj), New(), методы интерфейса
-```
-
-Каждый пакет предоставляет:
-
-- **Публичные функции** (`Name`, `Keys`, `ParseParams`, `Match`) — работают без объекта, подходят для быстрой проверки
-  чужого NodeInfo.
-- **`Parse(NodeInfo)`** — создаёт `Obj` из чужого NodeInfo (конвертирует JSON-типы в Go-типы). Ошибка, если сигил
-  отсутствует или имеет неверную структуру.
-- **`New(...)`** — создаёт `Obj` из Go-данных с полной валидацией.
-- **Методы `Obj`** — реализуют `sigils.Interface`. `GetName`, `GetParams`, `Match` делегируют в публичные функции.
-  `ParseParams` дополнительно сохраняет данные в объект.
+- [Creating a new sigil](#creating-a-new-sigil)
+    - [File structure](#file-structure)
+    - [Rules](#rules)
+    - [Testing requirements](#testing-requirements)
+    - [Registration](#registration)
+- [Interface methods](#interface-methods)
+    - [GetName](#getname)
+    - [GetParams](#getparams)
+    - [SetParams](#setparams)
+    - [ParseParams](#parseparams)
+    - [Match](#match)
+    - [Params](#params)
+- [Package-level functions](#package-level-functions)
+- [Built-in sigils](#built-in-sigils)
+    - [info](#info)
+    - [public](#public)
+    - [inet](#inet)
+    - [services](#services)
 
 ---
 
-## Сигилы
+## Creating a new sigil
+
+### File structure
+
+Every sigil lives in its own subpackage under `mod/sigils/<name>/` with three files:
+
+```
+mod/sigils/<name>/
+├── values.go  — constants, variables, regexps
+├── func.go    — package-level functions: Name(), Keys(), ParseParams(), Match(), Parse()
+└── obj.go     — Obj struct, New() constructor, sigils.Interface methods
+```
+
+### Rules
+
+**The 16 KB constraint is everything.** NodeInfo is shared across all sigils and the ratatoskr metadata key. Every byte
+counts.
+
+1. **Strict limits on everything.** Define maximum counts for every collection (arrays, maps) and maximum lengths for
+   every string. No unbounded data. The less data a sigil stores, the better — leave room for other sigils.
+
+2. **Validate all input with regexps.** Every string field must have a compiled regexp in `values.go`. Reject invalid
+   input at construction time in `New()`, not later.
+
+3. **Never mutate input maps.** `SetParams` and `ParseParams` must copy, never write to the caller's map.
+
+4. **Handle JSON types in Match/Parse.** Foreign NodeInfo arrives from `encoding/json`: arrays are `[]any`, maps are
+   `map[string]any`, numbers are `float64`. Your `Match` checks structure and types only, not content validity.
+
+5. **Name must pass `ValidateName`.** Pattern: `[a-z0-9._-]{3,32}`.
+
+6. **Keys must not conflict.** Each sigil's top-level NodeInfo keys must be unique across all sigils. `SetParams`returns
+   an error on collision.
+
+7. **Provide both object methods and package-level functions.** Package-level `Match()`, `ParseParams()`, `Parse()` work
+   without an object instance, useful for quick checks. Object methods delegate to them and additionally store parsed
+   data.
+
+### Testing requirements
+
+Every sigil must have an `<name>_test.go` with:
+
+- **Constructor tests** — valid input, every boundary (min/max lengths, min/max counts), every invalid case (too short,
+  too long, wrong characters, duplicates, empty, nil, exceeding limits).
+- **Match tests** — valid match, missing key, wrong type at every nesting level, empty collections, nil values, wrong
+  JSON types (int vs float64).
+- **Parse tests** — valid round-trip, error on non-matching input.
+- **SetParams tests** — no conflict, conflict error, input not mutated.
+- **ParseParams tests** — key present, key absent, data stored in object.
+- **Params tests** — empty object, populated object.
+- **Benchmarks** — at least for `New`, `Match`, `Parse`.
+
+### Registration
+
+After creating the sigil package, add it to `target/sigils.go` via the code generator (`_generate/sigils`). This
+registers the sigil in the global maps used by `ninfo.Parse` to automatically recognize it in foreign NodeInfo.
+
+---
+
+## Interface methods
+
+Defined in `interface.go`:
+
+```go
+type Interface interface {
+GetName() string
+GetParams() []string
+SetParams(map[string]any) (map[string]any, error)
+ParseParams(map[string]any) map[string]any
+Match(map[string]any) bool
+Params() map[string]any
+}
+```
+
+### GetName
+
+Returns the unique sigil identifier (e.g. `"info"`, `"services"`). Must pass `ValidateName`: `^[a-z0-9._-]{3,32}$`.
+
+### GetParams
+
+Returns the list of top-level NodeInfo keys this sigil owns. Used by `ninfo` for conflict detection when adding sigils
+and for cleanup when removing them.
+
+### SetParams
+
+```go
+SetParams(NodeInfo map[string]any) (map[string]any, error)
+```
+
+Writes sigil data into a **copy** of the input map. Returns the new map with sigil keys added. On key conflict, returns
+an error — the original map is never touched. Empty optional fields are skipped.
+
+### ParseParams
+
+```go
+ParseParams(NodeInfo map[string]any) map[string]any
+```
+
+Extracts this sigil's keys from foreign NodeInfo and **stores the result inside the object** for later retrieval via
+`Params()`. Returns a map containing only the extracted keys.
+
+### Match
+
+```go
+Match(NodeInfo map[string]any) bool
+```
+
+Checks whether foreign NodeInfo contains this sigil with correct structure and JSON types. Does not validate content —
+only shape. Must account for JSON unmarshaling types:
+
+| Go source type  | JSON type in `map[string]any`      |
+|-----------------|------------------------------------|
+| `[]string`      | `[]any` (each element is `string`) |
+| `map[string]T`  | `map[string]any`                   |
+| `int`, `uint16` | `float64`                          |
+
+### Params
+
+```go
+Params() map[string]any
+```
+
+Returns the sigil's current data as a NodeInfo fragment. Empty when the object has no data.
+
+---
+
+## Package-level functions
+
+Every sigil package also exports standalone functions that work without an object:
+
+| Function                                     | Description                                                       |
+|----------------------------------------------|-------------------------------------------------------------------|
+| `Name() string`                              | Returns the sigil name constant                                   |
+| `Keys() []string`                            | Returns the list of owned NodeInfo keys                           |
+| `Match(map[string]any) bool`                 | Same as interface method, no object needed                        |
+| `ParseParams(map[string]any) map[string]any` | Extracts keys without storing into object                         |
+| `Parse(map[string]any) (*Obj, error)`        | Creates an `Obj` from foreign NodeInfo (calls `Match` internally) |
+
+---
+
+## Built-in sigils
 
 ### info
 
-**Ключи NodeInfo:** `name`, `type`, `location`, `contact`, `peering`
+**NodeInfo keys:** `name`, `type`, `location`, `contact`, `description`
 
-Визитная карточка узла. Содержит основную информацию о том, кто этот узел и как с ним связаться.
+Node identity card.
 
-| Поле       | Тип                   | Обязательно | Ограничения                                                                |
-|------------|-----------------------|-------------|----------------------------------------------------------------------------|
-| `Name`     | `string`              | да          | FQDN или дружественное имя, `[a-z0-9._-]{4,64}`                            |
-| `Type`     | `string`              | да          | Роль устройства (`server`, `laptop`, `router`), `[a-z0-9.-]{2,32}`         |
-| `Location` | `string`              | нет         | Физическое расположение, произвольный текст, 2–514 символов                |
-| `Contacts` | `map[string][]string` | нет         | Контакты по категориям (`email`, `xmpp`), макс. 8 групп по 8 записей       |
-| `Peerings` | `string`              | нет         | Политика пиринга (`open`, `selective`), произвольный текст, 2–514 символов |
+| Field         | Go type               | Required | NodeInfo key  | Constraints                                                                          |
+|---------------|-----------------------|----------|---------------|--------------------------------------------------------------------------------------|
+| `Name`        | `string`              | yes      | `name`        | FQDN or friendly name, `[a-z0-9._-]{4,64}`                                           |
+| `Type`        | `string`              | yes      | `type`        | Device/role label, `[a-z0-9.-]{2,32}`                                                |
+| `Location`    | `string`              | no       | `location`    | Physical location, 2–514 chars, no leading/trailing spaces                           |
+| `Contacts`    | `map[string][]string` | no       | `contact`     | Max 8 groups, max 8 per group. Group name: `[a-z0-9.-]{2,32}`, value: 3–258 chars    |
+| `Description` | `string`              | no       | `description` | Free-text description (e.g. peering policy), 2–514 chars, no leading/trailing spaces |
 
-Пример в NodeInfo:
+`Match` requires at least `name` and `type` as strings. `contact` must be `map[string]any` → `[]any` → `string`.
 
 ```json
 {
@@ -74,22 +203,22 @@ sigils/<name>/
       "admin@jabber.example.net"
     ]
   },
-  "peering": "open for anyone"
+  "description": "open for anyone"
 }
 ```
 
 ### public
 
-**Ключ NodeInfo:** `public`
+**NodeInfo key:** `public`
 
-Пиринговые URI узла, сгруппированные по типу сети. Позволяет другим узлам
-узнать, как подключиться к этому узлу напрямую.
+Peering URIs grouped by network type.
 
-| Параметр | Тип                   | Ограничения                                                                                                                          |
-|----------|-----------------------|--------------------------------------------------------------------------------------------------------------------------------------|
-| `peers`  | `map[string][]string` | Ключ — имя сети (`[a-z0-9]{2,16}`), значение — список URI. Макс. 8 групп, макс. 16 URI в группе. URI: `[a-zA-Z0-9+._/:@[\]-]{8,256}` |
+| Parameter | Go type               | Constraints                                                                                                                     |
+|-----------|-----------------------|---------------------------------------------------------------------------------------------------------------------------------|
+| `peers`   | `map[string][]string` | Key — network name `[a-z0-9]{2,16}`, value — URI list. Max 8 groups, max 16 URIs per group. URI: `[a-zA-Z0-9+._/:@[\]-]{8,256}` |
 
-Пример в NodeInfo:
+`Match` checks `map[string]any` where each key passes the group name regexp and each value is `[]any` of strings. Empty
+map does not match.
 
 ```json
 {
@@ -107,42 +236,37 @@ sigils/<name>/
 
 ### inet
 
-**Ключ NodeInfo:** `inet`
+**NodeInfo key:** `inet`
 
-Реальные интернет-адреса узла (домены, IP). Используется для того, чтобы
-связать Yggdrasil-адрес с реальным местом в интернете — например, для
-обратного маппинга или обнаружения.
+Real internet addresses of the node (domains, IPs). Maps an Yggdrasil address to a real-world location.
 
-| Параметр | Тип        | Ограничения                                                          |
-|----------|------------|----------------------------------------------------------------------|
-| `addrs`  | `[]string` | Список адресов (`[a-zA-Z0-9._:/-]{4,256}`), макс. 32, без дубликатов |
+| Parameter | Go type    | Constraints                                                    |
+|-----------|------------|----------------------------------------------------------------|
+| `addrs`   | `[]string` | Address list, `[a-zA-Z0-9._:/-]{4,256}`, max 32, no duplicates |
 
-Пример в NodeInfo:
+`Match` checks for `[]any` of strings, non-empty.
 
 ```json
 {
   "inet": [
     "example.com",
-    "203.0.113.55",
-    "2001:db8::1"
+    "203.0.113.55"
   ]
 }
 ```
 
 ### services
 
-**Ключ NodeInfo:** `services`
+**NodeInfo key:** `services`
 
-Порты сервисов, открытых на этом узле внутри сети Yggdrasil. Позволяет
-другим узлам обнаруживать доступные сервисы без сканирования портов.
+Ports open on this node inside the Yggdrasil network. Enables service discovery without port scanning.
 
-| Параметр   | Тип                 | Ограничения                                                                         |
-|------------|---------------------|-------------------------------------------------------------------------------------|
-| `services` | `map[string]uint16` | Ключ — имя сервиса (`[a-z0-9_-]{2,32}`), значение — порт 1–65535. Макс. 256 записей |
+| Parameter  | Go type             | Constraints                                                                  |
+|------------|---------------------|------------------------------------------------------------------------------|
+| `services` | `map[string]uint16` | Key — service name `[a-z0-9_-]{2,32}`, value — port 1–65535. Max 256 entries |
 
-При парсинге из JSON порты приходят как `float64` — проверяется целочисленность и диапазон.
-
-Пример в NodeInfo:
+`Match` checks `map[string]any` where each key passes the name regexp and each value is `float64` in range 1–65535 with
+no fractional part.
 
 ```json
 {
@@ -153,11 +277,3 @@ sigils/<name>/
   }
 }
 ```
-
-## Как добавить новый сигил
-
-1. Создать папку `mod/sigils/<name>/` с тремя файлами: `values.go`, `func.go`, `obj.go`.
-2. Реализовать `sigils.Interface` по аналогии с существующими сигилами.
-3. Имя сигила должно пройти `ValidateName`: `[a-z0-9._-]{3,32}`.
-4. В `Match` учитывать, что данные из JSON: `[]any` вместо `[]string`, `map[string]any` вместо типизированных карт,
-   `float64` вместо целых чисел.

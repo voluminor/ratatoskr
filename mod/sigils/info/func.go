@@ -43,7 +43,7 @@ func Match(NodeInfo map[string]any) bool {
 
 	for key, data := range bufMap {
 		switch key {
-		case "name", "type", "location", "peering":
+		case "name", "type", "location", "description":
 			if _, ok := data.(string); !ok {
 				return false
 			}
@@ -89,8 +89,8 @@ func Parse(NodeInfo map[string]any) (*Obj, error) {
 	if v, ok := parsed["location"].(string); ok {
 		conf.Location = v
 	}
-	if v, ok := parsed["peering"].(string); ok {
-		conf.Peerings = v
+	if v, ok := parsed["description"].(string); ok {
+		conf.Description = v
 	}
 
 	if raw, ok := parsed["contact"].(map[string]any); ok {

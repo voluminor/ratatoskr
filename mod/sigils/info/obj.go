@@ -9,11 +9,11 @@ import (
 
 // ConfigObj holds the node's public identity card.
 type ConfigObj struct {
-	Name     string              // FQDN or friendly name, required, 4–64 chars
-	Type     string              // device/role label, required, 2–32 chars
-	Location string              // free-text physical location, optional
-	Contacts map[string][]string // grouped contact addresses, optional, max 8×8
-	Peerings string              // free-text peering policy, optional
+	Name        string              // FQDN or friendly name, required, 4–64 chars
+	Type        string              // device/role label, required, 2–32 chars
+	Location    string              // free-text physical location, optional
+	Contacts    map[string][]string // grouped contact addresses, optional, max 8×8
+	Description string              // free-text description, optional, e.g. peering policy
 }
 
 func validateConfig(conf *ConfigObj) error {
@@ -30,8 +30,8 @@ func validateConfig(conf *ConfigObj) error {
 	if !reType.MatchString(conf.Type) {
 		return errors.New("invalid type")
 	}
-	if conf.Peerings != "" && !reText.MatchString(conf.Peerings) {
-		return errors.New("invalid peering")
+	if conf.Description != "" && !reText.MatchString(conf.Description) {
+		return errors.New("invalid description")
 	}
 
 	if len(conf.Contacts) > maxContactGroups {
@@ -96,7 +96,7 @@ func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 		{"type", o.conf.Type},
 		{"location", o.conf.Location},
 		{"contact", o.conf.Contacts},
-		{"peering", o.conf.Peerings},
+		{"description", o.conf.Description},
 	}
 
 	for _, p := range pairs {
@@ -133,8 +133,8 @@ func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	if v, ok := parsed["location"].(string); ok {
 		conf.Location = v
 	}
-	if v, ok := parsed["peering"].(string); ok {
-		conf.Peerings = v
+	if v, ok := parsed["description"].(string); ok {
+		conf.Description = v
 	}
 	if raw, ok := parsed["contact"].(map[string]any); ok {
 		conf.Contacts = make(map[string][]string, len(raw))
@@ -176,8 +176,8 @@ func (o *Obj) Params() map[string]any {
 	if len(o.conf.Contacts) > 0 {
 		result["contact"] = o.conf.Contacts
 	}
-	if o.conf.Peerings != "" {
-		result["peering"] = o.conf.Peerings
+	if o.conf.Description != "" {
+		result["description"] = o.conf.Description
 	}
 
 	return result
