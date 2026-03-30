@@ -30,7 +30,7 @@ package {{.PackageName}}
 
 var GlobalSigilKeysMap = map[string]func() []string{
 {{- range .Sigils }}
-    "{{ .Name }}": {{ .Alias }}.Keys,
+    {{ .Name }}.Name(): {{ .Alias }}.Keys,
 {{- end }}
 }
 
