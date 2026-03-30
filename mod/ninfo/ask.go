@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
-
-	"github.com/voluminor/ratatoskr/mod/sigils"
 )
 
 // // // // // // // // // //
@@ -42,8 +40,8 @@ const (
 
 // Ask queries a remote node's NodeInfo by its public key.
 // Returns parsed ratatoskr metadata, build info (nil if NodeInfoPrivacy),
-// and measured RTT. Accepts optional sigil parsers forwarded to Parse.
-func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey, sg ...sigils.Interface) (*AskResultObj, error) {
+// and measured RTT. Uses sigils registered via AddSigil/ImportSigils.
+func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
 	}
@@ -75,13 +73,13 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey, sg ...sigils.Int
 		if r.err != nil {
 			return nil, r.err
 		}
-		return parseAskResponse(r.raw, rtt, sg...)
+		return obj.parseAskResponse(r.raw, rtt)
 	}
 }
 
 // // // // // // // // // //
 
-func parseAskResponse(raw json.RawMessage, rtt time.Duration, sg ...sigils.Interface) (*AskResultObj, error) {
+func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskResultObj, error) {
 	var nodeInfo map[string]any
 	if err := json.Unmarshal(raw, &nodeInfo); err != nil {
 		return nil, fmt.Errorf("ninfo: failed to unmarshal nodeinfo: %w", err)
@@ -89,7 +87,7 @@ func parseAskResponse(raw json.RawMessage, rtt time.Duration, sg ...sigils.Inter
 
 	result := &AskResultObj{
 		RTT:    rtt,
-		Parsed: Parse(nodeInfo, sg...),
+		Parsed: Parse(nodeInfo, obj.sigilSlice()...),
 	}
 
 	result.Build = extractBuildInfo(result.Parsed.Extra)

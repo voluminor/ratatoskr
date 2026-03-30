@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/voluminor/ratatoskr/mod/sigils"
 	yggaddr "github.com/yggdrasil-network/yggdrasil-go/src/address"
 )
 
@@ -34,12 +33,12 @@ var (
 //   - "<hex>.pk.ygg" — hex-encoded public key domain
 //   - "[ip6]:port" or "ip6" — yggdrasil IPv6 resolved via peers/sessions
 //   - raw 64-char hex string — public key directly
-func (obj *Obj) AskAddr(ctx context.Context, addr string, sg ...sigils.Interface) (*AskResultObj, error) {
+func (obj *Obj) AskAddr(ctx context.Context, addr string) (*AskResultObj, error) {
 	key, err := obj.resolveAddr(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
-	return obj.Ask(ctx, key, sg...)
+	return obj.Ask(ctx, key)
 }
 
 // // // // // // // // // //
