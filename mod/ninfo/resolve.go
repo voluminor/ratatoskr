@@ -6,10 +6,25 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	yggaddr "github.com/yggdrasil-network/yggdrasil-go/src/address"
+)
+
+// // // // // // // // // //
+
+var (
+	// 64 hex chars + ".pk.ygg"
+	rePkYgg = regexp.MustCompile(`(?i)^[0-9a-f]{64}\.pk\.ygg$`)
+	// 64 hex chars
+	reHexKey = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
+	// [ip6]:port
+	reBracketIPv6 = regexp.MustCompile(`^\[([0-9a-fA-F:]+)\]:\d{1,5}$`)
+	// bare ipv6
+	reBareIPv6 = regexp.MustCompile(`^[0-9a-fA-F:]+$`)
 )
 
 // // // // // // // // // //
@@ -20,7 +35,7 @@ import (
 //   - "[ip6]:port" or "ip6" — yggdrasil IPv6 resolved via peers/sessions
 //   - raw 64-char hex string — public key directly
 func (obj *Obj) AskAddr(ctx context.Context, addr string, sg ...sigils.Interface) (*AskResultObj, error) {
-	key, err := obj.resolveAddr(addr)
+	key, err := obj.resolveAddr(ctx, addr)
 	if err != nil {
 		return nil, err
 	}
@@ -29,28 +44,22 @@ func (obj *Obj) AskAddr(ctx context.Context, addr string, sg ...sigils.Interface
 
 // // // // // // // // // //
 
-func (obj *Obj) resolveAddr(addr string) (ed25519.PublicKey, error) {
+func (obj *Obj) resolveAddr(ctx context.Context, addr string) (ed25519.PublicKey, error) {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
 		return nil, ErrInvalidAddr
 	}
 
-	// <hex>.pk.ygg
-	if key, err := parsePkYgg(addr); err == nil {
-		return key, nil
+	switch {
+	case rePkYgg.MatchString(addr):
+		return parsePkYgg(addr)
+	case reHexKey.MatchString(addr):
+		return parseHexKey(addr)
+	case reBracketIPv6.MatchString(addr), reBareIPv6.MatchString(addr):
+		return obj.resolveIPv6(ctx, addr)
 	}
 
-	// raw hex key (64 chars)
-	if key, err := parseHexKey(addr); err == nil {
-		return key, nil
-	}
-
-	// [ip6]:port or bare ip6
-	if key, err := obj.resolveIPv6(addr); err == nil {
-		return key, nil
-	}
-
-	return nil, fmt.Errorf("%w: %q", ErrUnresolvableAddr, addr)
+	return nil, fmt.Errorf("%w: %q", ErrInvalidAddr, addr)
 }
 
 // // // // // // // // // //
@@ -79,25 +88,65 @@ func parseHexKey(s string) (ed25519.PublicKey, error) {
 
 // //
 
-func (obj *Obj) resolveIPv6(addr string) (ed25519.PublicKey, error) {
+// LookupInterval controls how often resolveIPv6 polls for a resolved key.
+var LookupInterval = 100 * time.Millisecond
+
+// //
+
+func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey, error) {
 	ip := extractIPv6(addr)
 	if ip == nil {
 		return nil, ErrInvalidAddr
 	}
 
-	// Search peers first, then sessions
+	if key := obj.findKeyByIP(ip); key != nil {
+		return key, nil
+	}
+
+	// Derive partial key from IPv6 and trigger network lookup
+	var yggIP yggaddr.Address
+	copy(yggIP[:], ip.To16())
+	if !yggIP.IsValid() {
+		return nil, fmt.Errorf("%w: not a yggdrasil address", ErrInvalidAddr)
+	}
+
+	partial := yggIP.GetKey()
+	obj.core.PacketConn.PacketConn.SendLookup(partial)
+
+	ticker := time.NewTicker(LookupInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ErrUnresolvableAddr
+		case <-ticker.C:
+			if key := obj.findKeyByIP(ip); key != nil {
+				return key, nil
+			}
+		}
+	}
+}
+
+// //
+
+func (obj *Obj) findKeyByIP(ip net.IP) ed25519.PublicKey {
 	for _, p := range obj.core.GetPeers() {
 		if matchYggAddr(p.Key, ip) {
-			return p.Key, nil
+			return p.Key
 		}
 	}
 	for _, s := range obj.core.GetSessions() {
 		if matchYggAddr(s.Key, ip) {
-			return s.Key, nil
+			return s.Key
 		}
 	}
-
-	return nil, ErrUnresolvableAddr
+	for _, p := range obj.core.GetPaths() {
+		if matchYggAddr(p.Key, ip) {
+			return p.Key
+		}
+	}
+	return nil
 }
 
 // //
