@@ -1,11 +1,12 @@
 package ninfo
 
 import (
-	"context"
-	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
+
+	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
@@ -38,46 +39,38 @@ const (
 
 // //
 
-// Ask queries a remote node's NodeInfo by its public key.
-// Returns parsed ratatoskr metadata, build info (nil if NodeInfoPrivacy),
-// and measured RTT. Uses sigils registered via AddSigil/ImportSigils.
-func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
-	if len(key) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
-	}
-	if err := ctx.Err(); err != nil {
+type adminCaptureObj struct {
+	handlers map[string]yggcore.AddHandlerFunc
+}
+
+func (a *adminCaptureObj) AddHandler(name, _ string, _ []string, fn yggcore.AddHandlerFunc) error {
+	a.handlers[name] = fn
+	return nil
+}
+
+// //
+
+func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
+	req, _ := json.Marshal(map[string]string{
+		"key": hex.EncodeToString(key[:]),
+	})
+	raw, err := obj.nodeInfo(req)
+	if err != nil {
 		return nil, err
 	}
 
-	var ka [ed25519.PublicKeySize]byte
-	copy(ka[:], key)
-
-	type callResultObj struct {
-		raw json.RawMessage
-		err error
+	resp, ok := raw.(yggcore.GetNodeInfoResponse)
+	if !ok {
+		return nil, ErrUnexpectedResponse
 	}
 
-	ch := make(chan callResultObj, 1)
-	start := time.Now()
-
-	go func() {
-		raw, err := obj.callNodeInfo(ka)
-		ch <- callResultObj{raw: raw, err: err}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-ch:
-		rtt := time.Since(start)
-		if r.err != nil {
-			return nil, r.err
-		}
-		return obj.parseAskResponse(r.raw, rtt)
+	for _, msg := range resp {
+		return msg, nil
 	}
+	return nil, ErrEmptyResponse
 }
 
-// // // // // // // // // //
+// //
 
 func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskResultObj, error) {
 	var nodeInfo map[string]any

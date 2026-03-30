@@ -1,9 +1,11 @@
 package ninfo
 
 import (
-	"encoding/hex"
+	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -32,39 +34,6 @@ const (
 	// ImportReset clears all existing sigils, then writes from source.
 	ImportReset
 )
-
-// // // // // // // // // //
-
-type adminCaptureObj struct {
-	handlers map[string]yggcore.AddHandlerFunc
-}
-
-func (a *adminCaptureObj) AddHandler(name, _ string, _ []string, fn yggcore.AddHandlerFunc) error {
-	a.handlers[name] = fn
-	return nil
-}
-
-// //
-
-func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
-	req, _ := json.Marshal(map[string]string{
-		"key": hex.EncodeToString(key[:]),
-	})
-	raw, err := obj.nodeInfo(req)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, ok := raw.(yggcore.GetNodeInfoResponse)
-	if !ok {
-		return nil, ErrUnexpectedResponse
-	}
-
-	for _, msg := range resp {
-		return msg, nil
-	}
-	return nil, ErrEmptyResponse
-}
 
 // // // // // // // // // //
 
@@ -97,6 +66,60 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 // Close releases resources held by the module.
 func (obj *Obj) Close() error {
 	return nil
+}
+
+// // // // // // // // // //
+
+// Ask queries a remote node's NodeInfo by its public key.
+// Returns parsed ratatoskr metadata, build info (nil if NodeInfoPrivacy),
+// and measured RTT. Uses sigils registered via AddSigil/ImportSigils.
+func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
+	if len(key) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var ka [ed25519.PublicKeySize]byte
+	copy(ka[:], key)
+
+	type callResultObj struct {
+		raw json.RawMessage
+		err error
+	}
+
+	ch := make(chan callResultObj, 1)
+	start := time.Now()
+
+	go func() {
+		raw, err := obj.callNodeInfo(ka)
+		ch <- callResultObj{raw: raw, err: err}
+	}()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case r := <-ch:
+		rtt := time.Since(start)
+		if r.err != nil {
+			return nil, r.err
+		}
+		return obj.parseAskResponse(r.raw, rtt)
+	}
+}
+
+// AskAddr resolves an address string to a public key, then calls Ask.
+// Supported formats:
+//   - "<hex>.pk.ygg" — hex-encoded public key domain
+//   - "[ip6]:port" or "ip6" — yggdrasil IPv6 resolved via lookup
+//   - raw 64-char hex string — public key directly
+func (obj *Obj) AskAddr(ctx context.Context, addr string) (*AskResultObj, error) {
+	key, err := obj.resolveAddr(ctx, addr)
+	if err != nil {
+		return nil, err
+	}
+	return obj.Ask(ctx, key)
 }
 
 // // // // // // // // // //

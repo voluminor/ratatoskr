@@ -28,21 +28,6 @@ var (
 
 // // // // // // // // // //
 
-// AskAddr resolves an address string to a public key, then calls Ask.
-// Supported formats:
-//   - "<hex>.pk.ygg" — hex-encoded public key domain
-//   - "[ip6]:port" or "ip6" — yggdrasil IPv6 resolved via peers/sessions
-//   - raw 64-char hex string — public key directly
-func (obj *Obj) AskAddr(ctx context.Context, addr string) (*AskResultObj, error) {
-	key, err := obj.resolveAddr(ctx, addr)
-	if err != nil {
-		return nil, err
-	}
-	return obj.Ask(ctx, key)
-}
-
-// // // // // // // // // //
-
 func (obj *Obj) resolveAddr(ctx context.Context, addr string) (ed25519.PublicKey, error) {
 	addr = strings.TrimSpace(addr)
 	if addr == "" {
