@@ -18,6 +18,10 @@ type RatatoskrInfoObj struct {
 	Sigils  []string
 }
 
+func (ri *RatatoskrInfoObj) String() string {
+	return fmt.Sprintf("[%s] %s", strings.Join(ri.Sigils, ","), ri.Version)
+}
+
 // //
 
 func compileRatatoskrInfo(sg map[string]sigils.Interface) string {

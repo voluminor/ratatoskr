@@ -1,6 +1,7 @@
 package ninfo
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/voluminor/ratatoskr/target"
@@ -77,6 +78,71 @@ func TestParse_doesNotMutateInput(t *testing.T) {
 	}
 	if m["keep"] != "me" {
 		t.Fatal("Parse should not mutate input values")
+	}
+}
+
+// // // // // // // // // //
+// NodeInfo
+
+func TestParsedObj_NodeInfo_plain(t *testing.T) {
+	m := map[string]any{"custom": "data"}
+	p := Parse(m)
+	ni := p.NodeInfo()
+	if ni["custom"] != "data" {
+		t.Fatal("expected custom key in NodeInfo")
+	}
+}
+
+func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
+	obj := newTestObj()
+	obj.AddSigil(newMockSigil("aaa", "key1"))
+	m := map[string]any{
+		target.GlobalName: "[aaa] " + target.GlobalVersion,
+		"key1":            "test",
+		"extra":           "val",
+	}
+	p := Parse(m, obj.sigilSlice()...)
+	ni := p.NodeInfo()
+	if ni["extra"] != "val" {
+		t.Fatal("extra key should be in NodeInfo")
+	}
+	if ni["key1"] != "test" {
+		t.Fatal("sigil key should be reassembled")
+	}
+	if _, ok := ni[target.GlobalName]; !ok {
+		t.Fatal("ratatoskr metadata key should be present")
+	}
+}
+
+func TestParsedObj_NodeInfo_noInfo(t *testing.T) {
+	p := &ParsedObj{Extra: map[string]any{"foo": "bar"}}
+	ni := p.NodeInfo()
+	if _, ok := ni[target.GlobalName]; ok {
+		t.Fatal("ratatoskr key should not be present without Info")
+	}
+}
+
+// // // // // // // // // //
+// String
+
+func TestParsedObj_String_validJSON(t *testing.T) {
+	m := map[string]any{"name": "test", "version": "1.0"}
+	p := Parse(m)
+	s := p.String()
+	var check map[string]any
+	if err := json.Unmarshal([]byte(s), &check); err != nil {
+		t.Fatalf("String() returned invalid JSON: %v", err)
+	}
+	if check["name"] != "test" {
+		t.Fatalf("unexpected name: %v", check["name"])
+	}
+}
+
+func TestParsedObj_String_empty(t *testing.T) {
+	p := &ParsedObj{Extra: map[string]any{}}
+	s := p.String()
+	if s != "{}" {
+		t.Fatalf("expected {}, got %s", s)
 	}
 }
 

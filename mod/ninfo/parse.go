@@ -1,6 +1,8 @@
 package ninfo
 
 import (
+	"encoding/json"
+
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/target"
 )
@@ -12,6 +14,30 @@ type ParsedObj struct {
 	Info   *RatatoskrInfoObj
 	Sigils map[string]sigils.Interface
 	Extra  map[string]any
+}
+
+// NodeInfo reassembles the parsed data back into a map[string]any
+// suitable for yggdrasil NodeInfo.
+func (p *ParsedObj) NodeInfo() map[string]any {
+	out := make(map[string]any, len(p.Extra)+len(p.Sigils)+1)
+	for k, v := range p.Extra {
+		out[k] = v
+	}
+	for _, sg := range p.Sigils {
+		for k, v := range sg.Params() {
+			out[k] = v
+		}
+	}
+	if p.Info != nil {
+		out[target.GlobalName] = p.Info.String()
+	}
+	return out
+}
+
+// String returns the parsed data as a JSON string.
+func (p *ParsedObj) String() string {
+	b, _ := json.Marshal(p.NodeInfo())
+	return string(b)
 }
 
 // //
