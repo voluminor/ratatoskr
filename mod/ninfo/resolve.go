@@ -23,8 +23,8 @@ var (
 	reHexKey = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	// [ip6]:port
 	reBracketIPv6 = regexp.MustCompile(`^\[([0-9a-fA-F:]+)\]:\d{1,5}$`)
-	// bare ipv6
-	reBareIPv6 = regexp.MustCompile(`^[0-9a-fA-F:]+$`)
+	// bare ipv6 (must contain at least one colon)
+	reBareIPv6 = regexp.MustCompile(`^[0-9a-fA-F]*:[0-9a-fA-F:]*$`)
 )
 
 // // // // // // // // // //
@@ -65,12 +65,7 @@ func (obj *Obj) resolveAddr(ctx context.Context, addr string) (ed25519.PublicKey
 // // // // // // // // // //
 
 func parsePkYgg(addr string) (ed25519.PublicKey, error) {
-	lower := strings.ToLower(addr)
-	if !strings.HasSuffix(lower, ".pk.ygg") {
-		return nil, ErrInvalidAddr
-	}
-	hexPart := addr[:len(addr)-len(".pk.ygg")]
-	return parseHexKey(hexPart)
+	return parseHexKey(addr[:len(addr)-len(".pk.ygg")])
 }
 
 // //

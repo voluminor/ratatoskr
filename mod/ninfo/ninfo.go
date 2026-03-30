@@ -1,6 +1,7 @@
 package ninfo
 
 import (
+	"encoding/hex"
 	"encoding/json"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -15,7 +16,7 @@ type Obj struct {
 	nodeInfo yggcore.AddHandlerFunc
 }
 
-// //
+// // // // // // // // // //
 
 type adminCaptureObj struct {
 	handlers map[string]yggcore.AddHandlerFunc
@@ -24,6 +25,28 @@ type adminCaptureObj struct {
 func (a *adminCaptureObj) AddHandler(name, _ string, _ []string, fn yggcore.AddHandlerFunc) error {
 	a.handlers[name] = fn
 	return nil
+}
+
+// //
+
+func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
+	req, _ := json.Marshal(map[string]string{
+		"key": hex.EncodeToString(key[:]),
+	})
+	raw, err := obj.nodeInfo(req)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, ok := raw.(yggcore.GetNodeInfoResponse)
+	if !ok {
+		return nil, ErrUnexpectedResponse
+	}
+
+	for _, msg := range resp {
+		return msg, nil
+	}
+	return nil, ErrEmptyResponse
 }
 
 // // // // // // // // // //
@@ -51,28 +74,6 @@ func New(core *yggcore.Core, logger yggcore.Logger) (*Obj, error) {
 		core:     core,
 		nodeInfo: nodeInfo,
 	}, nil
-}
-
-// //
-
-func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
-	req, _ := json.Marshal(map[string]string{
-		"key": encodeHexKey(key[:]),
-	})
-	raw, err := obj.nodeInfo(req)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, ok := raw.(yggcore.GetNodeInfoResponse)
-	if !ok {
-		return nil, ErrUnexpectedResponse
-	}
-
-	for _, msg := range resp {
-		return msg, nil
-	}
-	return nil, ErrEmptyResponse
 }
 
 // Close releases resources held by the module.

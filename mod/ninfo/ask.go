@@ -3,7 +3,6 @@ package ninfo
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -121,10 +120,4 @@ func extractBuildInfo(extra map[string]any) *BuildInfoObj {
 		Platform: platform,
 		Arch:     arch,
 	}
-}
-
-// //
-
-func encodeHexKey(key []byte) string {
-	return hex.EncodeToString(key)
 }
