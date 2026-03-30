@@ -86,8 +86,13 @@ Every sigil must have an `<name>_test.go` with:
 
 ### Registration
 
-After creating the sigil package, add it to `target/sigils.go` via the code generator (`_generate/sigils`). This
-registers the sigil in the global maps used by `ninfo.Parse` to automatically recognize it in foreign NodeInfo.
+Every sigil must be registered in global maps (`target/sigils.go`) so that `ninfo.Parse` can automatically recognize and
+parse it in foreign NodeInfo. Without registration, the sigil will work locally (you can call `New`, `SetParams`, etc.),
+but remote nodes' NodeInfo containing this sigil will be ignored during parsing.
+
+The code generator (`_generate/sigils`) handles registration automatically — it discovers sigil packages under
+`mod/sigils/` and generates `target/sigils.go`. For the generator to pick up your package, it must export the standard
+functions: `Name`, `Keys`, `Match`, `ParseParams`, `Parse`. No manual editing of generated files required.
 
 ---
 
@@ -139,14 +144,40 @@ Extracts this sigil's keys from foreign NodeInfo and **stores the result inside 
 Match(NodeInfo map[string]any) bool
 ```
 
-Checks whether foreign NodeInfo contains this sigil with correct structure and JSON types. Does not validate content —
-only shape. Must account for JSON unmarshaling types:
+Checks whether foreign NodeInfo contains this sigil with correct structure and JSON types. Returns `true` only when all
+required keys are present and every value has the expected type at every nesting level. Returns `false` otherwise —
+never panics, never returns an error.
 
-| Go source type  | JSON type in `map[string]any`      |
-|-----------------|------------------------------------|
-| `[]string`      | `[]any` (each element is `string`) |
-| `map[string]T`  | `map[string]any`                   |
-| `int`, `uint16` | `float64`                          |
+**What Match checks:**
+
+- Presence of required top-level keys (e.g. `info` requires both `"name"` and `"type"`).
+- Correct Go type at every level of nesting. Foreign NodeInfo comes from `encoding/json` unmarshaling into
+  `map[string]any`, so the actual types differ from what the sigil stores internally:
+
+| Go source type        | JSON type in `map[string]any`         | Example                                       |
+|-----------------------|---------------------------------------|-----------------------------------------------|
+| `string`              | `string`                              | `"name": "test"`                              |
+| `[]string`            | `[]any` (each element `string`)       | `"inet": ["1.2.3.4", "5.6.7.8"]`              |
+| `map[string][]string` | `map[string]any` → `[]any` → `string` | `"contact": {"email": ["a@b"]}`               |
+| `map[string]uint16`   | `map[string]any` → `float64`          | `"services": {"http": 80}`                    |
+| `int`, `uint16`       | `float64`                             | must be integer: `port == float64(int(port))` |
+
+- For numeric values: range (e.g. port 1–65535) and integer-ness (`float64` with no fractional part).
+- For maps used as groups: key format via regexp (e.g. `public` checks group names against `^[a-z0-9]{2,16}$`).
+- Non-empty collections where emptiness is meaningless (e.g. `inet` with zero addresses does not match).
+
+**What Match does NOT check:**
+
+- Content validity (string lengths, regexp patterns on values, duplicate detection). That is `New()`'s job.
+- Whether the data makes semantic sense. A service named `"zzz"` on port 1 passes Match if the types are correct.
+
+**Implementation rules:**
+
+- Handle `nil` values, wrong top-level types, and mixed-type arrays gracefully — return `false`, never panic.
+- Type-assert defensively at every level. A `[]any` may contain `nil`, `float64`, or other unexpected types mixed with
+  strings.
+- The package-level `Match()` function and the `Obj.Match()` method must behave identically — the method should delegate
+  to the function.
 
 ### Params
 
