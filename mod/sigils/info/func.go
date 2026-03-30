@@ -1,9 +1,6 @@
 package info
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // // // // // // // // // //
 
@@ -75,42 +72,7 @@ func Parse(NodeInfo map[string]any) (*Obj, error) {
 	if !Match(NodeInfo) {
 		return nil, errors.New("info sigil not found or malformed")
 	}
-
-	parsed := ParseParams(NodeInfo)
-
-	conf := ConfigObj{}
-
-	if v, ok := parsed["name"].(string); ok {
-		conf.Name = v
-	}
-	if v, ok := parsed["type"].(string); ok {
-		conf.Type = v
-	}
-	if v, ok := parsed["location"].(string); ok {
-		conf.Location = v
-	}
-	if v, ok := parsed["description"].(string); ok {
-		conf.Description = v
-	}
-
-	if raw, ok := parsed["contact"].(map[string]any); ok {
-		conf.Contacts = make(map[string][]string, len(raw))
-		for group, v := range raw {
-			arr, ok := v.([]any)
-			if !ok {
-				return nil, fmt.Errorf("invalid contact group %s", group)
-			}
-			strs := make([]string, 0, len(arr))
-			for _, item := range arr {
-				s, ok := item.(string)
-				if !ok {
-					return nil, fmt.Errorf("invalid contact in group %s", group)
-				}
-				strs = append(strs, s)
-			}
-			conf.Contacts[group] = strs
-		}
-	}
-
-	return &Obj{conf: &conf}, nil
+	o := &Obj{conf: &ConfigObj{}}
+	o.ParseParams(NodeInfo)
+	return o, nil
 }

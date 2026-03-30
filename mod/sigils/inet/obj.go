@@ -55,17 +55,7 @@ func (o *Obj) GetParams() []string {
 }
 
 func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
-	bufMap := make(map[string]any, len(NodeInfo)+1)
-	for k, v := range NodeInfo {
-		bufMap[k] = v
-	}
-
-	if _, ok := bufMap[sigName]; ok {
-		return nil, fmt.Errorf("conflict key: %s", sigName)
-	}
-
-	bufMap[sigName] = o.addrs
-	return bufMap, nil
+	return sigils.MergeParams(NodeInfo, o.Params())
 }
 
 func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {

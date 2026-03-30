@@ -63,18 +63,7 @@ func Parse(NodeInfo map[string]any) (*Obj, error) {
 	if !Match(NodeInfo) {
 		return nil, errors.New("public sigil not found or malformed")
 	}
-
-	raw := NodeInfo[sigName].(map[string]any)
-	peers := make(map[string][]string, len(raw))
-
-	for group, v := range raw {
-		arr := v.([]any)
-		strs := make([]string, 0, len(arr))
-		for _, item := range arr {
-			strs = append(strs, item.(string))
-		}
-		peers[group] = strs
-	}
-
-	return &Obj{peers: peers}, nil
+	o := &Obj{}
+	o.ParseParams(NodeInfo)
+	return o, nil
 }

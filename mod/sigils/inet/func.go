@@ -54,12 +54,7 @@ func Parse(NodeInfo map[string]any) (*Obj, error) {
 	if !Match(NodeInfo) {
 		return nil, errors.New("inet sigil not found or malformed")
 	}
-
-	arr := NodeInfo[sigName].([]any)
-	addrs := make([]string, 0, len(arr))
-	for _, item := range arr {
-		addrs = append(addrs, item.(string))
-	}
-
-	return &Obj{addrs: addrs}, nil
+	o := &Obj{}
+	o.ParseParams(NodeInfo)
+	return o, nil
 }

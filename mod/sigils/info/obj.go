@@ -85,41 +85,7 @@ func (o *Obj) GetParams() []string {
 }
 
 func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
-	bufMap := make(map[string]any, len(NodeInfo)+len(sigKeys))
-	for k, v := range NodeInfo {
-		bufMap[k] = v
-	}
-
-	pairs := []struct {
-		key string
-		val any
-	}{
-		{"name", o.conf.Name},
-		{"type", o.conf.Type},
-		{"location", o.conf.Location},
-		{"contact", o.conf.Contacts},
-		{"description", o.conf.Description},
-	}
-
-	for _, p := range pairs {
-		switch v := p.val.(type) {
-		case string:
-			if v == "" {
-				continue
-			}
-		case map[string][]string:
-			if len(v) == 0 {
-				continue
-			}
-		}
-
-		if _, ok := bufMap[p.key]; ok {
-			return nil, fmt.Errorf("conflict key: %s", p.key)
-		}
-		bufMap[p.key] = p.val
-	}
-
-	return bufMap, nil
+	return sigils.MergeParams(NodeInfo, o.Params())
 }
 
 func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {

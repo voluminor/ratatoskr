@@ -58,12 +58,7 @@ func Parse(NodeInfo map[string]any) (*Obj, error) {
 	if !Match(NodeInfo) {
 		return nil, errors.New("services sigil not found or malformed")
 	}
-
-	raw := NodeInfo[sigName].(map[string]any)
-	svc := make(map[string]uint16, len(raw))
-	for name, v := range raw {
-		svc[name] = uint16(v.(float64))
-	}
-
-	return &Obj{services: svc}, nil
+	o := &Obj{}
+	o.ParseParams(NodeInfo)
+	return o, nil
 }
