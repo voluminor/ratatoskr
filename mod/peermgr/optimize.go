@@ -2,6 +2,7 @@ package peermgr
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -19,10 +20,16 @@ func (m *Obj) run(ctx context.Context) {
 
 	// Watch goroutine signals when MinPeers threshold is confirmed
 	var watchCh chan struct{}
+	var watchWg sync.WaitGroup
 	if hasWatch {
 		watchCh = make(chan struct{}, 1)
-		go m.watchPeers(ctx, watchCh)
+		watchWg.Add(1)
+		go func() {
+			defer watchWg.Done()
+			m.watchPeers(ctx, watchCh)
+		}()
 	}
+	defer watchWg.Wait()
 
 	if !hasRefresh {
 		// No refresh timer — only react to watch signals
