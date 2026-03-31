@@ -1,34 +1,34 @@
 # mod/peermgr
 
-Менеджер пиров для Yggdrasil. Автоматически выбирает лучших пиров по задержке, поддерживает активный (с отбором) и
-пассивный (все подряд) режимы.
+Peer manager for Yggdrasil. Automatically selects the best peers by latency, supports active (with selection) and
+passive (all peers) modes.
 
-## Содержание
+## Table of Contents
 
-- [Обзор](#обзор)
-- [Инициализация](#инициализация)
-- [Режимы работы](#режимы-работы)
-    - [Активный режим](#активный-режим)
-    - [Пассивный режим](#пассивный-режим)
-- [Батчинг](#батчинг)
-- [Управление](#управление)
-- [Валидация пиров](#валидация-пиров)
-- [Ошибки](#ошибки)
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Operating Modes](#operating-modes)
+  - [Active Mode](#active-mode)
+  - [Passive Mode](#passive-mode)
+- [Batching](#batching)
+- [Control](#control)
+- [Peer Validation](#peer-validation)
+- [Errors](#errors)
 
 ---
 
-## Обзор
+## Overview
 
 ```mermaid
 flowchart TB
     subgraph Config["ConfigObj"]
-        Peers["Peers: URI-список"]
+        Peers["Peers: URI list"]
         MaxPP["MaxPerProto"]
         Batch["BatchSize"]
         Refresh["RefreshInterval"]
     end
 
-    subgraph Obj["Obj — менеджер"]
+    subgraph Obj["Obj — manager"]
         Start["Start()"]
         Optimize["optimize"]
         Active["Active() → []string"]
@@ -43,111 +43,111 @@ flowchart TB
     Config --> Obj
     Start --> Optimize
     Optimize -->|" AddPeer "| Node
-    Optimize -->|" GetPeers → отбор "| Node
-    Optimize -->|" RemovePeer проигравших "| Node
+    Optimize -->|" GetPeers → selection "| Node
+    Optimize -->|" RemovePeer losers "| Node
     Optimize --> Active
 ```
 
 ---
 
-## Инициализация
+## Initialization
 
 ```go
 mgr, err := peermgr.New(node, peermgr.ConfigObj{
 Peers:           []string{"tls://peer1:443", "tcp://peer2:8443"},
 Logger:          logger,
-MaxPerProto:     1, // лучший пир на протокол
+MaxPerProto:     1, // best peer per protocol
 ProbeTimeout:    10 * time.Second,
 RefreshInterval: 5 * time.Minute,
-BatchSize:       0, // все кандидаты одним батчем
+BatchSize:       0, // all candidates in a single batch
 OnNoReachablePeers: func () {
 log.Warn("no reachable peers")
 },
 })
 ```
 
-`New` валидирует пиров и конфигурацию. Невалидные URI пропускаются с предупреждением; ошибка — только если ни одного
-валидного пира нет.
+`New` validates peers and configuration. Invalid URIs are skipped with a warning; an error is returned only if there are
+no valid peers at all.
 
-| Поле                 | Описание                                           | По умолчанию |
-|----------------------|----------------------------------------------------|--------------|
-| `Peers`              | Список URI кандидатов                              | обязателен   |
-| `Logger`             | Логгер                                             | обязателен   |
-| `MaxPerProto`        | Лучших пиров на протокол; `-1` — пассивный режим   | `1`          |
-| `ProbeTimeout`       | Таймаут ожидания подключения на батч               | `10s`        |
-| `RefreshInterval`    | Интервал переоценки; `0` — только при старте       | `0`          |
-| `BatchSize`          | Размер батча; `0`/`1` — все кандидаты одним батчем | `1`          |
-| `OnNoReachablePeers` | Колбэк, если после проверки ни один пир не ответил | `nil`        |
+| Field                | Description                                       | Default  |
+|----------------------|---------------------------------------------------|----------|
+| `Peers`              | List of candidate URIs                            | required |
+| `Logger`             | Logger                                            | required |
+| `MaxPerProto`        | Best peers per protocol; `-1` — passive mode      | `1`      |
+| `ProbeTimeout`       | Connection timeout per batch                      | `10s`    |
+| `RefreshInterval`    | Re-evaluation interval; `0` — only at start       | `0`      |
+| `BatchSize`          | Batch size; `0`/`1` — all candidates in one batch | `1`      |
+| `OnNoReachablePeers` | Callback if no peers responded after probing      | `nil`    |
 
 ---
 
-## Режимы работы
+## Operating Modes
 
-### Активный режим
+### Active Mode
 
-`MaxPerProto >= 0`. Менеджер пробует кандидатов, измеряет задержку и оставляет только лучших.
+`MaxPerProto >= 0`. The manager probes candidates, measures latency, and keeps only the best ones.
 
 ```mermaid
 flowchart LR
-    Batch["батч кандидатов"] --> AddPeer["AddPeer каждого"]
-    AddPeer --> Wait["ждать ProbeTimeout"]
-    Wait --> GetPeers["GetPeers → результаты"]
-    GetPeers --> Select["selectBest: top-N по протоколу"]
-    Select --> Remove["RemovePeer проигравших"]
-    Remove --> Next["следующий батч с победителями"]
+    Batch["batch of candidates"] --> AddPeer["AddPeer each"]
+    AddPeer --> Wait["wait ProbeTimeout"]
+    Wait --> GetPeers["GetPeers → results"]
+    GetPeers --> Select["selectBest: top-N per protocol"]
+    Select --> Remove["RemovePeer losers"]
+    Remove --> Next["next batch with winners"]
 ```
 
-Алгоритм отбора:
+Selection algorithm:
 
-1. Кандидаты разбиваются на батчи
-2. Каждый батч добавляется через `AddPeer`
-3. После `ProbeTimeout` — опрос `GetPeers` для получения статуса и задержки
-4. `selectBest` группирует по протоколу, сортирует по задержке, берёт top-N
-5. Проигравшие удаляются через `RemovePeer`
-6. Следующий батч работает только с победителями предыдущих
+1. Candidates are split into batches
+2. Each batch is added via `AddPeer`
+3. After `ProbeTimeout` — poll `GetPeers` to obtain status and latency
+4. `selectBest` groups by protocol, sorts by latency, picks top-N
+5. Losers are removed via `RemovePeer`
+6. The next batch operates only with previous winners
 
-### Пассивный режим
+### Passive Mode
 
-`MaxPerProto == -1`. Менеджер добавляет всех кандидатов без отбора.
+`MaxPerProto == -1`. The manager adds all candidates without selection.
 
-При каждом `RefreshInterval` — полный цикл: удалить всех, добавить всех заново. `ProbeTimeout` и `BatchSize`
-игнорируются.
-
----
-
-## Батчинг
-
-`BatchSize` управляет конкурентностью проверки:
-
-| Значение | Поведение                                                |
-|----------|----------------------------------------------------------|
-| `0`/`1`  | Все кандидаты в одном батче                              |
-| `N >= 2` | Скользящее окно: N кандидатов за раз, гонка на выбывание |
-
-При `BatchSize >= 2` каждый следующий батч включает победителей предыдущих батчей плюс N новых кандидатов. Это позволяет
-сравнивать новых кандидатов с уже отобранными.
+On each `RefreshInterval` — a full cycle: remove all, then re-add all. `ProbeTimeout` and `BatchSize`
+are ignored.
 
 ---
 
-## Управление
+## Batching
+
+`BatchSize` controls probing concurrency:
+
+| Value    | Behavior                                                    |
+|----------|-------------------------------------------------------------|
+| `0`/`1`  | All candidates in a single batch                            |
+| `N >= 2` | Sliding window: N candidates at a time, elimination contest |
+
+When `BatchSize >= 2`, each subsequent batch includes winners from previous batches plus N new candidates. This allows
+comparing new candidates against already selected ones.
+
+---
+
+## Control
 
 ```go
-mgr.Start() // запустить фоновую горутину
-mgr.Active()         // текущие активные пиры (копия)
-mgr.Optimize()       // принудительная переоценка (блокирующий вызов)
-mgr.Stop() // остановка и удаление всех пиров
+mgr.Start() // start the background goroutine
+mgr.Active()         // current active peers (copy)
+mgr.Optimize()       // force re-evaluation (blocking call)
+mgr.Stop() // stop and remove all peers
 ```
 
-`Start` запускает горутину, которая сразу выполняет оптимизацию и затем планирует повторные через `RefreshInterval`.
+`Start` launches a goroutine that immediately performs optimization and then schedules repeats via `RefreshInterval`.
 
-`Optimize` можно вызвать вручную — блокирует до завершения. Сериализован: одновременно выполняется не более одной
-оптимизации.
+`Optimize` can be called manually — it blocks until completion. It is serialized: no more than one optimization runs at
+a time.
 
-`Stop` отменяет контекст, ждёт завершения горутины, затем удаляет все управляемые пиры через `RemovePeer`.
+`Stop` cancels the context, waits for the goroutine to finish, then removes all managed peers via `RemovePeer`.
 
 ---
 
-## Валидация пиров
+## Peer Validation
 
 ```go
 peermgr.AllowedSchemes // ["tcp", "tls", "quic", "ws", "wss"]
@@ -155,24 +155,24 @@ peermgr.AllowedSchemes // ["tcp", "tls", "quic", "ws", "wss"]
 entries, errs := peermgr.ValidatePeers(uris)
 ```
 
-`ValidatePeers` проверяет каждый URI:
+`ValidatePeers` checks each URI:
 
-- Пустые строки пропускаются
-- Дубликаты → ошибка (остальные обрабатываются)
-- Валидируется схема, наличие хоста
-- Порядок сохраняется
+- Empty strings are skipped
+- Duplicates → error (remaining entries are still processed)
+- Scheme and host presence are validated
+- Order is preserved
 
 ---
 
-## Ошибки
+## Errors
 
-| Переменная             | Описание                              |
-|------------------------|---------------------------------------|
-| `ErrLoggerRequired`    | Логгер не задан                       |
-| `ErrNoPeers`           | Ни одного валидного пира              |
-| `ErrAlreadyRunning`    | `Start` вызван повторно               |
-| `ErrNotRunning`        | `Optimize` вызван без `Start`         |
-| `ErrDuplicatePeer`     | Дубликат URI                          |
-| `ErrInvalidURI`        | Невалидный URI                        |
-| `ErrMissingHost`       | Отсутствует хост в URI                |
-| `ErrUnsupportedScheme` | Неподдерживаемая схема (не tcp/tls/…) |
+| Variable               | Description                          |
+|------------------------|--------------------------------------|
+| `ErrLoggerRequired`    | Logger not provided                  |
+| `ErrNoPeers`           | No valid peers                       |
+| `ErrAlreadyRunning`    | `Start` called more than once        |
+| `ErrNotRunning`        | `Optimize` called without `Start`    |
+| `ErrDuplicatePeer`     | Duplicate URI                        |
+| `ErrInvalidURI`        | Invalid URI                          |
+| `ErrMissingHost`       | Host missing in URI                  |
+| `ErrUnsupportedScheme` | Unsupported scheme (not tcp/tls/...) |

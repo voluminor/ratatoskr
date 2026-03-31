@@ -1,25 +1,25 @@
 # mod/socks
 
-SOCKS5-прокси поверх Yggdrasil. Позволяет обычным приложениям выходить в сеть Yggdrasil через стандартный
-SOCKS5-протокол.
+SOCKS5 proxy over Yggdrasil. Allows regular applications to access the Yggdrasil network via the standard
+SOCKS5 protocol.
 
-## Содержание
+## Contents
 
-- [Обзор](#обзор)
-- [Инициализация](#инициализация)
-- [Включение и выключение](#включение-и-выключение)
-- [TCP и Unix socket](#tcp-и-unix-socket)
-- [Ограничение соединений](#ограничение-соединений)
-- [Обработка Unix socket](#обработка-unix-socket)
-- [Ошибки](#ошибки)
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Enabling and disabling](#enabling-and-disabling)
+- [TCP and Unix socket](#tcp-and-unix-socket)
+- [Connection limiting](#connection-limiting)
+- [Unix socket handling](#unix-socket-handling)
+- [Errors](#errors)
 
 ---
 
-## Обзор
+## Overview
 
 ```mermaid
 flowchart LR
-    App["приложение"] -->|" SOCKS5 "| Proxy["socks.Obj"]
+    App["application"] -->|" SOCKS5 "| Proxy["socks.Obj"]
     Proxy -->|" DialContext "| Ygg["Yggdrasil"]
 
     subgraph Proxy
@@ -32,113 +32,114 @@ flowchart LR
     Socks5 -->|" connect "| Ygg
 ```
 
-Приложение подключается к SOCKS5-прокси (TCP или Unix socket), прокси резолвит адрес через заданный `NameResolver`
-и устанавливает соединение через Yggdrasil-диалер.
+The application connects to a SOCKS5 proxy (TCP or Unix socket), the proxy resolves the address via the provided
+`NameResolver`
+and establishes a connection through the Yggdrasil dialer.
 
 ---
 
-## Инициализация
+## Initialization
 
 ```go
-s := socks.New(node) // node — proxy.ContextDialer (обычно core.Obj)
+s := socks.New(node) // node — proxy.ContextDialer (usually core.Obj)
 ```
 
-Создаёт SOCKS5-прокси, но не запускает его. Для старта нужен `Enable`.
+Creates a SOCKS5 proxy but does not start it. Call `Enable` to start.
 
 ---
 
-## Включение и выключение
+## Enabling and disabling
 
 ```go
 err := s.Enable(socks.EnableConfigObj{
-Addr:           "127.0.0.1:1080", // или "/tmp/ygg.sock"
-Resolver:       resolver,         // резолвер имён (.pk.ygg, DNS)
-Verbose:        false, // логирование каждого соединения
+Addr:           "127.0.0.1:1080", // or "/tmp/ygg.sock"
+Resolver:       resolver,         // name resolver (.pk.ygg, DNS)
+Verbose:        false, // log every connection
 Logger:          logger,
-MaxConnections: 100, // 0 — без ограничений
+MaxConnections: 100, // 0 — unlimited
 })
 
 s.IsEnabled() // true
 s.Addr()   // "127.0.0.1:1080"
 s.IsUnix() // false
 
-err := s.Disable() // остановка, очистка
+err := s.Disable() // stop and clean up
 ```
 
-| Метод         | Описание                                  |
-|---------------|-------------------------------------------|
-| `Enable(cfg)` | Запускает прокси; ошибка если уже запущен |
-| `Disable()`   | Останавливает прокси; идемпотентен        |
-| `Addr()`      | Текущий адрес прослушивания               |
-| `IsUnix()`    | `true` если слушает Unix socket           |
-| `IsEnabled()` | `true` если прокси запущен                |
+| Method        | Description                                |
+|---------------|--------------------------------------------|
+| `Enable(cfg)` | Starts the proxy; error if already running |
+| `Disable()`   | Stops the proxy; idempotent                |
+| `Addr()`      | Current listening address                  |
+| `IsUnix()`    | `true` if listening on a Unix socket       |
+| `IsEnabled()` | `true` if the proxy is running             |
 
-Поддерживается цикл `Enable → Disable → Enable`.
+The `Enable → Disable → Enable` cycle is supported.
 
 ---
 
-## TCP и Unix socket
+## TCP and Unix socket
 
-Тип листенера определяется по адресу:
+The listener type is determined by the address:
 
-| Адрес            | Тип         |
+| Address          | Type        |
 |------------------|-------------|
 | `127.0.0.1:1080` | TCP         |
 | `[::1]:1080`     | TCP         |
 | `/tmp/ygg.sock`  | Unix socket |
 | `./local.sock`   | Unix socket |
 
-Правило: адрес начинается с `/` или `.` → Unix socket, иначе TCP.
+Rule: if the address starts with `/` or `.` — Unix socket, otherwise TCP.
 
 ---
 
-## Ограничение соединений
+## Connection limiting
 
-При `MaxConnections > 0` листенер оборачивается в `limitedListener` с семафором на базе буферизованного канала.
+When `MaxConnections > 0`, the listener is wrapped in a `limitedListener` with a semaphore based on a buffered channel.
 
 ```mermaid
 flowchart LR
-    Accept["Accept()"] --> Sem{"семафор свободен?"}
-    Sem -->|" да "| Conn["принять соединение"]
-    Sem -->|" нет "| Block["ждать"]
+    Accept["Accept()"] --> Sem{"semaphore free?"}
+    Sem -->|" yes "| Conn["accept connection"]
+    Sem -->|" no "| Block["wait"]
     Conn --> Close["Close()"]
-    Close --> Release["освободить семафор"]
+    Close --> Release["release semaphore"]
 ```
 
-- `Accept` блокируется если достигнут лимит
-- `Close` освобождает слот ровно один раз (`sync.Once`)
-- Повторный `Close` безопасен
+- `Accept` blocks when the limit is reached
+- `Close` releases the slot exactly once (`sync.Once`)
+- Repeated `Close` calls are safe
 
 ---
 
-## Обработка Unix socket
+## Unix socket handling
 
-При старте на Unix socket обрабатываются старые файлы:
+On startup with a Unix socket, stale files are handled:
 
 ```mermaid
 flowchart TB
-    Listen["net.Listen(unix)"] --> OK{"успех?"}
-    OK -->|" да "| Done["готов"]
+    Listen["net.Listen(unix)"] --> OK{"success?"}
+    OK -->|" yes "| Done["ready"]
     OK -->|" EADDRINUSE "| Dial["dial socket"]
-    Dial --> Alive{"отвечает?"}
-    Alive -->|" да "| Err["ErrAlreadyListening"]
-    Alive -->|" нет "| Check["Lstat: symlink?"]
+    Dial --> Alive{"responds?"}
+    Alive -->|" yes "| Err["ErrAlreadyListening"]
+    Alive -->|" no "| Check["Lstat: symlink?"]
     Check -->|" symlink "| Refuse["ErrSymlinkRefusal"]
-    Check -->|" обычный файл "| Remove["os.Remove → retry"]
+    Check -->|" regular file "| Remove["os.Remove → retry"]
 ```
 
-- Если сокет занят живым процессом — ошибка
-- Если сокет «мёртвый» — удаляется и пересоздаётся
-- Симлинки не удаляются (защита от атак)
+- If the socket is held by a live process — error
+- If the socket is stale — it is removed and recreated
+- Symlinks are not removed (protection against attacks)
 
-При `Disable` Unix socket файл автоматически удаляется.
+On `Disable`, the Unix socket file is automatically removed.
 
 ---
 
-## Ошибки
+## Errors
 
-| Переменная            | Описание                                 |
-|-----------------------|------------------------------------------|
-| `ErrAlreadyEnabled`   | `Enable` вызван на уже запущенном прокси |
-| `ErrAlreadyListening` | Unix socket занят другим процессом       |
-| `ErrSymlinkRefusal`   | Отказ удалять симлинк (защита)           |
+| Variable              | Description                                  |
+|-----------------------|----------------------------------------------|
+| `ErrAlreadyEnabled`   | `Enable` called on an already running proxy  |
+| `ErrAlreadyListening` | Unix socket is held by another process       |
+| `ErrSymlinkRefusal`   | Refusal to remove a symlink (safety measure) |

@@ -1,38 +1,38 @@
 # mod/settings
 
-Загрузка, парсинг и сохранение конфигурации. Поддерживает JSON, YAML, HJSON с цепочками редиректов, комментариями
-и упорядоченными полями.
+Loading, parsing, and saving configuration. Supports JSON, YAML, HJSON with redirect chains, comments,
+and ordered fields.
 
-## Содержание
+## Table of Contents
 
-- [Обзор](#обзор)
-- [Инициализация](#инициализация)
-- [Загрузка конфигурации](#загрузка-конфигурации)
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Loading Configuration](#loading-configuration)
     - [ParseFile](#parsefile)
-    - [Цепочки редиректов](#цепочки-редиректов)
-- [Сохранение конфигурации](#сохранение-конфигурации)
+  - [Redirect Chains](#redirect-chains)
+- [Saving Configuration](#saving-configuration)
     - [SaveFile](#savefile)
     - [SaveFilePretty](#savefilepretty)
     - [SaveUnsafePretty](#saveunsafepretty)
-- [Интеграция с Yggdrasil](#интеграция-с-yggdrasil)
+- [Yggdrasil Integration](#yggdrasil-integration)
     - [NodeConfig](#nodeconfig)
     - [FromNodeConfig](#fromnodeconfig)
-- [Вспомогательные функции](#вспомогательные-функции)
-- [Поддерживаемые форматы](#поддерживаемые-форматы)
+- [Helper Functions](#helper-functions)
+- [Supported Formats](#supported-formats)
 
 ---
 
-## Обзор
+## Overview
 
 ```mermaid
 flowchart TB
-    subgraph Load["Загрузка"]
+    subgraph Load["Loading"]
         New["New(callback)"]
         Parse["ParseFile(path, dst)"]
         Chain["resolveChain: config → config → terminal"]
     end
 
-    subgraph Save["Сохранение"]
+    subgraph Save["Saving"]
         SF["SaveFile"]
         SFP["SaveFilePretty"]
         SUP["SaveUnsafePretty"]
@@ -45,32 +45,32 @@ flowchart TB
 
     New -->|" flags + init "| Parse
     Parse --> Chain
-    Chain -->|" terminal file "| Unmarshal["unmarshal по расширению"]
-    SF -->|" стандартный формат "| File["файл"]
-    SFP -->|" с комментариями и порядком "| File
-    SUP -->|" unsafe, для map[string]any "| File
+    Chain -->|" terminal file "| Unmarshal["unmarshal by extension"]
+    SF -->|" standard format "| File["file"]
+    SFP -->|" with comments and ordering "| File
+    SUP -->|" unsafe, for map[string]any "| File
     NC -->|" settings → *config.NodeConfig "| Core["core.New()"]
     FNC -->|" *config.NodeConfig → settings "| Interface["Interface"]
 ```
 
 ---
 
-## Инициализация
+## Initialization
 
 ```go
 err := settings.New(func (s settings.Interface) error {
-// s готов к использованию
+// s is ready to use
 return runApp(s)
 })
 ```
 
-`New` парсит флаги командной строки и инициализирует конфигурацию. Если пользователь запросил help/info — возвращает
+`New` parses command-line flags and initializes the configuration. If the user requested help/info, it returns
 `nil`
-без вызова колбэка.
+without invoking the callback.
 
 ---
 
-## Загрузка конфигурации
+## Loading Configuration
 
 ### ParseFile
 
@@ -78,28 +78,30 @@ return runApp(s)
 err := settings.ParseFile("/etc/ratatoskr/config.yml", dst)
 ```
 
-Загружает конфигурацию из файла. Если файл содержит поле `config` — это редирект, и `ParseFile` следует по цепочке до
-терминального файла.
+Loads configuration from a file. If the file contains a `config` field, it is a redirect, and `ParseFile` follows the
+chain until
+a terminal file is reached.
 
-### Цепочки редиректов
+### Redirect Chains
 
-Файл с полем `config` — это ссылка на другой конфигурационный файл. Все остальные поля в файле-редиректе игнорируются.
+A file with a `config` field is a reference to another configuration file. All other fields in a redirect file are
+ignored.
 
 ```mermaid
 flowchart LR
     A["config.yml\nconfig: /etc/main.yml"] -->|" redirect "| B["main.yml\nconfig: /etc/final.conf"]
-    B -->|" redirect "| C["final.conf\n(нет поля config)\n→ парсится"]
+    B -->|" redirect "| C["final.conf\n(no config field)\n→ parsed"]
 ```
 
-Ограничения:
+Limitations:
 
-- Максимум **32 хопа** — защита от бесконечных цепочек
-- Циклические ссылки обнаруживаются и возвращают ошибку
-- Только терминальный файл (без `config`) парсится; промежуточные файлы полностью игнорируются
+- Maximum **32 hops** — protection against infinite chains
+- Circular references are detected and return an error
+- Only the terminal file (without `config`) is parsed; intermediate files are completely ignored
 
 ---
 
-## Сохранение конфигурации
+## Saving Configuration
 
 ### SaveFile
 
@@ -107,8 +109,8 @@ flowchart LR
 path, err := settings.SaveFile(src, "/etc/ratatoskr", settings.GoConfExportFormatJson)
 ```
 
-Стандартное сохранение без упорядочивания полей и комментариев. Поле `config` автоматически удаляется из выходных
-данных.
+Standard saving without field ordering or comments. The `config` field is automatically removed from the output
+data.
 
 ### SaveFilePretty
 
@@ -116,11 +118,11 @@ path, err := settings.SaveFile(src, "/etc/ratatoskr", settings.GoConfExportForma
 path, err := settings.SaveFilePretty(src, "/etc/ratatoskr", settings.GoConfExportFormatYml)
 ```
 
-Сохранение с читабельным форматированием:
+Saving with human-readable formatting:
 
-- Поля упорядочены по `gsettings.FieldOrder`
-- Комментарии из `gsettings.Comments` инжектируются в выходной файл
-- Поле `config` удаляется
+- Fields are ordered by `gsettings.FieldOrder`
+- Comments from `gsettings.Comments` are injected into the output file
+- The `config` field is removed
 
 ### SaveUnsafePretty
 
@@ -128,12 +130,12 @@ path, err := settings.SaveFilePretty(src, "/etc/ratatoskr", settings.GoConfExpor
 path, err := settings.SaveUnsafePretty(data, dir, format)
 ```
 
-Аналог `SaveFilePretty`, но принимает `any` вместо `Interface`. Для `map[string]any` применяет упорядочивание полей.
-Unsafe потому что нет compile-time проверки типов.
+Similar to `SaveFilePretty`, but accepts `any` instead of `Interface`. For `map[string]any`, field ordering is applied.
+Unsafe because there is no compile-time type checking.
 
 ---
 
-## Интеграция с Yggdrasil
+## Yggdrasil Integration
 
 ### NodeConfig
 
@@ -141,12 +143,12 @@ Unsafe потому что нет compile-time проверки типов.
 cfg, err := settings.NodeConfig(s.GetYggdrasil())
 ```
 
-Создаёт `*config.NodeConfig` из настроек:
+Creates a `*config.NodeConfig` from settings:
 
-- `key.text` декодируется из hex в байты
-- Если `peers.manager.enable == true` — список пиров обнуляется (делегируется менеджеру)
-- Если `peers.manager.enable == false` — используется статический список из `peers.url`
-- Маппится только первый элемент `MulticastInterfaces`
+- `key.text` is decoded from hex to bytes
+- If `peers.manager.enable == true` — the peer list is cleared (delegated to the manager)
+- If `peers.manager.enable == false` — the static list from `peers.url` is used
+- Only the first element of `MulticastInterfaces` is mapped
 
 ### FromNodeConfig
 
@@ -154,26 +156,26 @@ cfg, err := settings.NodeConfig(s.GetYggdrasil())
 newSettings := settings.FromNodeConfig(cfg, baseSettings)
 ```
 
-Создаёт новый `Interface` из `*config.NodeConfig` и базовых настроек. Базовый объект не мутируется — создаётся копия
-с перезаписанной веткой yggdrasil.
+Creates a new `Interface` from `*config.NodeConfig` and base settings. The base object is not mutated — a copy
+is created with the yggdrasil branch overwritten.
 
 ---
 
-## Вспомогательные функции
+## Helper Functions
 
-| Функция                   | Описание                                                      |
-|---------------------------|---------------------------------------------------------------|
-| `Obj(i Interface)`        | Извлекает `*gsettings.Obj` из `Interface` (unsafe cast)       |
-| `ValidateDir(path)`       | Проверяет/создаёт директорию, возвращает абсолютный путь      |
-| `ConfigPath(dir, format)` | Строит путь: `dir/GlobalName.ext`                             |
-| `FormatExt(format)`       | Формат → расширение (`.json`, `.yml`, `.conf`)                |
-| `StripRootKey(data, key)` | Удаляет root-level ключ из сериализованных данных (построчно) |
+| Function                  | Description                                                  |
+|---------------------------|--------------------------------------------------------------|
+| `Obj(i Interface)`        | Extracts `*gsettings.Obj` from `Interface` (unsafe cast)     |
+| `ValidateDir(path)`       | Validates/creates a directory, returns the absolute path     |
+| `ConfigPath(dir, format)` | Builds a path: `dir/GlobalName.ext`                          |
+| `FormatExt(format)`       | Format → extension (`.json`, `.yml`, `.conf`)                |
+| `StripRootKey(data, key)` | Removes a root-level key from serialized data (line by line) |
 
 ---
 
-## Поддерживаемые форматы
+## Supported Formats
 
-| Расширение        | Формат |
+| Extension         | Format |
 |-------------------|--------|
 | `.json`           | JSON   |
 | `.yml`, `.yaml`   | YAML   |

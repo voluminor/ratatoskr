@@ -1,29 +1,29 @@
 # mod/probe
 
-Исследование топологии сети Yggdrasil. Строит дерево пиров через BFS, находит маршруты через spanning tree и
+Yggdrasil network topology exploration. Builds a peer tree via BFS, finds routes through spanning tree and
 pathfinder —
-без необходимости admin socket.
+without requiring an admin socket.
 
-## Содержание
+## Contents
 
-- [Обзор](#обзор)
-- [Инициализация](#инициализация)
-- [Исследование топологии](#исследование-топологии)
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Topology exploration](#topology-exploration)
     - [Tree](#tree)
     - [TreeChan](#treechan)
-- [Поиск маршрутов](#поиск-маршрутов)
+- [Route lookup](#route-lookup)
     - [Path](#path)
     - [Hops](#hops)
     - [Trace](#trace)
-- [Информация об узле](#информация-об-узле)
-- [Кэширование](#кэширование)
-- [Настраиваемые параметры](#настраиваемые-параметры)
-- [Структуры данных](#структуры-данных)
-- [Ошибки](#ошибки)
+- [Node information](#node-information)
+- [Caching](#caching)
+- [Configurable parameters](#configurable-parameters)
+- [Data structures](#data-structures)
+- [Errors](#errors)
 
 ---
 
-## Обзор
+## Overview
 
 ```mermaid
 flowchart TB
@@ -34,7 +34,7 @@ flowchart TB
         Trace["Trace(ctx, key)"]
     end
 
-    subgraph BFS["BFS-обход"]
+    subgraph BFS["BFS traversal"]
         Pool["workerPool"]
         Remote["debug_remoteGetPeers"]
         Cache["peerCache"]
@@ -50,54 +50,54 @@ flowchart TB
     Tree --> Pool
     Pool --> Remote
     Remote --> Cache
-    Remote -->|" вызов через core "| Core
+    Remote -->|" call via core "| Core
     Path --> GetTree
     Hops --> GetPaths
     Trace --> Path
     Trace --> Hops
-    Trace -->|" при необходимости "| Tree
+    Trace -->|" if needed "| Tree
 ```
 
 ---
 
-## Инициализация
+## Initialization
 
 ```go
 p, err := probe.New(yggCore, logger)
 defer p.Close()
 ```
 
-`New` перехватывает обработчик `debug_remoteGetPeers` из core через фейковый admin socket. Это позволяет делать запросы
-к удалённым узлам без реального admin socket.
+`New` intercepts the `debug_remoteGetPeers` handler from core via a fake admin socket. This allows querying
+remote nodes without a real admin socket.
 
-`Close` останавливает фоновую горутину очистки кэша.
+`Close` stops the background cache cleanup goroutine.
 
 ---
 
-## Исследование топологии
+## Topology exploration
 
 ### Tree
 
 ```go
 result, err := p.Tree(ctx, maxDepth, concurrency)
-// result.Root  — корневой узел (self)
-// result.Total — общее количество обнаруженных узлов
+// result.Root  — root node (self)
+// result.Total — total number of discovered nodes
 ```
 
-BFS-обход сети от текущего узла. На каждом уровне глубины параллельно опрашивает пиров удалённых узлов через worker
-pool.
+BFS traversal of the network from the current node. At each depth level, peers of remote nodes are queried in parallel
+via a worker pool.
 
 ```mermaid
 flowchart LR
     Root["self (depth 0)"] --> D1["GetPeers → depth 1"]
-    D1 --> D2["remoteGetPeers каждого → depth 2"]
+    D1 --> D2["remoteGetPeers each → depth 2"]
     D2 --> D3["... → depth N"]
 ```
 
-- `maxDepth` — максимальная глубина BFS (обязателен, > 0)
-- `concurrency` — размер worker pool (0 → 16 по умолчанию)
-- Узлы, не ответившие на запрос или превысившие `MaxPeersPerNode`, помечаются как `Unreachable`
-- Дубликаты отсекаются по публичному ключу
+- `maxDepth` — maximum BFS depth (required, > 0)
+- `concurrency` — worker pool size (0 → 16 by default)
+- Nodes that did not respond or exceeded `MaxPeersPerNode` are marked as `Unreachable`
+- Duplicates are filtered by public key
 
 ### TreeChan
 
@@ -106,20 +106,20 @@ ch := make(chan probe.TreeProgressObj)
 result, err := p.TreeChan(ctx, maxDepth, concurrency, ch)
 ```
 
-То же, что `Tree`, но отправляет прогресс в канал после каждого уровня глубины:
+Same as `Tree`, but sends progress to a channel after each depth level:
 
 ```go
 type TreeProgressObj struct {
-Depth int // текущий уровень
-Found int // найдено на этом уровне
-Total int // всего найдено
-Done  bool // true на последнем сообщении
+Depth int // current level
+Found int // found at this level
+Total int // total found
+Done  bool // true on the last message
 }
 ```
 
 ---
 
-## Поиск маршрутов
+## Route lookup
 
 ### Path
 
@@ -127,7 +127,8 @@ Done  bool // true на последнем сообщении
 nodes, err := p.Path(key) // [root, ..., target]
 ```
 
-Возвращает путь от корня spanning tree до целевого узла. Строит дерево из `core.GetTree()` и ищет ключ рекурсивно.
+Returns the path from the spanning tree root to the target node. Builds the tree from `core.GetTree()` and searches for
+the key recursively.
 
 ### Hops
 
@@ -135,11 +136,11 @@ nodes, err := p.Path(key) // [root, ..., target]
 hops, err := p.Hops(key)
 ```
 
-Возвращает маршрут на уровне портов из pathfinder (`core.GetPaths()`). Требует предварительного `Lookup(key)`.
+Returns the port-level route from the pathfinder (`core.GetPaths()`). Requires a prior `Lookup(key)`.
 
 ```go
 type HopObj struct {
-Key   ed25519.PublicKey // nil если порт не разрешился
+Key   ed25519.PublicKey // nil if port did not resolve
 Port  uint64
 Index int
 }
@@ -149,94 +150,95 @@ Index int
 
 ```go
 result, err := p.Trace(ctx, key)
-// result.TreePath — путь через spanning tree (может быть nil)
-// result.Hops     — маршрут через pathfinder (может быть nil)
+// result.TreePath — path via spanning tree (may be nil)
+// result.Hops     — route via pathfinder (may be nil)
 ```
 
-Комплексный поиск маршрута. Комбинирует несколько стратегий:
+Comprehensive route lookup. Combines multiple strategies:
 
 ```mermaid
 flowchart TB
     Start["Trace(ctx, key)"] --> Check{"Path + Hops?"}
-    Check -->|" оба найдены "| Done["return"]
-    Check -->|" Path есть, Hops нет "| Poll1["Lookup + poll hops"]
+    Check -->|" both found "| Done["return"]
+    Check -->|" Path found, Hops not "| Poll1["Lookup + poll hops"]
     Poll1 -->|" timeout "| Done
-    Check -->|" ничего нет "| Full["Lookup + poll оба"]
-    Full -->|" retry Lookup каждую секунду "| Full
-    Full -->|" ctx done "| Partial["return частичный результат"]
+    Check -->|" neither found "| Full["Lookup + poll both"]
+    Full -->|" retry Lookup every second "| Full
+    Full -->|" ctx done "| Partial["return partial result"]
 ```
 
-- Если оба найдены сразу — возвращает немедленно
-- Если есть путь, но нет hops — делает `Lookup` и опрашивает с таймаутом `HopsWaitTimeout`
-- Если ничего нет — полный цикл с повторными `Lookup` каждую `LookupRetryEvery`
-- RTT заполняется для промежуточных узлов через удалённые вызовы
+- If both are found immediately — returns right away
+- If the path exists but hops are missing — performs `Lookup` and polls with `HopsWaitTimeout`
+- If neither is found — full cycle with repeated `Lookup` every `LookupRetryEvery`
+- RTT is populated for intermediate nodes via remote calls
 
 ---
 
-## Информация об узле
+## Node information
 
-| Метод            | Возвращает                | Описание                  |
-|------------------|---------------------------|---------------------------|
-| `Self()`         | `yggcore.SelfInfo`        | Информация о себе         |
-| `Address()`      | `net.IP`                  | IPv6-адрес узла           |
-| `Subnet()`       | `net.IPNet`               | Подсеть `/64`             |
-| `Peers()`        | `[]yggcore.PeerInfo`      | Список пиров              |
-| `Sessions()`     | `[]yggcore.SessionInfo`   | Активные сессии           |
-| `SpanningTree()` | `[]yggcore.TreeEntryInfo` | Записи spanning tree      |
-| `Paths()`        | `[]yggcore.PathEntryInfo` | Маршруты pathfinder       |
-| `Lookup(key)`    | —                         | Инициирует поиск маршрута |
-| `FlushCache()`   | —                         | Сброс кэша запросов пиров |
-
----
-
-## Кэширование
-
-Результаты `debug_remoteGetPeers` кэшируются по публичному ключу узла. Кэш автоматически очищается каждые `CacheTTL/2`.
-Недоступные узлы (не ответившие) кэшируются как `nil` — повторный запрос в пределах TTL сразу вернёт
-`ErrNodeUnreachable`.
-
-Горутина очистки останавливается автоматически после 10 итераций без данных.
+| Method           | Returns                   | Description              |
+|------------------|---------------------------|--------------------------|
+| `Self()`         | `yggcore.SelfInfo`        | Information about self   |
+| `Address()`      | `net.IP`                  | Node IPv6 address        |
+| `Subnet()`       | `net.IPNet`               | `/64` subnet             |
+| `Peers()`        | `[]yggcore.PeerInfo`      | List of peers            |
+| `Sessions()`     | `[]yggcore.SessionInfo`   | Active sessions          |
+| `SpanningTree()` | `[]yggcore.TreeEntryInfo` | Spanning tree entries    |
+| `Paths()`        | `[]yggcore.PathEntryInfo` | Pathfinder routes        |
+| `Lookup(key)`    | —                         | Initiates route lookup   |
+| `FlushCache()`   | —                         | Flushes peer query cache |
 
 ---
 
-## Настраиваемые параметры
+## Caching
 
-Пакетные переменные, которые можно менять до использования:
+Results of `debug_remoteGetPeers` are cached by the node's public key. The cache is automatically cleaned every
+`CacheTTL/2`.
+Unreachable nodes (those that did not respond) are cached as `nil` — a repeated request within the TTL will immediately
+return `ErrNodeUnreachable`.
 
-| Переменная         | Описание                                        | По умолчанию |
-|--------------------|-------------------------------------------------|--------------|
-| `MaxPeersPerNode`  | Лимит пиров на узел; превышение → `Unreachable` | `65535`      |
-| `CacheTTL`         | Время жизни записей в кэше                      | `60s`        |
-| `PollInterval`     | Интервал опроса core в `Trace`                  | `200ms`      |
-| `LookupRetryEvery` | Интервал повторного `SendLookup` в `Trace`      | `1s`         |
-| `HopsWaitTimeout`  | Ожидание hops когда tree path уже найден        | `2s`         |
+The cleanup goroutine stops automatically after 10 iterations with no data.
 
 ---
 
-## Структуры данных
+## Configurable parameters
+
+Package-level variables that can be changed before use:
+
+| Variable           | Description                                       | Default |
+|--------------------|---------------------------------------------------|---------|
+| `MaxPeersPerNode`  | Per-node peer limit; exceeding it → `Unreachable` | `65535` |
+| `CacheTTL`         | Cache entry time-to-live                          | `60s`   |
+| `PollInterval`     | Core polling interval in `Trace`                  | `200ms` |
+| `LookupRetryEvery` | `SendLookup` retry interval in `Trace`            | `1s`    |
+| `HopsWaitTimeout`  | Hops wait timeout when tree path is already found | `2s`    |
+
+---
+
+## Data structures
 
 ### NodeObj
 
-Узел в дереве топологии.
+A node in the topology tree.
 
-| Поле          | Тип                 | Описание                                 |
-|---------------|---------------------|------------------------------------------|
-| `Key`         | `ed25519.PublicKey` | Публичный ключ узла                      |
-| `Parent`      | `ed25519.PublicKey` | Ключ родителя                            |
-| `Sequence`    | `uint64`            | Номер последовательности (spanning tree) |
-| `Depth`       | `int`               | Расстояние от корня                      |
-| `RTT`         | `time.Duration`     | Время отклика                            |
-| `Unreachable` | `bool`              | Не ответил на запрос (только Tree)       |
-| `Children`    | `[]*NodeObj`        | Дочерние узлы                            |
+| Field         | Type                | Description                            |
+|---------------|---------------------|----------------------------------------|
+| `Key`         | `ed25519.PublicKey` | Node public key                        |
+| `Parent`      | `ed25519.PublicKey` | Parent key                             |
+| `Sequence`    | `uint64`            | Sequence number (spanning tree)        |
+| `Depth`       | `int`               | Distance from root                     |
+| `RTT`         | `time.Duration`     | Response time                          |
+| `Unreachable` | `bool`              | Did not respond to request (Tree only) |
+| `Children`    | `[]*NodeObj`        | Child nodes                            |
 
-Методы: `Find(key)`, `Flatten()`, `PathTo(key)`.
+Methods: `Find(key)`, `Flatten()`, `PathTo(key)`.
 
 ### TreeResultObj
 
 ```go
 type TreeResultObj struct {
-Root  *NodeObj // корневой узел (self)
-Total int      // всего обнаруженных узлов
+Root  *NodeObj // root node (self)
+Total int      // total discovered nodes
 }
 ```
 
@@ -244,27 +246,27 @@ Total int      // всего обнаруженных узлов
 
 ```go
 type TraceResultObj struct {
-TreePath []*NodeObj // путь через spanning tree
-Hops     []HopObj  // маршрут через pathfinder
+TreePath []*NodeObj // path via spanning tree
+Hops     []HopObj  // route via pathfinder
 }
 ```
 
 ---
 
-## Ошибки
+## Errors
 
-| Переменная                  | Описание                                        |
-|-----------------------------|-------------------------------------------------|
-| `ErrCoreRequired`           | Core не передан в `New`                         |
-| `ErrLoggerRequired`         | Логгер не передан в `New`                       |
-| `ErrRemotePeersNotCaptured` | Обработчик `debug_remoteGetPeers` не перехвачен |
-| `ErrInvalidCacheTTL`        | `CacheTTL` меньше 1 секунды                     |
-| `ErrMaxDepthRequired`       | `maxDepth` должен быть > 0                      |
-| `ErrInvalidKeyLength`       | Публичный ключ не 32 байта                      |
-| `ErrKeyNotInTree`           | Ключ не найден в spanning tree                  |
-| `ErrNoActivePath`           | Нет активного маршрута в pathfinder             |
-| `ErrNodeUnreachable`        | Узел недоступен (кэширован)                     |
-| `ErrRemotePeersDisabled`    | `debug_remoteGetPeers` недоступен               |
-| `ErrTreeEmpty`              | Записи spanning tree пусты                      |
-| `ErrNoRoot`                 | Нет корневого узла в дереве                     |
-| `ErrLookupTimedOut`         | Таймаут поиска маршрута                         |
+| Variable                    | Description                                    |
+|-----------------------------|------------------------------------------------|
+| `ErrCoreRequired`           | Core not provided to `New`                     |
+| `ErrLoggerRequired`         | Logger not provided to `New`                   |
+| `ErrRemotePeersNotCaptured` | `debug_remoteGetPeers` handler not intercepted |
+| `ErrInvalidCacheTTL`        | `CacheTTL` is less than 1 second               |
+| `ErrMaxDepthRequired`       | `maxDepth` must be > 0                         |
+| `ErrInvalidKeyLength`       | Public key is not 32 bytes                     |
+| `ErrKeyNotInTree`           | Key not found in spanning tree                 |
+| `ErrNoActivePath`           | No active route in pathfinder                  |
+| `ErrNodeUnreachable`        | Node is unreachable (cached)                   |
+| `ErrRemotePeersDisabled`    | `debug_remoteGetPeers` is unavailable          |
+| `ErrTreeEmpty`              | Spanning tree entries are empty                |
+| `ErrNoRoot`                 | No root node in tree                           |
+| `ErrLookupTimedOut`         | Route lookup timed out                         |

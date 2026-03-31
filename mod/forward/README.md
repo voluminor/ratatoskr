@@ -1,29 +1,30 @@
 # mod/forward
 
-Проброс TCP/UDP портов между локальной сетью и Yggdrasil.
+TCP/UDP port forwarding between local network and Yggdrasil.
 
-Модуль управляет маппингами в обе стороны: входящий трафик с локальных портов перенаправляется в Yggdrasil, и наоборот —
-трафик из Yggdrasil перенаправляется на локальные адреса.
+The module manages mappings in both directions: incoming traffic from local ports is forwarded to Yggdrasil, and vice
+versa —
+traffic from Yggdrasil is forwarded to local addresses.
 
-## Содержание
+## Table of Contents
 
-- [Обзор](#обзор)
-- [Инициализация](#инициализация)
-- [Маппинги](#маппинги)
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Mappings](#mappings)
     - [TCP](#tcp)
     - [UDP](#udp)
-- [Запуск и остановка](#запуск-и-остановка)
-- [TCP-проксирование](#tcp-проксирование)
-- [UDP-сессии](#udp-сессии)
-- [Настройки](#настройки)
+- [Start and Stop](#start-and-stop)
+- [TCP Proxying](#tcp-proxying)
+- [UDP Sessions](#udp-sessions)
+- [Settings](#settings)
 
 ---
 
-## Обзор
+## Overview
 
 ```mermaid
 flowchart LR
-    subgraph Local["Локальная сеть"]
+  subgraph Local["Local Network"]
         LT["TCP :8080"]
         LU["UDP :5000"]
     end
@@ -51,30 +52,30 @@ flowchart LR
     RemoteUDP -->|" net.Dial "| LU
 ```
 
-Четыре направления проброса:
+Four forwarding directions:
 
-| Направление | Слушает       | Подключается к |
-|-------------|---------------|----------------|
-| Local TCP   | Локальный TCP | Yggdrasil TCP  |
-| Remote TCP  | Yggdrasil TCP | Локальный TCP  |
-| Local UDP   | Локальный UDP | Yggdrasil UDP  |
-| Remote UDP  | Yggdrasil UDP | Локальный UDP  |
+| Direction  | Listens on    | Connects to   |
+|------------|---------------|---------------|
+| Local TCP  | Local TCP     | Yggdrasil TCP |
+| Remote TCP | Yggdrasil TCP | Local TCP     |
+| Local UDP  | Local UDP     | Yggdrasil UDP |
+| Remote UDP | Yggdrasil UDP | Local UDP     |
 
 ---
 
-## Инициализация
+## Initialization
 
 ```go
 mgr := forward.New(logger, 30*time.Second) // UDP session timeout
 ```
 
-`New` создаёт менеджер. `sessionTimeout` — таймаут неактивности UDP-сессий (обязателен, > 0).
+`New` creates a manager. `sessionTimeout` is the inactivity timeout for UDP sessions (required, > 0).
 
 ---
 
-## Маппинги
+## Mappings
 
-Маппинги задаются до вызова `Start()`.
+Mappings are configured before calling `Start()`.
 
 ### TCP
 
@@ -85,8 +86,8 @@ Mapped: &net.TCPAddr{IP: net.ParseIP("200::1"), Port: 80},
 })
 
 mgr.AddRemoteTCP(forward.TCPMappingObj{
-Listen: &net.TCPAddr{Port: 80}, // слушать в Yggdrasil
-Mapped: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}, // пробросить локально
+Listen: &net.TCPAddr{Port: 80}, // listen on Yggdrasil
+Mapped: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}, // forward locally
 })
 ```
 
@@ -106,30 +107,31 @@ Mapped: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5353},
 
 ---
 
-## Запуск и остановка
+## Start and Stop
 
 ```go
 ctx, cancel := context.WithCancel(context.Background())
 
-mgr.Start(ctx, node) // запускает горутины для всех маппингов
+mgr.Start(ctx, node) // starts goroutines for all mappings
 // ...
-cancel() // останавливает все листенеры
-mgr.Wait() // ждёт завершения всех горутин
+cancel() // stops all listeners
+mgr.Wait() // waits for all goroutines to finish
 ```
 
-`Start` запускает по одной горутине на каждый маппинг. Отмена контекста останавливает все листенеры и завершает активные
-соединения.
+`Start` launches one goroutine per mapping. Cancelling the context stops all listeners and terminates active
+connections.
 
 ---
 
-## TCP-проксирование
+## TCP Proxying
 
 ```go
 forward.ProxyTCP(c1, c2, 30*time.Second)
 ```
 
-Двунаправленный TCP-прокси между двумя соединениями. Две горутины копируют данные в обе стороны. При ошибке в одном
-направлении — оба соединения закрываются. `closeTimeout` — время ожидания второй горутины после первой ошибки.
+Bidirectional TCP proxy between two connections. Two goroutines copy data in both directions. If an error occurs in one
+direction, both connections are closed. `closeTimeout` is the time to wait for the second goroutine after the first
+error.
 
 ```mermaid
 flowchart LR
@@ -139,35 +141,35 @@ flowchart LR
 
 ---
 
-## UDP-сессии
+## UDP Sessions
 
-UDP-трафик проксируется через сессии. Каждый уникальный адрес отправителя получает отдельную сессию с собственным
-соединением к целевому адресу.
+UDP traffic is proxied through sessions. Each unique sender address gets a separate session with its own
+connection to the target address.
 
 ```mermaid
 flowchart TB
-    Pkt["пакет от клиента"] --> Lookup{"сессия существует?"}
-    Lookup -->|" да "| Write["write → upstream"]
-    Lookup -->|" нет "| Dial["dialFn → новая сессия"]
-    Dial --> Reverse["goroutine: upstream → клиент"]
+  Pkt["packet from client"] --> Lookup{"session exists?"}
+  Lookup -->|" yes "| Write["write → upstream"]
+  Lookup -->|" no "| Dial["dialFn → new session"]
+  Dial --> Reverse["goroutine: upstream → client"]
     Dial --> Write
-    Cleanup["cleanup goroutine"] -->|" каждые timeout/4 "| Expire["удаляет неактивные сессии"]
+  Cleanup["cleanup goroutine"] -->|" every timeout/4 "| Expire["removes inactive sessions"]
 ```
 
-`RunUDPLoop` — основной цикл UDP-проксирования. `ReverseProxyUDP` — обратный канал: читает ответы от upstream и
-отправляет
-клиенту.
+`RunUDPLoop` is the main UDP proxying loop. `ReverseProxyUDP` is the reverse channel: reads responses from upstream and
+sends them
+to the client.
 
 ---
 
-## Настройки
+## Settings
 
-Все настройки вызываются до `Start()`:
+All settings are called before `Start()`:
 
-| Метод                   | Описание                                             | По умолчанию |
-|-------------------------|------------------------------------------------------|--------------|
-| `SetTimeout(d)`         | Таймаут неактивности UDP-сессии                      | из `New()`   |
-| `SetTCPCloseTimeout(d)` | Время ожидания TCP-пира после отключения             | 30 секунд    |
-| `SetMaxUDPSessions(n)`  | Максимум UDP-сессий на маппинг (0 — без ограничений) | 0            |
-| `ClearLocal()`          | Очистить все локальные маппинги                      | —            |
-| `ClearRemote()`         | Очистить все удалённые маппинги                      | —            |
+| Method                  | Description                                  | Default      |
+|-------------------------|----------------------------------------------|--------------|
+| `SetTimeout(d)`         | UDP session inactivity timeout               | from `New()` |
+| `SetTCPCloseTimeout(d)` | Time to wait for TCP peer after disconnect   | 30 seconds   |
+| `SetMaxUDPSessions(n)`  | Max UDP sessions per mapping (0 — unlimited) | 0            |
+| `ClearLocal()`          | Clear all local mappings                     | —            |
+| `ClearRemote()`         | Clear all remote mappings                    | —            |

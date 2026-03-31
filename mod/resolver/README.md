@@ -1,93 +1,93 @@
 # mod/resolver
 
-Резолвер имён для Yggdrasil. Поддерживает три стратегии разрешения: `.pk.ygg` маппинг публичных ключей, IP-литералы и
-DNS-запросы через Yggdrasil-сеть.
+Name resolver for Yggdrasil. Supports three resolution strategies: `.pk.ygg` public key mapping, IP literals, and
+DNS queries over the Yggdrasil network.
 
-## Содержание
+## Contents
 
-- [Обзор](#обзор)
-- [Инициализация](#инициализация)
-- [Разрешение имён](#разрешение-имён)
-    - [Порядок стратегий](#порядок-стратегий)
-    - [.pk.ygg маппинг](#pkygg-маппинг)
-    - [IP-литералы](#ip-литералы)
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Name resolution](#name-resolution)
+  - [Strategy order](#strategy-order)
+  - [.pk.ygg mapping](#pkygg-mapping)
+  - [IP literals](#ip-literals)
     - [DNS](#dns)
-- [Ошибки](#ошибки)
+- [Errors](#errors)
 
 ---
 
-## Обзор
+## Overview
 
 ```mermaid
 flowchart LR
-    Name["имя"] --> PkYgg{".pk.ygg?"}
-    PkYgg -->|" да "| Decode["hex → ed25519 → IPv6"]
-    PkYgg -->|" нет "| IPLit{"IP-литерал?"}
-    IPLit -->|" да "| Return["net.IP"]
-    IPLit -->|" нет "| DNS{"DNS?"}
+    Name["name"] --> PkYgg{".pk.ygg?"}
+    PkYgg -->|" yes "| Decode["hex → ed25519 → IPv6"]
+    PkYgg -->|" no "| IPLit{"IP literal?"}
+    IPLit -->|" yes "| Return["net.IP"]
+    IPLit -->|" no "| DNS{"DNS?"}
     DNS -->|" hasDNS "| Lookup["LookupIP → ip6"]
-    DNS -->|" нет "| Err["ErrNoNameserver"]
+    DNS -->|" no "| Err["ErrNoNameserver"]
     Decode --> Return
     Lookup --> Return
 ```
 
 ---
 
-## Инициализация
+## Initialization
 
 ```go
-r := resolver.New(dialer, "200::1:53") // DNS через Yggdrasil
-r := resolver.New(dialer, "") // без DNS, только .pk.ygg и литералы
+r := resolver.New(dialer, "200::1:53") // DNS over Yggdrasil
+r := resolver.New(dialer, "") // no DNS, only .pk.ygg and literals
 ```
 
-| Параметр     | Описание                                              |
+| Parameter    | Description                                           |
 |--------------|-------------------------------------------------------|
-| `dialer`     | `proxy.ContextDialer` — диалер для DNS-запросов       |
-| `nameserver` | Адрес DNS-сервера (`host:port` или `host`, порт → 53) |
+| `dialer`     | `proxy.ContextDialer` — dialer for DNS queries        |
+| `nameserver` | DNS server address (`host:port` or `host`, port → 53) |
 
-Если `nameserver` пустой — DNS-разрешение отключено, работают только `.pk.ygg` и IP-литералы.
+If `nameserver` is empty — DNS resolution is disabled, only `.pk.ygg` and IP literals work.
 
-Резолвер использует `PreferGo: true` (чистый Go DNS, без cgo).
+The resolver uses `PreferGo: true` (pure Go DNS, no cgo).
 
 ---
 
-## Разрешение имён
+## Name resolution
 
 ```go
 ctx, ip, err := r.Resolve(ctx, "home.abc123def456.pk.ygg")
 ```
 
-Возвращает `net.IP` и оригинальный `ctx` (для передачи значений через цепочку).
+Returns `net.IP` and the original `ctx` (for passing values through the chain).
 
-### Порядок стратегий
+### Strategy order
 
-Стратегии пробуются по убыванию специфичности:
+Strategies are tried in decreasing order of specificity:
 
-1. **`.pk.ygg`** — если имя заканчивается на `.pk.ygg`
-2. **IP-литерал** — если имя парсится как IP-адрес
-3. **DNS** — если настроен nameserver
+1. **`.pk.ygg`** — if the name ends with `.pk.ygg`
+2. **IP literal** — if the name parses as an IP address
+3. **DNS** — if a nameserver is configured
 
-Первая успешная стратегия побеждает.
+The first successful strategy wins.
 
-### .pk.ygg маппинг
+### .pk.ygg mapping
 
-Суффикс: `NameMappingSuffix = ".pk.ygg"`
-
-```
-<hex-encoded-ed25519-key>.pk.ygg → IPv6 через address.AddrForKey()
-```
-
-Поддомены допускаются — используется только последний сегмент перед `.pk.ygg`:
+Suffix: `NameMappingSuffix = ".pk.ygg"`
 
 ```
-subdomain.abc123...def456.pk.ygg → берётся abc123...def456
+<hex-encoded-ed25519-key>.pk.ygg → IPv6 via address.AddrForKey()
 ```
 
-Ключ должен быть ровно 32 байта после hex-декодирования.
+Subdomains are allowed — only the last segment before `.pk.ygg` is used:
 
-### IP-литералы
+```
+subdomain.abc123...def456.pk.ygg → abc123...def456 is taken
+```
 
-IPv4 и IPv6 адреса возвращаются как есть:
+The key must be exactly 32 bytes after hex decoding.
+
+### IP literals
+
+IPv4 and IPv6 addresses are returned as-is:
 
 ```
 200::1       → net.IP{200::1}
@@ -96,20 +96,20 @@ IPv4 и IPv6 адреса возвращаются как есть:
 
 ### DNS
 
-IPv6-резолвинг через настроенный nameserver. Если nameserver не задан — возвращается `ErrNoNameserver`.
+IPv6 resolution via the configured nameserver. If no nameserver is set — `ErrNoNameserver` is returned.
 
 ```go
 r.resolver.LookupIP(ctx, "ip6", name)
 ```
 
-Возвращает первый найденный адрес. Если адресов нет — `ErrNoAddresses`.
+Returns the first address found. If no addresses are found — `ErrNoAddresses`.
 
 ---
 
-## Ошибки
+## Errors
 
-| Переменная            | Описание                     |
-|-----------------------|------------------------------|
-| `ErrNoNameserver`     | DNS-сервер не настроен       |
-| `ErrNoAddresses`      | DNS-запрос не вернул адресов |
-| `ErrInvalidKeyLength` | Публичный ключ не 32 байта   |
+| Variable              | Description                     |
+|-----------------------|---------------------------------|
+| `ErrNoNameserver`     | DNS server is not configured    |
+| `ErrNoAddresses`      | DNS query returned no addresses |
+| `ErrInvalidKeyLength` | Public key is not 32 bytes      |
