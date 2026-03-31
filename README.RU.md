@@ -728,17 +728,17 @@ Logger: slogAdapter{l: slog.Default()},
 
 ## Модули
 
-| Модуль                                   | Описание                                                             |
-|------------------------------------------|----------------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin                |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация, MinPeers watch       |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                           |
-| [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                 |
-| [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов                  |
-| [`mod/settings`](mod/settings/README.md) | Загрузка, парсинг и сохранение конфигурации                          |
-| [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet)         |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Запрос и парсинг NodeInfo удалённых узлов, управление parse-сигилами |
+| Модуль                                   | Описание                                                                    |
+|------------------------------------------|-----------------------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin                       |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация, MinPeers watch              |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                                  |
+| [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                       |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                        |
+| [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов                         |
+| [`mod/settings`](mod/settings/README.md) | Загрузка, парсинг и сохранение конфигурации (WIP — схема не финализирована) |
+| [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet)                |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Запрос и парсинг NodeInfo удалённых узлов, управление parse-сигилами        |
 
 ---
 

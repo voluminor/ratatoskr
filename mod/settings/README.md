@@ -1,5 +1,8 @@
 # mod/settings
 
+> **Work in progress.** The module's functionality is not finalized because the
+> [settings.yml](../../settings.yml) schema is still evolving.
+
 Loading, parsing, and saving configuration. Supports JSON, YAML, HJSON with redirect chains, comments,
 and ordered fields.
 

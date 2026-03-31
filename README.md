@@ -728,17 +728,17 @@ Logger: slogAdapter{l: slog.Default()},
 
 ## Modules
 
-| Module                                   | Description                                                     |
-|------------------------------------------|-----------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin           |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: probing, best selection, rotation, MinPeers watch |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                       |
-| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil             |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil          |
-| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                       |
-| [`mod/settings`](mod/settings/README.md) | Config loading, parsing, and saving                             |
-| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)            |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management    |
+| Module                                   | Description                                                      |
+|------------------------------------------|------------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin            |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: probing, best selection, rotation, MinPeers watch  |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                        |
+| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil              |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil           |
+| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                        |
+| [`mod/settings`](mod/settings/README.md) | Config loading, parsing, and saving (WIP — schema not finalized) |
+| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)             |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management     |
 
 ---
 
