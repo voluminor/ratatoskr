@@ -12,9 +12,9 @@ import (
 
 // ParsedObj holds the result of parsing foreign NodeInfo.
 type ParsedObj struct {
-	Info   string
-	Sigils map[string]sigils.Interface
-	Extra  map[string]any
+	Version string
+	Sigils  map[string]sigils.Interface
+	Extra   map[string]any
 }
 
 // NodeInfo reassembles the parsed data back into a map[string]any
@@ -29,7 +29,7 @@ func (p *ParsedObj) NodeInfo() map[string]any {
 			out[k] = v
 		}
 	}
-	if len(p.Info) > 0 {
+	if len(p.Version) > 0 {
 		out[target.GlobalName] = sigil_core.CompileInfo(p.Sigils)
 	}
 	return out
@@ -71,7 +71,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		return result
 	}
 
-	result.Info = ver
+	result.Version = ver
 	delete(result.Extra, target.GlobalName)
 
 	// //

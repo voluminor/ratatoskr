@@ -45,13 +45,14 @@ func New(cfg ConfigObj) (*Obj, error) {
 		return nil, ErrPeersConflict
 	}
 
+	if cfg.Config == nil {
+		cfg.Config = config.GenerateConfig()
+		cfg.Config.AdminListen = "none"
+	}
+
 	// Assemble NodeInfo from sigils
 	var sigilsObj *sigil_core.Obj
 	if cfg.Sigils != nil {
-		if cfg.Config == nil {
-			cfg.Config = config.GenerateConfig()
-			cfg.Config.AdminListen = "none"
-		}
 		var errs []error
 		sigilsObj, errs = sigil_core.New(cfg.Config.NodeInfo, cfg.Sigils...)
 		for _, e := range errs {

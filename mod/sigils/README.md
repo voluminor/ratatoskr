@@ -6,8 +6,8 @@ NodeInfo is a JSON object (max 16 KB) attached to each Yggdrasil node. Other nod
 protocol. Sigils provide structured access to this data: building local NodeInfo from Go types, and parsing foreign
 NodeInfo received as JSON.
 
-Each sigil owns one or more top-level keys in the NodeInfo map. The `ninfo` module manages sigil registration, conflict
-detection, and assembly into the final NodeInfo.
+Each sigil owns one or more top-level keys in the NodeInfo map. The `sigil_core` subpackage manages sigil registration,
+conflict detection, and assembly into the final NodeInfo. The `ninfo` module handles remote querying and parsing.
 
 ## Table of contents
 

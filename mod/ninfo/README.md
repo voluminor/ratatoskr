@@ -1,9 +1,9 @@
 # mod/ninfo
 
-NodeInfo operations for Yggdrasil nodes: querying remote nodes, parsing responses, and publishing local metadata.
+NodeInfo operations for Yggdrasil nodes: querying remote nodes, parsing responses, and managing parse sigils.
 
 The module captures the `getNodeInfo` handler from `yggcore.Core`, wraps it with address resolution, sigil extraction,
-and ratatoskr metadata parsing. On the publishing side it assembles a `map[string]any` ready for `yggcore.SetNodeInfo`.
+and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handled by `sigil_core`.
 
 ## Table of contents
 
@@ -14,13 +14,9 @@ and ratatoskr metadata parsing. On the publishing side it assembles a `map[strin
     - [AskAddr](#askaddr)
     - [Address formats](#address-formats)
     - [Result structure](#result-structure)
-- [Publishing local NodeInfo](#publishing-local-nodeinfo)
-    - [Sigils](#sigils)
-    - [SigilsObj](#sigilsobj)
 - [Parsing](#parsing)
     - [Parse](#parse)
     - [ParsedObj](#parsedobj)
-    - [ParseRatatoskrInfo](#parseratatoskrinfo)
 - [Sigil management](#sigil-management)
     - [AddSigil / GetSigil / DelSigil](#addsigil--getsigil--delsigil)
     - [ImportSigils](#importsigils)
@@ -40,30 +36,16 @@ flowchart LR
         ImportSigils["ImportSigils(src, mode)"]
     end
 
-    subgraph SO["SigilsObj — publish"]
-        Add["Add(sg...)"]
-        Del["Del(name)"]
-        Get["Get(name)"]
-        NodeInfo["NodeInfo()"]
-    end
-
     subgraph Free["Package-level"]
-      Sigils["Sigils(nodeInfo, sg...)"]
         Parse["Parse(nodeInfo, sg...)"]
-        ParseRI["ParseRatatoskrInfo(raw)"]
     end
 
     AskAddr -->|"resolve addr → key"| Ask
     Ask --> AskResult["AskResultObj\n{RTT, Node, Software}"]
-    AskResult -.->|".Node"| ParsedObj["ParsedObj\n{Info, Sigils, Extra}"]
-
-    Sigils --> SO
-    NodeInfo -->|"map[string]any"| core["yggcore.SetNodeInfo"]
-
-    ImportSigils -.->|"reads sigils from"| SO
+  AskResult -.->|" .Node "| ParsedObj["ParsedObj\n{Version, Sigils, Extra}"]
+  ImportSigils -.->|" reads sigils from "| SC["sigil_core.Obj"]
 
     Parse --> ParsedObj
-    Parse -.->|"internally"| ParseRI
 ```
 
 ---
@@ -154,49 +136,6 @@ Arch     string
 
 ---
 
-## Publishing local NodeInfo
-
-### Sigils
-
-```go
-Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []error)
-```
-
-Creates a `SigilsObj` from a base NodeInfo map and optional sigils. If `nodeInfo` is `nil`, an empty map is used. Errors
-are non-fatal: each failed sigil is skipped, the rest are applied normally.
-
-### SigilsObj
-
-Manages sigils and assembles the final `map[string]any` for `yggcore.SetNodeInfo`.
-
-| Method     | Signature                          | Description                                                        |
-|------------|------------------------------------|--------------------------------------------------------------------|
-| `NodeInfo` | `() map[string]any`                | Returns the assembled map                                          |
-| `String`   | `() string`                        | Human-readable summary                                             |
-| `Add`      | `(sg ...sigils.Interface) []error` | Registers sigils, writes keys into map, updates ratatoskr metadata |
-| `Get`      | `(name string) sigils.Interface`   | Returns sigil by name or `nil`                                     |
-| `Del`      | `(name string) error`              | Removes sigil, its keys, and updates ratatoskr metadata            |
-
-`Add` validates each sigil name, checks for duplicates, calls `SetParams` to merge keys into the internal map, and
-updates the `ratatoskr` metadata key via `compileRatatoskrInfo`.
-
-`Del` removes the sigil's param keys from the map and recompiles the metadata key.
-
-```mermaid
-flowchart LR
-    base["base NodeInfo map"]
-    sg["sigils"]
-
-    base --> SigilsObj
-    sg --> Add["Add: validate + SetParams"]
-    Add --> compile["compileRatatoskrInfo"]
-    compile --> meta["ratatoskr key: '[inet,info] v0.1.3'"]
-    meta --> SigilsObj
-    SigilsObj --> NodeInfo["NodeInfo() → map[string]any"]
-```
-
----
-
 ## Parsing
 
 ### Parse
@@ -209,7 +148,7 @@ Inspects arbitrary NodeInfo received from a remote node. Always returns a non-ni
 
 1. Copies all keys from `nodeInfo` into `Extra`.
 2. Looks for the `ratatoskr` metadata key. If missing or malformed — returns early with everything in `Extra`.
-3. Parses the metadata string via `ParseRatatoskrInfo` to get the sigil list.
+3. Parses the metadata string via `sigil_core.ParseInfo` to get the version and sigil list.
 4. For each declared sigil, looks up a parser: built-in parsers from `target.GlobalSigilParseMap` merged with
    user-provided `sg` (user sigils override built-in on name collision).
 5. Matched sigils are stored in `Sigils`; their keys are removed from `Extra`.
@@ -220,9 +159,9 @@ User-provided sigils are cloned via `Clone()` before parsing, so the caller's te
 
 ```go
 type ParsedObj struct {
-Info   *RatatoskrInfoObj
-Sigils map[string]sigils.Interface
-Extra  map[string]any
+Version string
+Sigils  map[string]sigils.Interface
+Extra   map[string]any
 }
 ```
 
@@ -230,24 +169,6 @@ Extra  map[string]any
 |------------|---------------------|----------------------------------------------------------------------|
 | `NodeInfo` | `() map[string]any` | Reassembles `Extra` + sigil params + ratatoskr key into a single map |
 | `String`   | `() string`         | JSON representation of `NodeInfo()`                                  |
-
-### ParseRatatoskrInfo
-
-```go
-ParseRatatoskrInfo(raw string) (*RatatoskrInfoObj, error)
-```
-
-Parses the ratatoskr metadata string. Accepted formats:
-
-- `"[sigil1,sigil2] version"`
-- `"ratatoskr [sigil1,sigil2] version"`
-
-```go
-type RatatoskrInfoObj struct {
-Version string
-Sigils  []string
-}
-```
 
 ---
 
@@ -269,10 +190,10 @@ collected as errors.
 ### ImportSigils
 
 ```go
-ImportSigils(src *SigilsObj, mode ImportModeObj) []error
+ImportSigils(src *sigil_core.Obj, mode ImportModeObj) []error
 ```
 
-Transfers sigils from a `SigilsObj` into parse sigils. Conflict behavior depends on mode:
+Transfers sigils from a `sigil_core.Obj` into parse sigils. Conflict behavior depends on mode:
 
 | Mode            | Behavior                                          |
 |-----------------|---------------------------------------------------|
