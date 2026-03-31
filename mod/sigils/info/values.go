@@ -6,12 +6,20 @@ import "regexp"
 
 const sigName = "info"
 
+const (
+	keyName        = "name"
+	keyType        = "type"
+	keyLocation    = "location"
+	keyContact     = "contact"
+	keyDescription = "description"
+)
+
 var sigKeys = []string{
-	"name",
-	"type",
-	"location",
-	"contact",
-	"description",
+	keyName,
+	keyType,
+	keyLocation,
+	keyContact,
+	keyDescription,
 }
 
 const (

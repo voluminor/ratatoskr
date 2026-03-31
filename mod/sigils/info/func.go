@@ -31,20 +31,20 @@ func Match(NodeInfo map[string]any) bool {
 	if len(bufMap) < 2 {
 		return false
 	}
-	if _, ok := bufMap["name"]; !ok {
+	if _, ok := bufMap[keyName]; !ok {
 		return false
 	}
-	if _, ok := bufMap["type"]; !ok {
+	if _, ok := bufMap[keyType]; !ok {
 		return false
 	}
 
 	for key, data := range bufMap {
 		switch key {
-		case "name", "type", "location", "description":
+		case keyName, keyType, keyLocation, keyDescription:
 			if _, ok := data.(string); !ok {
 				return false
 			}
-		case "contact":
+		case keyContact:
 			m, ok := data.(map[string]any)
 			if !ok {
 				return false

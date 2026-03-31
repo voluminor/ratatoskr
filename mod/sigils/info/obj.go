@@ -92,19 +92,19 @@ func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	parsed := ParseParams(NodeInfo)
 
 	conf := ConfigObj{}
-	if v, ok := parsed["name"].(string); ok {
+	if v, ok := parsed[keyName].(string); ok {
 		conf.Name = v
 	}
-	if v, ok := parsed["type"].(string); ok {
+	if v, ok := parsed[keyType].(string); ok {
 		conf.Type = v
 	}
-	if v, ok := parsed["location"].(string); ok {
+	if v, ok := parsed[keyLocation].(string); ok {
 		conf.Location = v
 	}
-	if v, ok := parsed["description"].(string); ok {
+	if v, ok := parsed[keyDescription].(string); ok {
 		conf.Description = v
 	}
-	if raw, ok := parsed["contact"].(map[string]any); ok {
+	if raw, ok := parsed[keyContact].(map[string]any); ok {
 		conf.Contacts = make(map[string][]string, len(raw))
 		for group, v := range raw {
 			arr, ok := v.([]any)
@@ -144,19 +144,19 @@ func (o *Obj) Params() map[string]any {
 	result := make(map[string]any)
 
 	if o.conf.Name != "" {
-		result["name"] = o.conf.Name
+		result[keyName] = o.conf.Name
 	}
 	if o.conf.Type != "" {
-		result["type"] = o.conf.Type
+		result[keyType] = o.conf.Type
 	}
 	if o.conf.Location != "" {
-		result["location"] = o.conf.Location
+		result[keyLocation] = o.conf.Location
 	}
 	if len(o.conf.Contacts) > 0 {
-		result["contact"] = o.conf.Contacts
+		result[keyContact] = o.conf.Contacts
 	}
 	if o.conf.Description != "" {
-		result["description"] = o.conf.Description
+		result[keyDescription] = o.conf.Description
 	}
 
 	return result
