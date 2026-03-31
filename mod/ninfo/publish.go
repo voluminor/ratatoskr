@@ -18,7 +18,7 @@ type SigilsObj struct {
 // Sigils creates a SigilsObj with the given base NodeInfo and optional sigils.
 // Returned errors are non-fatal: each failed sigil is skipped,
 // the rest are applied normally.
-func (obj *Obj) Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []error) {
+func Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []error) {
 	s := new(SigilsObj)
 	s.sigils = make(map[string]sigils.Interface)
 

@@ -1,13 +1,17 @@
 package ratatoskr
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 
+	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
+	"golang.org/x/crypto/ed25519"
 
 	"github.com/voluminor/ratatoskr/mod/core"
+	"github.com/voluminor/ratatoskr/mod/ninfo"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/resolver"
 	"github.com/voluminor/ratatoskr/mod/socks"
@@ -23,6 +27,7 @@ type Obj struct {
 	core.Interface
 	socksServer socks.Interface
 	peerMgr     *peermgr.Obj
+	nodeInfo    *ninfo.Obj
 	logger      yggcore.Logger
 	done        chan struct{}
 	closeOnce   sync.Once
@@ -39,6 +44,21 @@ func New(cfg ConfigObj) (*Obj, error) {
 		return nil, ErrPeersConflict
 	}
 
+	// Assemble NodeInfo from sigils
+	var sigilsObj *ninfo.SigilsObj
+	if cfg.Sigils != nil {
+		if cfg.Config == nil {
+			cfg.Config = config.GenerateConfig()
+			cfg.Config.AdminListen = "none"
+		}
+		var errs []error
+		sigilsObj, errs = ninfo.Sigils(cfg.Config.NodeInfo, cfg.Sigils...)
+		for _, e := range errs {
+			cfg.Logger.Warnf("[ratatoskr] sigil: %v", e)
+		}
+		cfg.Config.NodeInfo = sigilsObj.NodeInfo()
+	}
+
 	coreNode, err := core.New(core.ConfigObj{
 		Config:          cfg.Config,
 		Logger:          cfg.Logger,
@@ -48,8 +68,21 @@ func New(cfg ConfigObj) (*Obj, error) {
 		return nil, err
 	}
 
+	// ninfo — always created for Ask/AskAddr
+	ni, err := ninfo.New(coreNode.UnsafeCore(), cfg.Logger)
+	if err != nil {
+		_ = coreNode.Close()
+		return nil, fmt.Errorf("ninfo: %w", err)
+	}
+	if sigilsObj != nil {
+		for _, e := range ni.ImportSigils(sigilsObj, ninfo.ImportAppend) {
+			cfg.Logger.Warnf("[ratatoskr] parse sigil: %v", e)
+		}
+	}
+
 	obj := &Obj{
 		Interface:   coreNode,
+		nodeInfo:    ni,
 		socksServer: socks.New(coreNode),
 		logger:      cfg.Logger,
 		done:        make(chan struct{}),
@@ -122,13 +155,23 @@ func (o *Obj) PeerManagerOptimize() error {
 	return o.peerMgr.Optimize()
 }
 
-// //
-
 // RetryPeers initiates immediate reconnection of disconnected peers
 func (o *Obj) RetryPeers() {
 	if coreNode, ok := o.Interface.(*core.Obj); ok {
 		coreNode.UnsafeCore().RetryPeersNow()
 	}
+}
+
+// Ask queries a remote node's NodeInfo by public key.
+// Returns parsed metadata, build info, and measured RTT
+func (o *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*ninfo.AskResultObj, error) {
+	return o.nodeInfo.Ask(ctx, key)
+}
+
+// AskAddr queries a remote node's NodeInfo by address string.
+// Supported formats: "<hex>.pk.ygg", "[ip6]:port", "ip6", raw 64-char hex
+func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, error) {
+	return o.nodeInfo.AskAddr(ctx, addr)
 }
 
 // //
@@ -143,6 +186,7 @@ func (o *Obj) Close() error {
 		}
 		closeErr = errors.Join(
 			o.socksServer.Disable(),
+			o.nodeInfo.Close(),
 			o.Interface.Close(),
 		)
 	})

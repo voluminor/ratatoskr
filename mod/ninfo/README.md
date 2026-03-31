@@ -38,7 +38,6 @@ flowchart LR
         Ask["Ask(ctx, key)"]
         AddSigil["AddSigil / GetSigil / DelSigil"]
         ImportSigils["ImportSigils(src, mode)"]
-        Sigils["Sigils(nodeInfo, sg...)"]
     end
 
     subgraph SO["SigilsObj — publish"]
@@ -49,6 +48,7 @@ flowchart LR
     end
 
     subgraph Free["Package-level"]
+      Sigils["Sigils(nodeInfo, sg...)"]
         Parse["Parse(nodeInfo, sg...)"]
         ParseRI["ParseRatatoskrInfo(raw)"]
     end
@@ -159,7 +159,7 @@ Arch     string
 ### Sigils
 
 ```go
-obj.Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []error)
+Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []error)
 ```
 
 Creates a `SigilsObj` from a base NodeInfo map and optional sigils. If `nodeInfo` is `nil`, an empty map is used. Errors
