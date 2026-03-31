@@ -14,6 +14,14 @@ import (
 
 const defaultProbeTimeout = 10 * time.Second
 
+// WatchInterval controls how often watchPeers polls GetPeers
+// to check active peer count against MinPeers.
+var WatchInterval = 10 * time.Second
+
+// MinPeersConfirmations is the number of consecutive ticks at or below
+// MinPeers threshold required before triggering an unscheduled optimize.
+var MinPeersConfirmations = 3
+
 // //
 
 // ConfigObj — peer manager parameters
@@ -39,6 +47,14 @@ type ConfigObj struct {
 	//   0 or 1 — all candidates added in one batch (default)
 	//   N >= 2  — sliding window: N candidates at a time, race to elimination
 	BatchSize int
+
+	// Minimum active peer count before triggering unscheduled re-evaluation.
+	// When active Up peers drop to this value for MinPeersConfirmations
+	// consecutive checks, optimize is triggered automatically.
+	//   0     — disabled (default)
+	//   N > 0 — threshold; must be < MaxPerProto (unless -1) and < len(Peers)
+	// Ignored in passive mode (MaxPerProto == -1).
+	MinPeers uint8
 
 	// Logger; required
 	Logger yggcore.Logger
@@ -81,6 +97,17 @@ func New(node core.Interface, cfg ConfigObj) (*Obj, error) {
 	}
 	if len(peers) == 0 {
 		return nil, ErrNoPeers
+	}
+
+	if cfg.MinPeers > 0 {
+		if cfg.MaxPerProto == -1 {
+			cfg.Logger.Warnf("[peermgr] MinPeers ignored in passive mode (MaxPerProto == -1)")
+			cfg.MinPeers = 0
+		} else if cfg.MaxPerProto > 0 && cfg.MaxPerProto <= int(cfg.MinPeers) {
+			return nil, ErrMinPeersTooHigh
+		} else if len(peers) <= int(cfg.MinPeers) {
+			return nil, ErrMinPeersTooMany
+		}
 	}
 
 	return &Obj{cfg: cfg, node: node, peers: peers}, nil

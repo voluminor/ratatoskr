@@ -17,6 +17,10 @@ func Run(cfg *gsettings.GoObj) (bool, error) {
 		return true, err
 	}
 
+	if handled, err := askCmd(&cfg.Ask); handled {
+		return true, err
+	}
+
 	if handled, err := peerInfoCmd(&cfg.PeerInfo); handled {
 		return true, err
 	}
@@ -25,8 +29,8 @@ func Run(cfg *gsettings.GoObj) (bool, error) {
 		return true, err
 	}
 
-	if cfg.Traceroute.Scan || cfg.Traceroute.Trace != "" || cfg.Traceroute.Ping != "" {
-		return true, traceCmd(&cfg.Traceroute)
+	if cfg.Probe.Scan || cfg.Probe.Trace != "" || cfg.Probe.Ping != "" {
+		return true, traceCmd(&cfg.Probe)
 	}
 
 	return false, nil

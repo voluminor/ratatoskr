@@ -19,7 +19,7 @@ import (
 	"github.com/voluminor/ratatoskr"
 	"github.com/voluminor/ratatoskr/mod/core"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
-	"github.com/voluminor/ratatoskr/mod/traceroute"
+	"github.com/voluminor/ratatoskr/mod/probe"
 )
 
 // // // // // // // // // //
@@ -80,9 +80,9 @@ func main() {
 	}
 
 	coreNode := node.Interface.(*core.Obj)
-	tr, err := traceroute.New(coreNode.UnsafeCore(), logger)
+	tr, err := probe.New(coreNode.UnsafeCore(), logger)
 	if err != nil {
-		fmt.Println("Error: traceroute:", err)
+		fmt.Println("Error: probe:", err)
 		os.Exit(1)
 	}
 	defer tr.Close()
@@ -145,7 +145,7 @@ func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree,
 	mux := http.NewServeMux()
 	mux.Handle("/yggdrasil-server.json", info.Handler(isYgg))
 	mux.Handle("/ygg-qr.png", qr)
-	mux.Handle("/traceroute.json", trace)
+	mux.Handle("/probe.json", trace)
 	mux.Handle("/tree.json", tree)
 	mux.Handle("/tree-ws", treeWS)
 	if isYgg {

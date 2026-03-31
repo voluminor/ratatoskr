@@ -69,3 +69,20 @@ func countUp(results []peerResultObj) int {
 	}
 	return n
 }
+
+// countUpActive counts Up peers among the active URI set
+func countUpActive(activeURIs []string, peers []yggcore.PeerInfo) int {
+	peerMap := make(map[string]bool, len(peers))
+	for _, p := range peers {
+		if p.Up {
+			peerMap[p.URI] = true
+		}
+	}
+	n := 0
+	for _, uri := range activeURIs {
+		if peerMap[uri] {
+			n++
+		}
+	}
+	return n
+}

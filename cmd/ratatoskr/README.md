@@ -70,14 +70,30 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ./ratatoskr -go.conf.export.from /etc/ratatoskr/ratatoskr-config.yml -go.conf.export.to /etc/yggdrasil
 ```
 
-## Peer info
+## Ask
+
+Query remote node's NodeInfo by address:
 
 ```bash
-./ratatoskr -go.peer_info.url tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
+./ratatoskr -go.ask.addr [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442
 ```
 
 ```bash
-./ratatoskr -go.peer_info.url tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
+./ratatoskr -go.ask.addr 200:abcd::1 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.format json
+```
+
+```bash
+./ratatoskr -go.ask.addr a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.timeout 10s
+```
+
+## Peer info
+
+```bash
+./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
+```
+
+```bash
+./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
 ```
 
 ## Port forwarding
@@ -86,16 +102,16 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ./ratatoskr -go.forward.from 127.0.0.1:8080 -go.forward.to [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.forward.peer  tcp://yggdrasil.sunsung.fun:4442
 ```
 
-## Traceroute
+## Probe
 
 ```bash
-./ratatoskr -go.traceroute.trace a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.traceroute.peer tcp://yggdrasil.sunsung.fun:4442
+./ratatoskr -go.probe.trace a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
 ```
 
 ```bash
-./ratatoskr -go.traceroute.scan -go.traceroute.peer tcp://yggdrasil.sunsung.fun:4442
+./ratatoskr -go.probe.scan -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
 ```
 
 ```bash
-./ratatoskr -go.traceroute.ping a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.traceroute.peer tcp://yggdrasil.sunsung.fun:4442
+./ratatoskr -go.probe.ping a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
 ```

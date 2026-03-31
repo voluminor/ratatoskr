@@ -8,6 +8,7 @@ import (
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 	"github.com/voluminor/ratatoskr/mod/peermgr"
+	"github.com/voluminor/ratatoskr/mod/sigils"
 )
 
 // // // // // // // // // //
@@ -32,6 +33,12 @@ type ConfigObj struct {
 	// nil → peers are taken from Config.Peers as usual.
 	// Not nil + Config.Peers non-empty → error in New().
 	Peers *peermgr.ConfigObj
+
+	// Sigils for NodeInfo assembly; nil → not used.
+	// When set, sigils write their data into Config.NodeInfo.
+	// Config.NodeInfo serves as the base (has priority); sigil data is added on top.
+	// Can be combined with Config.NodeInfo or used standalone.
+	Sigils []sigils.Interface
 }
 
 // //
