@@ -25,6 +25,7 @@ detection, and assembly into the final NodeInfo.
     - [Params](#params)
   - [Clone](#clone)
 - [Package-level functions](#package-level-functions)
+- [Direct data access](#direct-data-access)
 - [Built-in sigils](#built-in-sigils)
     - [info](#info)
     - [public](#public)
@@ -43,8 +44,12 @@ Every sigil lives in its own subpackage under `mod/sigils/<name>/` with three fi
 mod/sigils/<name>/
 ├── values.go  — constants, variables, regexps
 ├── func.go    — package-level functions: Name(), Keys(), ParseParams(), Match(), Parse()
-└── obj.go     — Obj struct, New() constructor, sigils.Interface methods
+├── obj.go     — Obj struct, New() constructor, sigils.Interface methods
+└── access.go  — (optional) typed data accessors on *Obj, not part of Interface
 ```
+
+`access.go` is not mandatory but recommended. It provides typed access to the sigil's internal data without going
+through `Params() map[string]any`. This lets callers who know the concrete type work with native Go types directly.
 
 ### Rules
 
@@ -220,6 +225,41 @@ Every sigil package also exports standalone functions that work without an objec
 | `Match(map[string]any) bool`                 | Same as interface method, no object needed                        |
 | `ParseParams(map[string]any) map[string]any` | Extracts keys without storing into object                         |
 | `Parse(map[string]any) (*Obj, error)`        | Creates an `Obj` from foreign NodeInfo (calls `Match` internally) |
+
+---
+
+## Direct data access
+
+Each sigil may provide typed accessor methods on `*Obj` via `access.go`. These methods are **not part of
+`sigils.Interface`** — they are available only after a type assertion from `Interface` to the concrete `*Obj`.
+
+This avoids the overhead of working with `map[string]any` when the caller already knows which sigil it is dealing with.
+
+| Sigil      | Method       | Return type           |
+|------------|--------------|-----------------------|
+| `info`     | `Info()`     | `*ConfigObj`          |
+| `public`   | `Peers()`    | `map[string][]string` |
+| `inet`     | `Addrs()`    | `[]string`            |
+| `services` | `Services()` | `map[string]uint16`   |
+
+### Example: type assertion from Interface
+
+```go
+var sig sigils.Interface // received from ninfo or any other source
+
+// assert to concrete *info.Obj
+if infoObj, ok := sig.(*info.Obj); ok {
+conf := infoObj.Info()
+fmt.Println(conf.Name, conf.Type, conf.Location)
+}
+
+// assert to concrete *services.Obj
+if svcObj, ok := sig.(*services.Obj); ok {
+for name, port := range svcObj.Services() {
+fmt.Printf("%s:%d\n", name, port)
+}
+}
+```
 
 ---
 
