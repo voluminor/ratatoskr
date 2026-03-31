@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
+	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 	"github.com/voluminor/ratatoskr/target"
 )
 
@@ -11,7 +12,7 @@ import (
 
 // ParsedObj holds the result of parsing foreign NodeInfo.
 type ParsedObj struct {
-	Info   *RatatoskrInfoObj
+	Info   string
 	Sigils map[string]sigils.Interface
 	Extra  map[string]any
 }
@@ -28,8 +29,8 @@ func (p *ParsedObj) NodeInfo() map[string]any {
 			out[k] = v
 		}
 	}
-	if p.Info != nil {
-		out[target.GlobalName] = p.Info.String()
+	if len(p.Info) > 0 {
+		out[target.GlobalName] = sigil_core.CompileInfo(p.Sigils)
 	}
 	return out
 }
@@ -65,12 +66,12 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		return result
 	}
 
-	ri, err := ParseRatatoskrInfo(str)
+	ver, sigilsArr, err := sigil_core.ParseInfo(str)
 	if err != nil {
 		return result
 	}
 
-	result.Info = ri
+	result.Info = ver
 	delete(result.Extra, target.GlobalName)
 
 	// //
@@ -89,7 +90,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 
 	// //
 
-	for _, name := range ri.Sigils {
+	for _, name := range sigilsArr {
 		fn, ok := parsers[name]
 		if !ok {
 			continue
@@ -101,7 +102,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		}
 
 		if result.Sigils == nil {
-			result.Sigils = make(map[string]sigils.Interface, len(ri.Sigils))
+			result.Sigils = make(map[string]sigils.Interface, len(sigilsArr))
 		}
 		result.Sigils[name] = parsed
 

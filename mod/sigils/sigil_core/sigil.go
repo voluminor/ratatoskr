@@ -1,4 +1,4 @@
-package ninfo
+package sigil_core
 
 import (
 	"fmt"
@@ -9,17 +9,17 @@ import (
 
 // // // // // // // // // //
 
-// SigilsObj manages sigils and assembles local NodeInfo.
-type SigilsObj struct {
+// Obj manages sigils and assembles local NodeInfo.
+type Obj struct {
 	localNodeInfo map[string]any
 	sigils        map[string]sigils.Interface
 }
 
-// Sigils creates a SigilsObj with the given base NodeInfo and optional sigils.
+// New creates a Obj with the given base NodeInfo and optional sigils.
 // Returned errors are non-fatal: each failed sigil is skipped,
 // the rest are applied normally.
-func Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []error) {
-	s := new(SigilsObj)
+func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
+	s := new(Obj)
 	s.sigils = make(map[string]sigils.Interface)
 
 	if nodeInfo == nil {
@@ -38,13 +38,28 @@ func Sigils(nodeInfo map[string]any, sg ...sigils.Interface) (*SigilsObj, []erro
 // //
 
 // NodeInfo returns the assembled map ready for yggcore.NodeInfo option.
-func (s *SigilsObj) NodeInfo() map[string]any {
+func (s *Obj) NodeInfo() map[string]any {
 	return s.localNodeInfo
 }
 
-// String returns a short human-readable summary.
-func (s *SigilsObj) String() string {
+func (s *Obj) Sigils() map[string]sigils.Interface {
+	return s.sigils
+}
+
+func (s *Obj) String() string {
 	return fmt.Sprintf("%s %s", target.GlobalName, s.localNodeInfo[target.GlobalName].(string))
+}
+
+func (s *Obj) LenSigils() int {
+	return len(s.sigils)
+}
+
+func (s *Obj) LenLocal() int {
+	return len(s.localNodeInfo)
+}
+
+func (s *Obj) Len() int {
+	return len(s.sigils) + len(s.localNodeInfo)
 }
 
 // //
@@ -53,10 +68,10 @@ func (s *SigilsObj) String() string {
 // Each sigil is validated, checked for name conflicts, and then
 // applied via SetParams. On failure it is skipped and the error is collected.
 // After all sigils are processed, the ratatoskr metadata key is updated.
-func (s *SigilsObj) Add(sg ...sigils.Interface) []error {
+func (s *Obj) Add(sg ...sigils.Interface) []error {
 	errs := make([]error, 0)
 	defer func() {
-		s.localNodeInfo[target.GlobalName] = compileRatatoskrInfo(s.sigils)
+		s.localNodeInfo[target.GlobalName] = CompileInfo(s.sigils)
 	}()
 
 	for _, si := range sg {
@@ -84,7 +99,7 @@ func (s *SigilsObj) Add(sg ...sigils.Interface) []error {
 }
 
 // Get returns a registered sigil by name, or nil if not found.
-func (s *SigilsObj) Get(name string) sigils.Interface {
+func (s *Obj) Get(name string) sigils.Interface {
 	sg, ok := s.sigils[name]
 	if !ok {
 		return nil
@@ -93,7 +108,7 @@ func (s *SigilsObj) Get(name string) sigils.Interface {
 }
 
 // Del removes a sigil and deletes its keys from localNodeInfo.
-func (s *SigilsObj) Del(name string) error {
+func (s *Obj) Del(name string) error {
 	sg, ok := s.sigils[name]
 	if !ok {
 		return fmt.Errorf("sigil[%s] not found", name)
@@ -105,7 +120,7 @@ func (s *SigilsObj) Del(name string) error {
 		delete(s.localNodeInfo, key)
 	}
 
-	s.localNodeInfo[target.GlobalName] = compileRatatoskrInfo(s.sigils)
+	s.localNodeInfo[target.GlobalName] = CompileInfo(s.sigils)
 
 	return nil
 }

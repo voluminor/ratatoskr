@@ -7,6 +7,7 @@ require (
 	github.com/hjson/hjson-go/v4 v4.6.0
 	github.com/things-go/go-socks5 v0.1.1
 	github.com/yggdrasil-network/yggdrasil-go v0.5.13
+	golang.org/x/crypto v0.49.0
 	golang.org/x/net v0.52.0
 	gopkg.in/yaml.v3 v3.0.1
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6
@@ -22,7 +23,6 @@ require (
 	github.com/kr/text v0.2.0 // indirect
 	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
 	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

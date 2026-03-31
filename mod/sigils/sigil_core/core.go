@@ -1,4 +1,4 @@
-package ninfo
+package sigil_core
 
 import (
 	"errors"
@@ -12,19 +12,7 @@ import (
 
 // // // // // // // // // //
 
-// RatatoskrInfoObj holds parsed ratatoskr metadata from a NodeInfo string.
-type RatatoskrInfoObj struct {
-	Version string
-	Sigils  []string
-}
-
-func (ri *RatatoskrInfoObj) String() string {
-	return fmt.Sprintf("[%s] %s", strings.Join(ri.Sigils, ","), ri.Version)
-}
-
-// //
-
-func compileRatatoskrInfo(sg map[string]sigils.Interface) string {
+func CompileInfo(sg map[string]sigils.Interface) string {
 	names := make([]string, 0, len(sg))
 	for name := range sg {
 		names = append(names, name)
@@ -37,22 +25,22 @@ func compileRatatoskrInfo(sg map[string]sigils.Interface) string {
 	)
 }
 
-// ParseRatatoskrInfo parses a ratatoskr info string.
+// ParseInfo parses a ratatoskr info string.
 // Accepted formats:
 //   - "[sigil1,sigil2] version"
 //   - "ratatoskr [sigil1,sigil2] version"
-func ParseRatatoskrInfo(raw string) (*RatatoskrInfoObj, error) {
+func ParseInfo(raw string) (string, []string, error) {
 	begin := strings.IndexByte(raw, '[')
 	end := strings.IndexByte(raw, ']')
 	if begin < 0 || end < begin+1 {
-		return nil, errors.New("invalid format: missing sigil brackets")
+		return "", nil, errors.New("invalid format: missing sigil brackets")
 	}
 
 	body := raw[begin+1 : end]
 
 	rest := strings.TrimSpace(raw[end+1:])
 	if rest == "" {
-		return nil, errors.New("invalid format: missing version")
+		return "", nil, errors.New("invalid format: missing version")
 	}
 
 	var names []string
@@ -60,8 +48,5 @@ func ParseRatatoskrInfo(raw string) (*RatatoskrInfoObj, error) {
 		names = strings.Split(body, ",")
 	}
 
-	return &RatatoskrInfoObj{
-		Version: rest,
-		Sigils:  names,
-	}, nil
+	return rest, names, nil
 }

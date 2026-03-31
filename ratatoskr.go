@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"golang.org/x/crypto/ed25519"
@@ -45,14 +46,14 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 
 	// Assemble NodeInfo from sigils
-	var sigilsObj *ninfo.SigilsObj
+	var sigilsObj *sigil_core.Obj
 	if cfg.Sigils != nil {
 		if cfg.Config == nil {
 			cfg.Config = config.GenerateConfig()
 			cfg.Config.AdminListen = "none"
 		}
 		var errs []error
-		sigilsObj, errs = ninfo.Sigils(cfg.Config.NodeInfo, cfg.Sigils...)
+		sigilsObj, errs = sigil_core.New(cfg.Config.NodeInfo, cfg.Sigils...)
 		for _, e := range errs {
 			cfg.Logger.Warnf("[ratatoskr] sigil: %v", e)
 		}

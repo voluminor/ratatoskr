@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
+	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
@@ -159,22 +160,22 @@ func (obj *Obj) DelSigil(name string) error {
 
 // //
 
-// ImportSigils transfers sigils from a SigilsObj into parse sigils.
+// ImportSigils transfers sigils from a *sigil_core.Obj into parse sigils.
 // Behavior on name conflict is controlled by mode:
 //   - ImportAppend: error on conflict, keep existing
 //   - ImportReplace: overwrite on conflict
 //   - ImportReset: clear all existing, write only from source
-func (obj *Obj) ImportSigils(src *SigilsObj, mode ImportModeObj) []error {
+func (obj *Obj) ImportSigils(src *sigil_core.Obj, mode ImportModeObj) []error {
 	if mode == ImportReset {
-		obj.sigils = make(map[string]sigils.Interface, len(src.sigils))
-		for name, si := range src.sigils {
+		obj.sigils = make(map[string]sigils.Interface, src.LenSigils())
+		for name, si := range src.Sigils() {
 			obj.sigils[name] = si
 		}
 		return nil
 	}
 
 	var errs []error
-	for name, si := range src.sigils {
+	for name, si := range src.Sigils() {
 		if _, exists := obj.sigils[name]; exists {
 			if mode == ImportAppend {
 				errs = append(errs, fmt.Errorf("sigil[%s] already exists", name))
