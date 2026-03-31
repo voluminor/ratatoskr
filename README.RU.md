@@ -36,6 +36,7 @@ Go-библиотека для встраивания узла Yggdrasil в пр
   - [SOCKS5-прокси](#socks5-прокси)
   - [Менеджер пиров](#менеджер-пиров)
   - [RetryPeers](#retrypeers)
+  - [Ask / AskAddr](#ask--askaddr)
   - [Snapshot](#snapshot)
   - [Close](#close)
 - [Конфигурация](#конфигурация)
@@ -129,11 +130,17 @@ flowchart TB
     Obj["Obj — фасад"]
     SOCKS["SOCKS5-прокси"]
     PeerMgr["Peer Manager"]
+    NInfo["ninfo — Ask / AskAddr"]
   end
 
   subgraph core["mod/core"]
     CoreObj["core.Obj"]
     Netstack["netstack — userspace TCP/UDP"]
+  end
+
+  subgraph sigils["mod/sigils"]
+    SigilCore["sigil_core — сборка NodeInfo"]
+    Sigils["inet, info, public, services"]
   end
 
   subgraph external["Внешние зависимости"]
@@ -145,16 +152,20 @@ flowchart TB
   Obj -->|" core.Interface "| CoreObj
   Obj --> SOCKS
   Obj --> PeerMgr
+  Obj --> NInfo
+  NInfo -->|" getNodeInfo "| YggCore
   SOCKS -->|" DialContext "| CoreObj
   PeerMgr -->|" AddPeer / RemovePeer "| CoreObj
+  SigilCore --> CoreObj
+  Sigils --> SigilCore
   CoreObj --> Netstack
   Netstack --> gVisor
   Netstack -->|" IPv6-пакеты "| YggCore
 ```
 
 `ratatoskr.Obj` встраивает `core.Interface` — все сетевые методы (`DialContext`, `Listen`,
-`ListenPacket`, `Address`, `Subnet`, `PublicKey` и т.д.) доступны напрямую. SOCKS5-прокси
-и менеджер пиров — опциональные компоненты, управляемые через методы `Obj`.
+`ListenPacket`, `Address`, `Subnet`, `PublicKey` и т.д.) доступны напрямую. SOCKS5-прокси,
+менеджер пиров и ninfo — опциональные компоненты, управляемые через методы `Obj`.
 
 ---
 
@@ -170,8 +181,12 @@ func New(cfg ConfigObj) (*Obj, error)
 
 ```mermaid
 flowchart LR
-  New["New(cfg)"] --> Core["Запуск core"]
-  Core --> PM{Peers задан?}
+  New["New(cfg)"] --> SG{Sigils задан?}
+  SG -->|Да| SC["sigil_core.New() → NodeInfo"]
+  SG -->|Нет| Core
+  SC --> Core["Запуск core"]
+  Core --> NI["ninfo.New()"]
+  NI --> PM{Peers задан?}
   PM -->|Да| Start["peermgr.Start()"]
   PM -->|Нет| Ready["Obj готов"]
   Start --> Ready
@@ -180,6 +195,7 @@ flowchart LR
 
 - Если `cfg.Config == nil` — генерируются случайные ключи
 - Если `cfg.Logger == nil` — логи отбрасываются (noop-логгер)
+- Если `cfg.Sigils != nil` — собирается NodeInfo из сигилов; `Config.NodeInfo` используется как база
 - Если `cfg.Peers != nil` — запускается менеджер пиров; `cfg.Config.Peers` должен быть пустым
 - Если `cfg.Ctx != nil` — при отмене контекста узел автоматически завершится
 
@@ -251,6 +267,68 @@ func (o *Obj) RetryPeers()
 Инициирует немедленное переподключение отключённых пиров. Работает независимо от менеджера пиров —
 вызывает `core.RetryPeersNow()` напрямую.
 
+### Ask / AskAddr
+
+```go
+func (o *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*ninfo.AskResultObj, error)
+func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, error)
+```
+
+Запрос NodeInfo удалённого узла. `Ask` принимает публичный ключ, `AskAddr` — строку-адрес
+(64-символьный hex, `<hex>.pk.ygg`, `[ipv6]:port` или голый IPv6). Возвращает распарсенные
+метаданные, информацию о ПО и замеренный RTT.
+
+Если удалённый узел использует `ratatoskr`, ответ автоматически разбирается на сигилы — каждый
+известный сигил попадает в `AskResultObj.Node.Sigils`, остальные ключи — в `Extra`.
+
+```go
+result, err := node.AskAddr(ctx, "200:abcd::1")
+if err != nil {
+log.Fatal(err)
+}
+fmt.Printf("RTT: %s, version: %s\n", result.RTT, result.Node.Version)
+if result.Software != nil {
+fmt.Printf("Software: %s %s\n", result.Software.Name, result.Software.Version)
+}
+for name, sigil := range result.Node.Sigils {
+fmt.Printf("Sigil %s: %v\n", name, sigil.Params())
+}
+```
+
+Внутренне `ninfo` создаётся всегда при `New()`. Если в `ConfigObj.Sigils` переданы сигилы — они
+импортируются в `ninfo` как парсеры для ответов. Подробнее — в [mod/ninfo/README.md](mod/ninfo/README.md).
+
+### Sigils (NodeInfo)
+
+```go
+type ConfigObj struct {
+// ...
+Sigils []sigils.Interface
+}
+```
+
+Сигилы — типизированные блоки данных для NodeInfo. Каждый сигил владеет набором ключей в NodeInfo
+и умеет записывать/читать их. При передаче в `ConfigObj.Sigils`:
+
+1. `sigil_core.New()` собирает NodeInfo из базового `Config.NodeInfo` и переданных сигилов
+2. Результат записывается в `Config.NodeInfo` перед запуском core
+3. Те же сигилы импортируются в `ninfo` как парсеры для `Ask`/`AskAddr`
+
+```go
+node, err := ratatoskr.New(ratatoskr.ConfigObj{
+Ctx: ctx,
+Sigils: []sigils.Interface{
+info.New("my-node", "My cool Yggdrasil node"),
+public.New(ed25519.PublicKey(pk)),
+inet.New("192.168.1.1", 8080),
+},
+})
+```
+
+Встроенные сигилы: `info`, `public`, `inet`, `services`. Можно создавать свои, реализуя
+`sigils.Interface`. Подробнее — в [mod/sigils/README.md](mod/sigils/README.md) и
+[mod/sigils/sigil_core/README.md](mod/sigils/sigil_core/README.md).
+
 ### Snapshot
 
 ```go
@@ -285,7 +363,8 @@ func (o *Obj) Close() error
 flowchart TD
   Close --> PM["peermgr.Stop()"]
   PM --> S1["Disable SOCKS"]
-  S1 --> S2["core.Close() — multicast, admin, listeners, core.Stop, NIC, gVisor"]
+  S1 --> S15["ninfo.Close()"]
+  S15 --> S2["core.Close() — multicast, admin, listeners, core.Stop, NIC, gVisor"]
   S2 --> Done["Завершено"]
 ```
 
@@ -306,6 +385,7 @@ flowchart TD
 | `Logger`          | `yggcore.Logger`     | `nil`        | Логгер. `nil` — логи отбрасываются                                                 |
 | `CoreStopTimeout` | `time.Duration`      | `0`          | Таймаут `core.Stop()`. `0` — без ограничений                                       |
 | `Peers`           | `*peermgr.ConfigObj` | `nil`        | Менеджер пиров. `nil` — пиры из `Config.Peers`. Не `nil` + `Config.Peers` → ошибка |
+| `Sigils`          | `[]sigils.Interface` | `nil`        | Сигилы для NodeInfo. `nil` — не используются. Комбинируется с `Config.NodeInfo`    |
 
 ### SOCKSConfigObj
 
@@ -384,6 +464,7 @@ flowchart TD
 | `AddPeer` / `RemovePeer`                | Делегируют в `yggdrasil-go/core` (потокобезопасно)           |
 | `PeerManagerActive`                     | Возвращает копию; защищён мьютексом                          |
 | `PeerManagerOptimize`                   | Блокирует; сериализован через `optimizeMu`                   |
+| `Ask` / `AskAddr`                       | Потокобезопасны; сетевой вызов в горутине, отменяется по ctx |
 | `Close`                                 | Идемпотентный (`sync.Once`)                                  |
 | `Snapshot`                              | Потокобезопасен; собирает данные из потокобезопасных методов |
 
@@ -394,8 +475,12 @@ flowchart TD
 ```mermaid
 flowchart TD
   START([Создание]) --> NEW["ratatoskr.New(cfg)"]
-  NEW --> CORE["core.New() — Yggdrasil + netstack + NIC"]
-  CORE --> PM{Peers задан?}
+  NEW --> SG{Sigils задан?}
+  SG -->|Да| SC["sigil_core.New() → NodeInfo"]
+  SG -->|Нет| CORE
+  SC --> CORE["core.New() — Yggdrasil + netstack + NIC"]
+  CORE --> NI["ninfo.New()"]
+  NI --> PM{Peers задан?}
   PM -->|Да| PMSTART["peermgr.New() + Start()"]
   PM -->|Нет| READY
   PMSTART --> READY([Узел готов])
@@ -403,14 +488,17 @@ flowchart TD
   READY -->|опционально| MC["EnableMulticast()"]
   READY -->|опционально| ADM["EnableAdmin()"]
   READY -->|опционально| PEERS["AddPeer() / RemovePeer()"]
+  READY -->|опционально| ASK["Ask() / AskAddr()"]
   SOCKS --> READY
   MC --> READY
   ADM --> READY
   PEERS --> READY
+  ASK --> READY
   READY --> CLOSE["Close()"]
   CLOSE --> S1["peermgr.Stop()"]
   S1 --> S2["Disable SOCKS"]
-  S2 --> S3["core.Close()"]
+  S2 --> S25["ninfo.Close()"]
+  S25 --> S3["core.Close()"]
   S3 --> DONE([Завершено])
 ```
 
@@ -583,17 +671,17 @@ Logger: slogAdapter{l: slog.Default()},
 
 ## Модули
 
-| Модуль                                   | Описание                                                     |
-|------------------------------------------|--------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin        |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация               |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                   |
-| [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil        |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil         |
-| [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов          |
-| [`mod/settings`](mod/settings/README.md) | Загрузка, парсинг и сохранение конфигурации                  |
-| [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet) |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Управление NodeInfo: сериализация, подпись, валидация        |
+| Модуль                                   | Описание                                                             |
+|------------------------------------------|----------------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin                |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация                       |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                           |
+| [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                 |
+| [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов                  |
+| [`mod/settings`](mod/settings/README.md) | Загрузка, парсинг и сохранение конфигурации                          |
+| [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet)         |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Запрос и парсинг NodeInfo удалённых узлов, управление parse-сигилами |
 
 ---
 
