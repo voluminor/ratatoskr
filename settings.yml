@@ -90,6 +90,21 @@ go:
       usage: "output format (default: text)"
       enum: &output_format [ text, json ]
 
+  ask:
+    usage: "query remote node's NodeInfo"
+    addr:
+      type: string
+      usage: "target address (64-char hex, <hex>.pk.ygg, [ipv6]:port, or bare IPv6)"
+    peer:
+      type: "[]string"
+      usage: "yggdrasil peer URIs as network entry point (at least one required)"
+    timeout:
+      type: duration
+      usage: "response timeout (default: 30s)"
+    format:
+      usage: "output format (default: text)"
+      enum: *output_format
+
   forward:
     usage: "port forwarding through Yggdrasil"
     from:

@@ -17,6 +17,10 @@ func Run(cfg *gsettings.GoObj) (bool, error) {
 		return true, err
 	}
 
+	if handled, err := askCmd(&cfg.Ask); handled {
+		return true, err
+	}
+
 	if handled, err := peerInfoCmd(&cfg.PeerInfo); handled {
 		return true, err
 	}

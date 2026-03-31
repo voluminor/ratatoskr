@@ -113,8 +113,8 @@ type peerInfoJSON struct {
 
 // //
 
-func outputPeerInfo(peers []ratatoskr.PeerSnapshotObj, format gsettings.GoPeerInfoFormatEnum) error {
-	if format == gsettings.GoPeerInfoFormatJson {
+func outputPeerInfo(peers []ratatoskr.PeerSnapshotObj, format gsettings.GoAskFormatEnum) error {
+	if format == gsettings.GoAskFormatJson {
 		out := make([]peerInfoJSON, len(peers))
 		for i, p := range peers {
 			out[i] = peerInfoJSON{

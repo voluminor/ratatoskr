@@ -424,11 +424,11 @@ func runPing(ctx context.Context, tr *probe.Obj, cfg *gsettings.GoProbeObj) erro
 		if err != nil {
 			pr.Err = err.Error()
 			pr.RTT = 0
-			if cfg.Format == gsettings.GoPeerInfoFormatText {
+			if cfg.Format == gsettings.GoAskFormatText {
 				fmt.Fprintf(os.Stderr, "seq %d: error %s\n", i+1, err)
 			}
 		} else {
-			if cfg.Format == gsettings.GoPeerInfoFormatText {
+			if cfg.Format == gsettings.GoAskFormatText {
 				fmt.Fprintf(os.Stderr, "seq %d: %.2f ms\n", i+1, ms)
 			}
 			if minRTT == 0 || ms < minRTT {
@@ -458,7 +458,7 @@ func runPing(ctx context.Context, tr *probe.Obj, cfg *gsettings.GoProbeObj) erro
 		avgRTT = sumRTT / float64(successful)
 	}
 
-	if cfg.Format == gsettings.GoPeerInfoFormatJson {
+	if cfg.Format == gsettings.GoAskFormatJson {
 		out := struct {
 			Target string          `json:"target"`
 			Pings  []pingResultObj `json:"pings"`
@@ -569,8 +569,8 @@ func nodeToScanJSON(n *probe.NodeObj) *scanNodeJSON {
 
 // //
 
-func outputScan(result *probe.TreeResultObj, format gsettings.GoPeerInfoFormatEnum) error {
-	if format == gsettings.GoPeerInfoFormatJson {
+func outputScan(result *probe.TreeResultObj, format gsettings.GoAskFormatEnum) error {
+	if format == gsettings.GoAskFormatJson {
 		data, err := json.MarshalIndent(nodeToScanJSON(result.Root), "", "  ")
 		if err != nil {
 			return err
@@ -584,8 +584,8 @@ func outputScan(result *probe.TreeResultObj, format gsettings.GoPeerInfoFormatEn
 	return nil
 }
 
-func outputTrace(target string, result *probe.TraceResultObj, format gsettings.GoPeerInfoFormatEnum) error {
-	if format == gsettings.GoPeerInfoFormatJson {
+func outputTrace(target string, result *probe.TraceResultObj, format gsettings.GoAskFormatEnum) error {
+	if format == gsettings.GoAskFormatJson {
 		out := struct {
 			Target string          `json:"target"`
 			Path   []*scanNodeJSON `json:"path,omitempty"`

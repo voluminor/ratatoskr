@@ -70,6 +70,22 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ./ratatoskr -go.conf.export.from /etc/ratatoskr/ratatoskr-config.yml -go.conf.export.to /etc/yggdrasil
 ```
 
+## Ask
+
+Query remote node's NodeInfo by address:
+
+```bash
+./ratatoskr -go.ask.addr [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442
+```
+
+```bash
+./ratatoskr -go.ask.addr 200:abcd::1 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.format json
+```
+
+```bash
+./ratatoskr -go.ask.addr a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.timeout 10s
+```
+
 ## Peer info
 
 ```bash
