@@ -594,6 +594,59 @@ Addr: "/tmp/ygg-socks.sock",
 })
 ```
 
+### Split proxy (Yggdrasil + direct)
+
+SOCKS5 proxy that routes Yggdrasil addresses (`200::/7`) through the node
+and everything else through the regular network:
+
+```go
+import (
+"context"
+"net"
+
+"github.com/voluminor/ratatoskr/mod/resolver"
+"github.com/voluminor/ratatoskr/mod/socks"
+)
+
+// split dialer: Yggdrasil addresses → node, everything else → direct
+dial := func (ctx context.Context, network, addr string) (net.Conn, error) {
+host, _, _ := net.SplitHostPort(addr)
+if ip := net.ParseIP(host); ip != nil && ip[0]&0xfe == 0x02 { // 200::/7
+return node.DialContext(ctx, network, addr)
+}
+return (&net.Dialer{}).DialContext(ctx, network, addr)
+}
+
+srv := socks.New(dialerFunc(dial))
+srv.Enable(socks.EnableConfigObj{
+Addr:     "127.0.0.1:1080",
+Resolver: resolver.New(node, "[200:abcd::1]:53"), // DNS over Yggdrasil
+Logger:   logger,
+})
+defer srv.Disable()
+
+// dialerFunc adapts a function to proxy.ContextDialer
+type dialerFunc func (ctx context.Context, network, addr string) (net.Conn, error)
+
+func (f dialerFunc) DialContext(ctx context.Context, n, a string) (net.Conn, error) {
+return f(ctx, n, a)
+}
+```
+
+Can be used as a system-wide SOCKS5 proxy — regular internet traffic passes through
+unaffected, only Yggdrasil addresses are routed through the node:
+
+```bash
+# Yggdrasil IPv6 — routed through the node
+curl --proxy socks5h://127.0.0.1:1080 http://[200:b0aa:c535:89fb:4c73:bbd:c30b:2665]/
+
+# .pk.ygg domain — resolver converts to 200::/7, then routed through the node
+curl --proxy socks5h://127.0.0.1:1080 http://a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg/
+
+# Regular internet — goes directly, bypassing Yggdrasil
+curl --proxy socks5h://127.0.0.1:1080 https://example.com/
+```
+
 ### Peer manager
 
 ```go
