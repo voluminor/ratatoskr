@@ -22,7 +22,7 @@ const defaultPeerInfoTimeout = 10 * time.Second
 // //
 
 func peerInfoCmd(cfg *gsettings.GoPeerInfoObj) (bool, error) {
-	if len(cfg.Url) == 0 {
+	if len(cfg.Peer) == 0 {
 		return false, nil
 	}
 	return true, peerInfo(cfg)
@@ -51,8 +51,8 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 		Logger:          logger,
 		CoreStopTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
-			Peers:     cfg.Url,
-			BatchSize: len(cfg.Url),
+			Peers:     cfg.Peer,
+			BatchSize: len(cfg.Peer),
 		},
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ wait:
 					connected++
 				}
 			}
-			if connected >= len(cfg.Url) {
+			if connected >= len(cfg.Peer) {
 				clearLine()
 				break wait
 			}
@@ -86,7 +86,7 @@ wait:
 				remaining = 0
 			}
 			fmt.Fprintf(os.Stderr, "\r%c probing %d/%d peers... %s remaining  ",
-				spinnerFrames[frame%len(spinnerFrames)], connected, len(cfg.Url), formatRemaining(remaining))
+				spinnerFrames[frame%len(spinnerFrames)], connected, len(cfg.Peer), formatRemaining(remaining))
 			frame++
 		case <-ctx.Done():
 			clearLine()

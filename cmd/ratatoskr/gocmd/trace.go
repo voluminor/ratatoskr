@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
@@ -77,10 +78,10 @@ func validateTraceParams(cfg *gsettings.GoProbeObj) error {
 		return fmt.Errorf("specify exactly one of -go.probe.scan, -go.probe.trace, or -go.probe.ping")
 	}
 
-	if cfg.Peer == "" {
+	if len(cfg.Peer) == 0 {
 		return fmt.Errorf("missing -go.probe.peer (yggdrasil peer URI)")
 	}
-	if _, errs := peermgr.ValidatePeers([]string{cfg.Peer}); len(errs) > 0 {
+	if _, errs := peermgr.ValidatePeers(cfg.Peer); len(errs) > 0 {
 		return fmt.Errorf("invalid peer: %w", errs[0])
 	}
 
@@ -121,7 +122,7 @@ func applyTraceDefaults(cfg *gsettings.GoProbeObj) {
 
 // //
 
-func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *probe.Obj, error) {
+func bootNode(ctx context.Context, peerURIs []string) (*ratatoskr.Obj, *probe.Obj, error) {
 	nodeCfg := yggconfig.GenerateConfig()
 	nodeCfg.AdminListen = "none"
 
@@ -133,8 +134,8 @@ func bootNode(ctx context.Context, peerURI string) (*ratatoskr.Obj, *probe.Obj, 
 		Logger:          logger,
 		CoreStopTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
-			Peers:     []string{peerURI},
-			BatchSize: 1,
+			Peers:     peerURIs,
+			BatchSize: len(peerURIs),
 		},
 	})
 	if err != nil {
@@ -403,7 +404,7 @@ func runPing(ctx context.Context, tr *probe.Obj, cfg *gsettings.GoProbeObj) erro
 	keyBytes, _ := hex.DecodeString(cfg.Ping)
 	pubKey := ed25519.PublicKey(keyBytes)
 
-	fmt.Fprintf(os.Stderr, "PING %s... via %s\n", cfg.Ping[:16], cfg.Peer)
+	fmt.Fprintf(os.Stderr, "PING %s... via %s\n", cfg.Ping[:16], strings.Join(cfg.Peer, ", "))
 
 	type pingResultObj struct {
 		Seq int     `json:"seq"`

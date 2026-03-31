@@ -80,13 +80,13 @@ go:
 
   peer_info:
     usage: "probe peers and report status"
-    url:
+    peer: &peer_list
       type: "[]string"
-      usage: "peer URIs to probe (e.g. tcp://1.2.3.4:5678)"
+      usage: "yggdrasil peer URIs (e.g. tcp://1.2.3.4:5678)"
     timeout:
       type: duration
       usage: "probe timeout per peer (default: 10s)"
-    format:
+    format: &output_format_block
       usage: "output format (default: text)"
       enum: &output_format [ text, json ]
 
@@ -95,15 +95,11 @@ go:
     addr:
       type: string
       usage: "target address (64-char hex, <hex>.pk.ygg, [ipv6]:port, or bare IPv6)"
-    peer:
-      type: "[]string"
-      usage: "yggdrasil peer URIs as network entry point (at least one required)"
+    peer: *peer_list
     timeout:
       type: duration
       usage: "response timeout (default: 30s)"
-    format:
-      usage: "output format (default: text)"
-      enum: *output_format
+    format: *output_format_block
 
   forward:
     usage: "port forwarding through Yggdrasil"
@@ -116,9 +112,7 @@ go:
     proto:
       usage: "protocol (default: tcp)"
       enum: [ tcp, udp ]
-    peer:
-      type: "[]string"
-      usage: "yggdrasil peer URIs to connect through (e.g. tcp://1.2.3.4:5678)"
+    peer: *peer_list
 
   probe:
     scan:
@@ -131,8 +125,8 @@ go:
       type: string
       usage: "ping a node by public key and measure RTT (64-char hex)"
     peer:
-      type: string
-      usage: "yggdrasil peer URI to connect through (e.g. tcp://1.2.3.4:5678)"
+      <<: *peer_list
+      usage: "yggdrasil peer URIs (e.g. tcp://1.2.3.4:5678); when multiple are given, each is tried sequentially until one connects; the total timeout is shared across all attempts"
     timeout:
       type: duration
       usage: "context timeout (default: 5m, min: 100ms)"
@@ -145,9 +139,7 @@ go:
     count:
       type: int
       usage: "number of pings (default: 4)"
-    format:
-      usage: "output format (default: text)"
-      enum: *output_format
+    format: *output_format_block
 
 # ==== #
 

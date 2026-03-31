@@ -89,11 +89,11 @@ Query remote node's NodeInfo by address:
 ## Peer info
 
 ```bash
-./ratatoskr -go.peer_info.url tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
+./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
 ```
 
 ```bash
-./ratatoskr -go.peer_info.url tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
+./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
 ```
 
 ## Port forwarding
