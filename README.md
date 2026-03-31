@@ -256,7 +256,12 @@ return `nil` / `ErrPeerManagerNotEnabled`.
 | `PeerManagerActive()`   | Current active peers (copy); `nil` if manager is not used |
 | `PeerManagerOptimize()` | Force peer re-evaluation (blocks until completion)        |
 
-For details on modes, batching, and peer validation — see [mod/peermgr/README.md](mod/peermgr/README.md).
+When `MinPeers > 0` (active mode only), a background watch detects peer loss: if the number of active
+peers stays at or below the threshold for several consecutive checks, an unscheduled re-evaluation
+is triggered automatically.
+
+For details on modes, batching, MinPeers watch, and peer validation —
+see [mod/peermgr/README.md](mod/peermgr/README.md).
 
 ### RetryPeers
 
@@ -670,17 +675,17 @@ Logger: slogAdapter{l: slog.Default()},
 
 ## Modules
 
-| Module                                   | Description                                                  |
-|------------------------------------------|--------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin        |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: probing, best selection, rotation              |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                    |
-| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil          |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil       |
-| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                    |
-| [`mod/settings`](mod/settings/README.md) | Config loading, parsing, and saving                          |
-| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)         |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management |
+| Module                                   | Description                                                     |
+|------------------------------------------|-----------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin           |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: probing, best selection, rotation, MinPeers watch |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                       |
+| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil             |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil          |
+| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                       |
+| [`mod/settings`](mod/settings/README.md) | Config loading, parsing, and saving                             |
+| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)            |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management    |
 
 ---
 

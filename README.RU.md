@@ -256,7 +256,11 @@ func (o *Obj) PeerManagerOptimize() error
 | `PeerManagerActive()`   | Текущие активные пиры (копия); `nil` если менеджер не используется |
 | `PeerManagerOptimize()` | Принудительная переоценка пиров (блокирует до завершения)          |
 
-Подробнее о режимах, батчинге и валидации пиров — в [mod/peermgr/README.md](mod/peermgr/README.md).
+При `MinPeers > 0` (только активный режим) фоновый мониторинг отслеживает потерю пиров: если число
+активных пиров опускается до порога на несколько проверок подряд, автоматически запускается
+внеочередная переоценка.
+
+Подробнее о режимах, батчинге, MinPeers watch и валидации пиров — в [mod/peermgr/README.md](mod/peermgr/README.md).
 
 ### RetryPeers
 
@@ -674,7 +678,7 @@ Logger: slogAdapter{l: slog.Default()},
 | Модуль                                   | Описание                                                             |
 |------------------------------------------|----------------------------------------------------------------------|
 | [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin                |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация                       |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация, MinPeers watch       |
 | [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                           |
 | [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                |
 | [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                 |

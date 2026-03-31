@@ -13,4 +13,6 @@ var (
 	ErrInvalidURI        = errors.New("peermgr: invalid URI")
 	ErrMissingHost       = errors.New("peermgr: missing host")
 	ErrUnsupportedScheme = errors.New("peermgr: unsupported scheme")
+	ErrMinPeersTooHigh   = errors.New("peermgr: MinPeers must be less than MaxPerProto")
+	ErrMinPeersTooMany   = errors.New("peermgr: MinPeers must be less than the number of valid peers")
 )

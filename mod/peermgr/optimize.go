@@ -10,20 +10,92 @@ import (
 func (m *Obj) run(ctx context.Context) {
 	_ = m.optimizeLocked(ctx)
 
-	if m.cfg.RefreshInterval <= 0 {
+	hasRefresh := m.cfg.RefreshInterval > 0
+	hasWatch := m.cfg.MinPeers > 0
+
+	if !hasRefresh && !hasWatch {
 		return
 	}
+
+	// Watch goroutine signals when MinPeers threshold is confirmed
+	var watchCh chan struct{}
+	if hasWatch {
+		watchCh = make(chan struct{}, 1)
+		go m.watchPeers(ctx, watchCh)
+	}
+
+	if !hasRefresh {
+		// No refresh timer — only react to watch signals
+		for {
+			select {
+			case <-watchCh:
+				_ = m.optimizeLocked(ctx)
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+
 	ticker := time.NewTicker(m.cfg.RefreshInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
 			_ = m.optimizeLocked(ctx)
+		case <-watchCh:
+			_ = m.optimizeLocked(ctx)
+			ticker.Reset(m.cfg.RefreshInterval)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
+
+// //
+
+// watchPeers polls GetPeers at WatchInterval and sends on triggerCh
+// when active Up count stays at or below MinPeers for
+// MinPeersConfirmations consecutive ticks.
+func (m *Obj) watchPeers(ctx context.Context, triggerCh chan<- struct{}) {
+	threshold := int(m.cfg.MinPeers)
+	confirmCount := 0
+
+	ticker := time.NewTicker(WatchInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			m.mu.Lock()
+			active := m.active
+			m.mu.Unlock()
+
+			up := countUpActive(active, m.node.GetPeers())
+
+			if up <= threshold {
+				confirmCount++
+				m.cfg.Logger.Debugf("[peermgr] MinPeers watch: %d up <= %d threshold, confirmation %d/%d",
+					up, threshold, confirmCount, MinPeersConfirmations)
+
+				if confirmCount >= MinPeersConfirmations {
+					m.cfg.Logger.Warnf("[peermgr] active peers (%d) at or below MinPeers (%d) for %d checks, triggering re-evaluation",
+						up, threshold, MinPeersConfirmations)
+					confirmCount = 0
+					select {
+					case triggerCh <- struct{}{}:
+					default:
+					}
+				}
+			} else {
+				confirmCount = 0
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// //
 
 // optimizeLocked — serializes optimize calls via optimizeMu
 func (m *Obj) optimizeLocked(ctx context.Context) error {

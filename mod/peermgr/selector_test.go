@@ -198,6 +198,38 @@ func TestCountUp_empty(t *testing.T) {
 
 // //
 
+func TestCountUpActive_mixed(t *testing.T) {
+	active := []string{"tls://a:1", "tls://b:2", "tcp://c:3"}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+		makePeerInfo("tls://b:2", false, 0),
+		makePeerInfo("tcp://c:3", true, 10*time.Millisecond),
+		makePeerInfo("quic://d:4", true, 1*time.Millisecond), // not in active
+	}
+	if n := countUpActive(active, peers); n != 2 {
+		t.Errorf("expected 2, got %d", n)
+	}
+}
+
+func TestCountUpActive_empty(t *testing.T) {
+	if n := countUpActive(nil, nil); n != 0 {
+		t.Errorf("expected 0, got %d", n)
+	}
+}
+
+func TestCountUpActive_allDown(t *testing.T) {
+	active := []string{"tls://a:1", "tls://b:2"}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", false, 0),
+		makePeerInfo("tls://b:2", false, 0),
+	}
+	if n := countUpActive(active, peers); n != 0 {
+		t.Errorf("expected 0, got %d", n)
+	}
+}
+
+// //
+
 func BenchmarkBuildResults(b *testing.B) {
 	candidates := make([]peerEntryObj, 50)
 	peers := make([]yggcore.PeerInfo, 50)

@@ -26,6 +26,7 @@ flowchart TB
         MaxPP["MaxPerProto"]
         Batch["BatchSize"]
         Refresh["RefreshInterval"]
+      MinP["MinPeers"]
     end
 
     subgraph Obj["Obj — manager"]
@@ -46,6 +47,7 @@ flowchart TB
     Optimize -->|" GetPeers → selection "| Node
     Optimize -->|" RemovePeer losers "| Node
     Optimize --> Active
+  MinP -.->|" watchPeers "| Optimize
 ```
 
 ---
@@ -69,15 +71,16 @@ log.Warn("no reachable peers")
 `New` validates peers and configuration. Invalid URIs are skipped with a warning; an error is returned only if there are
 no valid peers at all.
 
-| Field                | Description                                       | Default  |
-|----------------------|---------------------------------------------------|----------|
-| `Peers`              | List of candidate URIs                            | required |
-| `Logger`             | Logger                                            | required |
-| `MaxPerProto`        | Best peers per protocol; `-1` — passive mode      | `1`      |
-| `ProbeTimeout`       | Connection timeout per batch                      | `10s`    |
-| `RefreshInterval`    | Re-evaluation interval; `0` — only at start       | `0`      |
-| `BatchSize`          | Batch size; `0`/`1` — all candidates in one batch | `1`      |
-| `OnNoReachablePeers` | Callback if no peers responded after probing      | `nil`    |
+| Field                | Description                                        | Default  |
+|----------------------|----------------------------------------------------|----------|
+| `Peers`              | List of candidate URIs                             | required |
+| `Logger`             | Logger                                             | required |
+| `MaxPerProto`        | Best peers per protocol; `-1` — passive mode       | `1`      |
+| `ProbeTimeout`       | Connection timeout per batch                       | `10s`    |
+| `RefreshInterval`    | Re-evaluation interval; `0` — only at start        | `0`      |
+| `BatchSize`          | Batch size; `0`/`1` — all candidates in one batch  | `1`      |
+| `MinPeers`           | Active peer threshold for watch (active mode only) | `0`      |
+| `OnNoReachablePeers` | Callback if no peers responded after probing       | `nil`    |
 
 ---
 
@@ -147,6 +150,37 @@ a time.
 
 ---
 
+## MinPeers Watch
+
+When `MinPeers > 0` (active mode only), a background goroutine polls `GetPeers` every `WatchInterval` (default 10s)
+and counts active (Up) peers. If the count stays at or below the threshold for `MinPeersConfirmations` (default 3)
+consecutive ticks, an unscheduled optimize is triggered.
+
+```mermaid
+flowchart LR
+  Tick["WatchInterval tick"] --> Count["countUpActive"]
+  Count -->|" up > MinPeers "| Reset["reset counter"]
+  Count -->|" up ≤ MinPeers "| Inc["confirmCount++"]
+  Inc -->|" < MinPeersConfirmations "| Tick
+  Inc -->|" ≥ MinPeersConfirmations "| Trigger["optimize + reset counter"]
+  Trigger --> ResetRefresh["reset RefreshInterval timer"]
+```
+
+Constraints:
+
+- `MinPeers` must be `< MaxPerProto` (unless `MaxPerProto` defaults to 1, then must be 0)
+- `MinPeers` must be `< len(valid peers)`
+- Ignored in passive mode (`MaxPerProto == -1`); reset to 0 with a warning
+
+Tunable variables (package-level):
+
+| Variable                | Description                         | Default |
+|-------------------------|-------------------------------------|---------|
+| `WatchInterval`         | Polling interval                    | `10s`   |
+| `MinPeersConfirmations` | Consecutive ticks before triggering | `3`     |
+
+---
+
 ## Peer Validation
 
 ```go
@@ -176,3 +210,5 @@ entries, errs := peermgr.ValidatePeers(uris)
 | `ErrInvalidURI`        | Invalid URI                          |
 | `ErrMissingHost`       | Host missing in URI                  |
 | `ErrUnsupportedScheme` | Unsupported scheme (not tcp/tls/...) |
+| `ErrMinPeersTooHigh`   | `MinPeers >= MaxPerProto`            |
+| `ErrMinPeersTooMany`   | `MinPeers >= len(valid peers)`       |

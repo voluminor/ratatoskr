@@ -3,6 +3,8 @@ package peermgr
 import (
 	"testing"
 	"time"
+
+	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
@@ -308,6 +310,205 @@ func TestStop_removesActivePeers(t *testing.T) {
 
 	if afterStop <= beforeStop {
 		t.Error("Stop should call RemovePeer for active peers")
+	}
+}
+
+// //
+
+func TestNew_minPeersTooHigh(t *testing.T) {
+	_, err := New(&mockNodeObj{}, ConfigObj{
+		Peers:       []string{"tls://a:1", "tls://b:2", "tls://c:3"},
+		MaxPerProto: 2,
+		MinPeers:    2,
+		Logger:      noopLogObj{},
+	})
+	if err != ErrMinPeersTooHigh {
+		t.Fatalf("expected ErrMinPeersTooHigh, got %v", err)
+	}
+}
+
+func TestNew_minPeersTooMany(t *testing.T) {
+	_, err := New(&mockNodeObj{}, ConfigObj{
+		Peers:       []string{"tls://a:1", "tls://b:2"},
+		MaxPerProto: 10,
+		MinPeers:    2,
+		Logger:      noopLogObj{},
+	})
+	if err != ErrMinPeersTooMany {
+		t.Fatalf("expected ErrMinPeersTooMany, got %v", err)
+	}
+}
+
+func TestNew_minPeersIgnoredPassive(t *testing.T) {
+	mgr, err := New(&mockNodeObj{}, ConfigObj{
+		Peers:       []string{"tls://a:1", "tls://b:2", "tls://c:3"},
+		MaxPerProto: -1,
+		MinPeers:    2,
+		Logger:      noopLogObj{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mgr.cfg.MinPeers != 0 {
+		t.Errorf("expected MinPeers reset to 0 in passive mode, got %d", mgr.cfg.MinPeers)
+	}
+}
+
+func TestNew_minPeersValid(t *testing.T) {
+	mgr, err := New(&mockNodeObj{}, ConfigObj{
+		Peers:       []string{"tls://a:1", "tls://b:2", "tls://c:3"},
+		MaxPerProto: 3,
+		MinPeers:    2,
+		Logger:      noopLogObj{},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mgr.cfg.MinPeers != 2 {
+		t.Errorf("expected MinPeers=2, got %d", mgr.cfg.MinPeers)
+	}
+}
+
+func TestNew_minPeersDisabled(t *testing.T) {
+	mgr, err := New(&mockNodeObj{}, fastCfg([]string{"tls://a:1"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mgr.cfg.MinPeers != 0 {
+		t.Errorf("expected MinPeers=0 by default, got %d", mgr.cfg.MinPeers)
+	}
+}
+
+// //
+
+func TestWatchPeers_triggersOptimize(t *testing.T) {
+	oldWatch := WatchInterval
+	oldConfirm := MinPeersConfirmations
+	WatchInterval = 10 * time.Millisecond
+	MinPeersConfirmations = 3
+	defer func() {
+		WatchInterval = oldWatch
+		MinPeersConfirmations = oldConfirm
+	}()
+
+	node := &mockNodeObj{
+		peers: []yggcore.PeerInfo{
+			makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+			makePeerInfo("tls://b:2", true, 10*time.Millisecond),
+			makePeerInfo("tls://c:3", true, 15*time.Millisecond),
+			makePeerInfo("tls://d:4", true, 20*time.Millisecond),
+		},
+	}
+	mgr, err := New(node, ConfigObj{
+		Peers:        []string{"tls://a:1", "tls://b:2", "tls://c:3", "tls://d:4"},
+		ProbeTimeout: 10 * time.Millisecond,
+		MaxPerProto:  4,
+		MinPeers:     2,
+		Logger:       noopLogObj{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+
+	// Wait for initial optimize to finish
+	time.Sleep(50 * time.Millisecond)
+
+	// Record added count before drop
+	node.mu.Lock()
+	addedBefore := len(node.added)
+	node.mu.Unlock()
+
+	// Drop peers to trigger watch: only 2 up = threshold
+	node.mu.Lock()
+	node.peers = []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+		makePeerInfo("tls://b:2", true, 10*time.Millisecond),
+		makePeerInfo("tls://c:3", false, 0),
+		makePeerInfo("tls://d:4", false, 0),
+	}
+	node.mu.Unlock()
+
+	// Wait for 3 confirmations + optimize to run
+	time.Sleep(200 * time.Millisecond)
+
+	node.mu.Lock()
+	addedAfter := len(node.added)
+	node.mu.Unlock()
+
+	if addedAfter <= addedBefore {
+		t.Errorf("expected optimize to be triggered by watch (AddPeer calls: before=%d, after=%d)", addedBefore, addedAfter)
+	}
+}
+
+func TestWatchPeers_resetsOnRecovery(t *testing.T) {
+	oldWatch := WatchInterval
+	oldConfirm := MinPeersConfirmations
+	WatchInterval = 10 * time.Millisecond
+	MinPeersConfirmations = 3
+	defer func() {
+		WatchInterval = oldWatch
+		MinPeersConfirmations = oldConfirm
+	}()
+
+	node := &mockNodeObj{
+		peers: []yggcore.PeerInfo{
+			makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+			makePeerInfo("tls://b:2", true, 10*time.Millisecond),
+			makePeerInfo("tls://c:3", true, 15*time.Millisecond),
+		},
+	}
+	mgr, err := New(node, ConfigObj{
+		Peers:        []string{"tls://a:1", "tls://b:2", "tls://c:3"},
+		ProbeTimeout: 10 * time.Millisecond,
+		MaxPerProto:  3,
+		MinPeers:     1,
+		Logger:       noopLogObj{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer mgr.Stop()
+	time.Sleep(50 * time.Millisecond)
+
+	// Drop to threshold for 1 tick
+	node.mu.Lock()
+	node.peers = []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+		makePeerInfo("tls://b:2", false, 0),
+		makePeerInfo("tls://c:3", false, 0),
+	}
+	node.mu.Unlock()
+	time.Sleep(15 * time.Millisecond)
+
+	// Recover before 3 confirmations
+	node.mu.Lock()
+	node.peers = []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+		makePeerInfo("tls://b:2", true, 10*time.Millisecond),
+		makePeerInfo("tls://c:3", true, 15*time.Millisecond),
+	}
+	node.mu.Unlock()
+
+	node.mu.Lock()
+	addedBefore := len(node.added)
+	node.mu.Unlock()
+
+	// Wait enough for would-be 3 confirmations
+	time.Sleep(100 * time.Millisecond)
+
+	node.mu.Lock()
+	addedAfter := len(node.added)
+	node.mu.Unlock()
+
+	if addedAfter != addedBefore {
+		t.Errorf("expected no optimize after recovery (AddPeer: before=%d, after=%d)", addedBefore, addedAfter)
 	}
 }
 
