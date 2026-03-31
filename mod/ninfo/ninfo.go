@@ -71,9 +71,13 @@ func (obj *Obj) Close() error {
 
 // // // // // // // // // //
 
+// AskRetryPause controls the delay between retries in Ask.
+var AskRetryPause = 500 * time.Millisecond
+
 // Ask queries a remote node's NodeInfo by its public key.
-// Returns parsed ratatoskr metadata, build info (nil if NodeInfoPrivacy),
-// and measured RTT. Uses sigils registered via AddSigil/ImportSigils.
+// Retries automatically until the context expires, because the underlying
+// Yggdrasil handler has a hard 6 s timeout that often fires before
+// routing converges on a freshly started node.
 func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
@@ -90,23 +94,36 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, 
 		err error
 	}
 
-	ch := make(chan callResultObj, 1)
-	start := time.Now()
+	var lastErr error
+	for {
+		ch := make(chan callResultObj, 1)
+		start := time.Now()
 
-	go func() {
-		raw, err := obj.callNodeInfo(ka)
-		ch <- callResultObj{raw: raw, err: err}
-	}()
+		go func() {
+			raw, err := obj.callNodeInfo(ka)
+			ch <- callResultObj{raw: raw, err: err}
+		}()
 
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case r := <-ch:
-		rtt := time.Since(start)
-		if r.err != nil {
-			return nil, r.err
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return nil, lastErr
+			}
+			return nil, ctx.Err()
+		case r := <-ch:
+			rtt := time.Since(start)
+			if r.err == nil {
+				return obj.parseAskResponse(r.raw, rtt)
+			}
+			lastErr = r.err
 		}
-		return obj.parseAskResponse(r.raw, rtt)
+
+		// Wait before retry
+		select {
+		case <-ctx.Done():
+			return nil, lastErr
+		case <-time.After(AskRetryPause):
+		}
 	}
 }
 
