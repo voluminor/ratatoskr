@@ -276,6 +276,12 @@ canvas {
     margin: 8px auto;
     display: block;
     image-rendering: pixelated;
+    background: #fff;
+    color-scheme: only light;
+    forced-color-adjust: none;
+    filter: none !important;
+    -webkit-filter: none !important;
+    mix-blend-mode: normal !important;
 }
 
 .qr-hint {

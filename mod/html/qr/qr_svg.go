@@ -22,20 +22,12 @@ const (
 //   - forced-color-adjust:none blocks Windows High Contrast overrides
 //   - inline !important beats any external stylesheet
 //
-// All dark modules are encoded as a single <path> for compact output.
+// Each dark module is a separate <rect> for maximum compatibility
+// across mobile browsers and WebView engines.
 func renderSVG(m [][]bool) string {
 	size := len(m)
 	total := size + 2*quietZone
 	px := total * modulePixels
-
-	var path strings.Builder
-	for r, row := range m {
-		for c, dark := range row {
-			if dark {
-				fmt.Fprintf(&path, "M%d,%dh1v1h-1z", c+quietZone, r+quietZone)
-			}
-		}
-	}
 
 	var sb strings.Builder
 	// shape-rendering="crispEdges" disables anti-aliasing on module boundaries,
@@ -48,13 +40,19 @@ func renderSVG(m [][]bool) string {
 		total, total, px, px,
 	)
 	fmt.Fprintf(&sb,
-		`<rect width="%d" height="%d" fill="#ffffff" style="fill:#ffffff!important"/>`,
+		`<rect width="%d" height="%d" fill="#fff" style="fill:#fff!important"/>`,
 		total, total,
 	)
-	fmt.Fprintf(&sb,
-		`<path fill="#000000" style="fill:#000000!important" d="%s"/>`,
-		path.String(),
-	)
+	for r, row := range m {
+		for c, dark := range row {
+			if dark {
+				fmt.Fprintf(&sb,
+					`<rect x="%d" y="%d" width="1" height="1" fill="#000" style="fill:#000!important"/>`,
+					c+quietZone, r+quietZone,
+				)
+			}
+		}
+	}
 	sb.WriteString(`</svg>`)
 
 	return sb.String()
