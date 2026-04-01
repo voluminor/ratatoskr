@@ -1,0 +1,42 @@
+// Code generated using '_generate/settings'; DO NOT EDIT.
+// Generation time: 2026-04-01T16:43:05Z
+
+package settings
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/hjson/hjson-go/v4"
+	"gopkg.in/yaml.v3"
+)
+
+// // // // // // // // // //
+
+// SaveJSON writes the Obj as indented JSON to the given path.
+func SaveJSON(obj *Obj, path string) error {
+	data, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal json: %w", err)
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
+}
+
+// SaveYAML writes the Obj as YAML to the given path.
+func SaveYAML(obj *Obj, path string) error {
+	data, err := yaml.Marshal(obj)
+	if err != nil {
+		return fmt.Errorf("marshal yaml: %w", err)
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+// SaveHJSON writes the Obj as HJSON to the given path.
+func SaveHJSON(obj *Obj, path string) error {
+	data, err := hjson.MarshalWithOptions(obj, hjson.DefaultOptions())
+	if err != nil {
+		return fmt.Errorf("marshal hjson: %w", err)
+	}
+	return os.WriteFile(path, append(data, '\n'), 0644)
+}

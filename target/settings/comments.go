@@ -1,0 +1,58 @@
+// Code generated using '_generate/settings'; DO NOT EDIT.
+// Generation time: 2026-04-01T16:43:05Z
+
+package settings
+
+// // // // // // // // // //
+
+// Comments maps dotted setting paths to their usage descriptions.
+var Comments = map[string]string{
+	"log":                                      "logging configuration",
+	"log.compress":                             "compress rotated log files",
+	"log.file_path":                            "log file path (auto-detected if empty)",
+	"log.format":                               "console format",
+	"log.level":                                "log level thresholds",
+	"log.level.console":                        "console log level",
+	"log.level.file":                           "file log level",
+	"log.max_age":                              "log file max age (days)",
+	"log.max_backups":                          "log file max backups",
+	"log.max_size":                             "log file max size (MB)",
+	"log.output":                               "log output mode",
+	"yggdrasil":                                "Yggdrasil network node configuration",
+	"yggdrasil.admin_listen":                   "admin socket listen address; 'none' to disable",
+	"yggdrasil.allowed_public_keys":            "hex-encoded public keys allowed for incoming peering; empty → allow all",
+	"yggdrasil.core_stop_timeout":              "core.Stop() timeout (0 → unlimited)",
+	"yggdrasil.if":                             "TUN adapter",
+	"yggdrasil.if.mtu":                         "TUN interface MTU (min 1280)",
+	"yggdrasil.if.name":                        "TUN interface name; 'auto', 'none', or specific name",
+	"yggdrasil.inputs":                         "real externally reachable addresses (e.g. public IPs); optional, for internal use",
+	"yggdrasil.key":                            "node private key; empty → auto-generated; if both set, path takes priority",
+	"yggdrasil.key.path":                       "path to private key file in PEM format (alternative to private_key)",
+	"yggdrasil.key.text":                       "hex-encoded Ed25519 private key (128 hex chars)",
+	"yggdrasil.listen":                         "listener addresses for incoming connections (e.g. tls://0.0.0.0:0)",
+	"yggdrasil.log_lookups":                    "log address lookups",
+	"yggdrasil.multicast":                      "multicast peer discovery",
+	"yggdrasil.multicast.beacon":               "advertise presence via multicast",
+	"yggdrasil.multicast.listen":               "listen for multicast advertisements",
+	"yggdrasil.multicast.password":             "multicast peering password",
+	"yggdrasil.multicast.port":                 "multicast port (0 → default)",
+	"yggdrasil.multicast.priority":             "peer priority (lower = preferred)",
+	"yggdrasil.multicast.regex":                "interface name regex for multicast discovery",
+	"yggdrasil.node":                           "node identity and metadata",
+	"yggdrasil.node.auto":                      "auto-populate NodeInfo; merges with info if set; returns error on key conflicts",
+	"yggdrasil.node.info":                      "node metadata visible to the network",
+	"yggdrasil.node.privacy":                   "hide default nodeinfo (platform, architecture, version)",
+	"yggdrasil.peers":                          "peer connections",
+	"yggdrasil.peers.interface":                "outbound peers bound to network interfaces",
+	"yggdrasil.peers.manager":                  "smart peer manager (replaces standard Yggdrasil peering)",
+	"yggdrasil.peers.manager.batch_size":       "probing batch size (0/1 → all at once, ≥2 → sliding window)",
+	"yggdrasil.peers.manager.enable":           "when disabled, all peer URLs are passed directly to Yggdrasil Peers",
+	"yggdrasil.peers.manager.max_per_proto":    "best peers per protocol (0/1 → one, -1 → passive mode)",
+	"yggdrasil.peers.manager.probe_timeout":    "probe connection timeout",
+	"yggdrasil.peers.manager.refresh_interval": "re-evaluation interval (0 → startup only)",
+	"yggdrasil.peers.url":                      "outbound peer URIs (e.g. tls://a.b.c.d:e, tcp://1.2.3.4:5678)",
+	"yggdrasil.rst_queue_size":                 "RST packet deferred queue size",
+	"yggdrasil.socks":                          "SOCKS5 proxy configuration",
+	"yggdrasil.socks.addr":                     "listen address (TCP '127.0.0.1:1080' or Unix '/tmp/ygg.sock')",
+	"yggdrasil.socks.max_connections":          "max simultaneous connections (0 → unlimited)",
+}
