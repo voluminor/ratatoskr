@@ -27,14 +27,14 @@ func TestExternalDecode(t *testing.T) {
 	dir := t.TempDir()
 
 	for i, input := range cases {
-		svg, err := QR(input)
+		svg, err := Generate(input)
 		if err != nil {
 			t.Fatalf("QR(%q): %v", input, err)
 		}
 
 		svgPath := filepath.Join(dir, "qr.svg")
 		pngPath := filepath.Join(dir, "qr.png")
-		if err := os.WriteFile(svgPath, []byte(svg), 0o644); err != nil {
+		if err := os.WriteFile(svgPath, svg, 0o644); err != nil {
 			t.Fatal(err)
 		}
 
@@ -63,7 +63,7 @@ print(results[0].data.decode("utf-8"))
 			t.Errorf("case %d %q: decode failed: %v\nstderr: %s", i, input, err, stderr)
 			// Save failing SVG for inspection
 			failPath := filepath.Join(dir, "fail.svg")
-			_ = os.WriteFile(failPath, []byte(svg), 0o644)
+			_ = os.WriteFile(failPath, svg, 0o644)
 			t.Logf("failing SVG saved to %s", failPath)
 			continue
 		}

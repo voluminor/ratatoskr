@@ -17,7 +17,7 @@ import (
 
 	"github.com/voluminor/ratatoskr"
 	"github.com/voluminor/ratatoskr/mod/core"
-	htmlqr "github.com/voluminor/ratatoskr/mod/html/qr"
+	htmlimg "github.com/voluminor/ratatoskr/mod/html/img"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/probe"
 )
@@ -93,8 +93,7 @@ func main() {
 	treeWSHandler := newTreeWSHandler(tr)
 
 	yggAddr := node.Address().String()
-	qrURL := fmt.Sprintf("http://[%s]:%d/", yggAddr, cfg.YggPorts[0])
-	qrSVG, err := htmlqr.QR(qrURL)
+	qrSVG, err := htmlimg.QRCode(node.PublicKey())
 	if err != nil {
 		fmt.Println("Error: generate QR:", err)
 		os.Exit(1)
@@ -102,7 +101,7 @@ func main() {
 	qrHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write([]byte(qrSVG))
+		_, _ = w.Write(qrSVG)
 	})
 
 	// Plain HTTP servers

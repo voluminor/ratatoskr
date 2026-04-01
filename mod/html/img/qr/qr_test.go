@@ -209,33 +209,33 @@ func TestFormatInfoRoundTrip(t *testing.T) {
 }
 
 func TestQROutputIsSVG(t *testing.T) {
-	svg, err := QR("https://ygg.example.com/")
+	svg, err := Generate("https://ygg.example.com/")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(svg, "<svg ") {
-		t.Errorf("output doesn't start with <svg>: %q", svg[:min(len(svg), 20)])
+	if !strings.HasPrefix(string(svg), "<svg ") {
+		t.Errorf("output doesn't start with <svg>: %q", string(svg[:min(len(svg), 20)]))
 	}
-	if !strings.Contains(svg, `viewBox=`) {
+	if !strings.Contains(string(svg), `viewBox=`) {
 		t.Error("SVG missing viewBox attribute")
 	}
-	if !strings.Contains(svg, `shape-rendering="crispEdges"`) {
+	if !strings.Contains(string(svg), `shape-rendering="crispEdges"`) {
 		t.Error("SVG missing shape-rendering=crispEdges (anti-aliasing would break QR scan)")
 	}
-	if !strings.Contains(svg, `color-scheme:light`) {
+	if !strings.Contains(string(svg), `color-scheme:light`) {
 		t.Error("SVG missing color-scheme protection")
 	}
-	if !strings.Contains(svg, `forced-color-adjust:none`) {
+	if !strings.Contains(string(svg), `forced-color-adjust:none`) {
 		t.Error("SVG missing forced-color-adjust protection")
 	}
-	if !strings.Contains(svg, `!important`) {
+	if !strings.Contains(string(svg), `!important`) {
 		t.Error("SVG missing !important color protection")
 	}
 }
 
 func TestQRTooLong(t *testing.T) {
 	// 155 bytes should fail (version 10 Q max = 154)
-	_, err := QR(strings.Repeat("x", 155))
+	_, err := Generate(strings.Repeat("x", 155))
 	if err == nil {
 		t.Error("expected error for input > 154 bytes, got nil")
 	}
