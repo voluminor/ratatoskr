@@ -13,11 +13,12 @@ import (
 	"time"
 
 	golog "github.com/gologme/log"
-	qrcode "github.com/skip2/go-qrcode"
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
 	"github.com/voluminor/ratatoskr/mod/core"
+	htmlimg "github.com/voluminor/ratatoskr/mod/html/img"
+	"github.com/voluminor/ratatoskr/mod/ninfo"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/probe"
 )
@@ -87,22 +88,29 @@ func main() {
 	}
 	defer tr.Close()
 
+	ni, err := ninfo.New(coreNode.UnsafeCore(), logger)
+	if err != nil {
+		fmt.Println("Error: ninfo:", err)
+		os.Exit(1)
+	}
+	defer ni.Close()
+
 	info := newInfoHandler(node, tr, cfg, logger)
 	traceHandler := newTraceHandler(tr)
 	treeHandler := newTreeHandler(tr)
 	treeWSHandler := newTreeWSHandler(tr)
+	ninfoHandler := newNinfoHandler(ni)
 
 	yggAddr := node.Address().String()
-	qrURL := fmt.Sprintf("http://[%s]:%d/", yggAddr, cfg.YggPorts[0])
+	qrSVG, err := htmlimg.QRCode(node.PublicKey())
+	if err != nil {
+		fmt.Println("Error: generate QR:", err)
+		os.Exit(1)
+	}
 	qrHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		png, err := qrcode.Encode(qrURL, qrcode.Medium, 256)
-		if err != nil {
-			http.Error(w, "qr error", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "image/png")
+		w.Header().Set("Content-Type", "image/svg+xml")
 		w.Header().Set("Cache-Control", "no-store")
-		_, _ = w.Write(png)
+		_, _ = w.Write(qrSVG)
 	})
 
 	// Plain HTTP servers
@@ -113,7 +121,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler, treeWSHandler),
+			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler, treeWSHandler, ninfoHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -129,7 +137,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler, treeWSHandler),
+			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler, treeWSHandler, ninfoHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -141,13 +149,14 @@ func main() {
 
 // //
 
-func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree, treeWS http.Handler) *http.ServeMux {
+func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree, treeWS, ninfoH http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/yggdrasil-server.json", info.Handler(isYgg))
-	mux.Handle("/ygg-qr.png", qr)
+	mux.Handle("/ygg-qr.svg", qr)
 	mux.Handle("/probe.json", trace)
 	mux.Handle("/tree.json", tree)
 	mux.Handle("/tree-ws", treeWS)
+	mux.Handle("/ninfo.json", ninfoH)
 	if isYgg {
 		mux.Handle("/", newYggFileHandler(wwwPath))
 	} else {

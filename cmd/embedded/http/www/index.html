@@ -40,7 +40,7 @@
             </div>
             <div class="card qr-card">
                 <h2>Share via Yggdrasil</h2>
-                <img id="qr-img" src="/ygg-qr.png" alt="Yggdrasil QR code">
+                <img id="qr-img" src="/ygg-qr.svg" alt="Yggdrasil QR code">
                 <p class="qr-hint">Scan to open in an Yggdrasil-connected browser</p>
             </div>
         </div>
@@ -74,6 +74,7 @@
                 <input id="trace-key" type="text" placeholder="Public key (hex, 64 chars)"
                        maxlength="64" spellcheck="false" autocomplete="off">
                 <button id="trace-btn" onclick="doTrace()">Trace</button>
+                <button id="ninfo-btn" onclick="doNinfo()">NodeInfo</button>
             </div>
             <div id="trace-error" class="trace-error hidden"></div>
             <div id="trace-result" class="hidden">
@@ -112,6 +113,17 @@
         </div>
         <div id="tree-modal-body" class="tree-modal-body">
             Loading...
+        </div>
+    </div>
+</div>
+
+<div id="ninfo-modal" class="modal-overlay hidden" onclick="closeNinfoModal(event)">
+    <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h2>NodeInfo</h2>
+            <button class="modal-close" onclick="closeNinfoModal()">&times;</button>
+        </div>
+        <div id="ninfo-modal-body" class="ninfo-modal-body">
         </div>
     </div>
 </div>

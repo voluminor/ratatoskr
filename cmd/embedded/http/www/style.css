@@ -276,6 +276,12 @@ canvas {
     margin: 8px auto;
     display: block;
     image-rendering: pixelated;
+    background: #fff;
+    color-scheme: only light;
+    forced-color-adjust: none;
+    filter: none !important;
+    -webkit-filter: none !important;
+    mix-blend-mode: normal !important;
 }
 
 .qr-hint {
@@ -621,6 +627,47 @@ canvas {
     margin-left: 16px;
     border-left: 1px solid var(--border);
     padding-left: 8px;
+}
+
+/* ninfo modal */
+.ninfo-modal-body {
+    padding: 16px 20px;
+    overflow: auto;
+    color: var(--text);
+}
+
+.ninfo-version {
+    font-family: var(--mono);
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: var(--accent);
+    margin-bottom: 6px;
+}
+
+.ninfo-rtt {
+    font-family: var(--mono);
+    font-size: 0.75rem;
+    color: var(--green);
+    margin-bottom: 4px;
+}
+
+.ninfo-software {
+    font-size: 0.75rem;
+    color: var(--muted);
+    margin-bottom: 12px;
+}
+
+.ninfo-sigils {
+    margin-bottom: 12px;
+}
+
+.ninfo-section-header {
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 12px 0 6px;
 }
 
 /* misc */
