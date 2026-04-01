@@ -197,7 +197,9 @@ func TestTimingPatterns(t *testing.T) {
 
 func TestFormatInfoRoundTrip(t *testing.T) {
 	// Generate a QR for a short URL and verify format info decodes to EC=Q.
-	matrix := buildMatrix([]byte("https://ygg.example.com/"), 2)
+	data := []byte("https://ygg.example.com/")
+	v, _ := selectVersion(data)
+	matrix := buildMatrix(data, v)
 	rawBits := readFormatInfo(matrix)
 	ec, _, ok := decodeFormatInfo(rawBits)
 	if !ok {
@@ -234,10 +236,10 @@ func TestQROutputIsSVG(t *testing.T) {
 }
 
 func TestQRTooLong(t *testing.T) {
-	// 155 bytes should fail (version 10 Q max = 154)
-	_, err := Generate(strings.Repeat("x", 155))
+	// 152 bytes should fail (version 10 Q max = 151)
+	_, err := Generate(strings.Repeat("x", 152))
 	if err == nil {
-		t.Error("expected error for input > 154 bytes, got nil")
+		t.Error("expected error for input > 151 bytes, got nil")
 	}
 }
 
@@ -246,13 +248,15 @@ func TestQRVersionSelection(t *testing.T) {
 		length  int
 		version int
 	}{
-		{13, 1},
-		{14, 2},
-		{22, 2},
-		{23, 3},
-		{34, 3},
-		{35, 4},
-		{154, 10},
+		{11, 1},
+		{12, 2},
+		{20, 2},
+		{21, 3},
+		{32, 3},
+		{33, 4},
+		{46, 4},
+		{47, 5},
+		{151, 10},
 	}
 	for _, tc := range cases {
 		data := []byte(strings.Repeat("a", tc.length))

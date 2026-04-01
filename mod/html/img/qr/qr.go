@@ -1,6 +1,6 @@
 // Package qr generates QR codes as SVG without external dependencies.
 //
-// Encoding: byte mode, EC level Q (25% recovery), versions 1–10 (up to 154 bytes).
+// Encoding: byte mode, EC level Q (25% recovery), versions 1–10 (up to 151 bytes).
 package qr
 
 // // // // // // // // // //

@@ -45,7 +45,7 @@ func selectVersion(data []byte) (int, error) {
 			return i + 1, nil
 		}
 	}
-	return 0, fmt.Errorf("input too long: %d bytes exceeds version 10 Q capacity (154 bytes)", n)
+	return 0, fmt.Errorf("input too long: %d bytes exceeds version 10 Q capacity (151 bytes)", n)
 }
 
 // // // // // // // // // //

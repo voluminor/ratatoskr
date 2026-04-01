@@ -19,7 +19,7 @@ import (
 func QRCode(key ed25519.PublicKey) ([]byte, error) {
 	addr := yggaddr.AddrForKey(key)
 	ip := net.IP(addr[:])
-	url := fmt.Sprintf("http://[%s]/", ip.String())
+	url := fmt.Sprintf("http://[%s]:80/", ip.String())
 
 	matrix, err := qr.Matrix(url)
 	if err != nil {
@@ -68,14 +68,22 @@ func renderOverlay(m [][]bool, overlay string) []byte {
 	// The leaf SVG has a white stroke outline that clears underlying modules.
 	center := float64(total) / 2
 	leafR := 0.24 * float64(size)
-	leafSide := leafR * 1.3
-	leafX := center - leafSide/2
-	leafY := center - leafSide/2
+	leafW := leafR * 1.3
+	leafH := leafW * 1.3 // preserve viewBox aspect ratio 200:260
+	leafX := center - leafW/2
+	leafY := center - leafH/2
 	fmt.Fprintf(&sb,
 		`<svg x="%.1f" y="%.1f" width="%.1f" height="%.1f" viewBox="30 0 200 260" shape-rendering="geometricPrecision">`,
-		leafX, leafY, leafSide, leafSide*1.3,
+		leafX, leafY, leafW, leafH,
 	)
-	sb.WriteString(extractSVGInner(overlay))
+	// Visible white border = 0.5 QR module.
+	// SVG stroke is centered on the path: half goes outward (visible), half inward
+	// (covered by the green fill layer). So stroke-width = 1.0 module for 0.5 visible.
+	strokeW := fmt.Sprintf("%.1f", 1.0*200/leafW)
+	inner := extractSVGInner(overlay)
+	inner = strings.ReplaceAll(inner, `stroke-width:8`, `stroke-width:`+strokeW)
+	inner = strings.ReplaceAll(inner, `stroke-width="8"`, `stroke-width="`+strokeW+`"`)
+	sb.WriteString(inner)
 	sb.WriteString(`</svg>`)
 
 	sb.WriteString(`</svg>`)
