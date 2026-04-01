@@ -166,15 +166,15 @@ func placeFormatInfo(m [][]bool, maskID, size int) {
 		{7, 8}, {5, 8}, {4, 8}, {3, 8}, {2, 8}, {1, 8}, {0, 8},
 	}
 	for i, pos := range firstCopy {
-		m[pos[0]][pos[1]] = (bits>>i)&1 == 1
+		m[pos[0]][pos[1]] = (bits>>(14-i))&1 == 1
 	}
 
 	// Second copy: bottom-left (bits 0–6) and top-right (bits 7–14)
 	for i := 0; i < 7; i++ {
-		m[size-1-i][8] = (bits>>i)&1 == 1
+		m[size-1-i][8] = (bits>>(14-i))&1 == 1
 	}
 	for i := 7; i < 15; i++ {
-		m[8][size-15+i] = (bits>>i)&1 == 1
+		m[8][size-15+i] = (bits>>(14-i))&1 == 1
 	}
 }
 

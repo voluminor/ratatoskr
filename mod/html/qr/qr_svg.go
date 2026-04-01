@@ -38,9 +38,12 @@ func renderSVG(m [][]bool) string {
 	}
 
 	var sb strings.Builder
+	// shape-rendering="crispEdges" disables anti-aliasing on module boundaries,
+	// which is critical for QR scanner readability.
 	fmt.Fprintf(&sb,
 		`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" `+
 			`width="%d" height="%d" `+
+			`shape-rendering="crispEdges" `+
 			`style="color-scheme:light;forced-color-adjust:none">`,
 		total, total, px, px,
 	)

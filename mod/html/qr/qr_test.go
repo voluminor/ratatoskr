@@ -78,7 +78,7 @@ func readFormatInfo(m [][]bool) int {
 	bits := 0
 	for i, pos := range firstCopy {
 		if m[pos[0]][pos[1]] {
-			bits |= 1 << i
+			bits |= 1 << (14 - i)
 		}
 	}
 	return bits
@@ -219,6 +219,9 @@ func TestQROutputIsSVG(t *testing.T) {
 	if !strings.Contains(svg, `viewBox=`) {
 		t.Error("SVG missing viewBox attribute")
 	}
+	if !strings.Contains(svg, `shape-rendering="crispEdges"`) {
+		t.Error("SVG missing shape-rendering=crispEdges (anti-aliasing would break QR scan)")
+	}
 	if !strings.Contains(svg, `color-scheme:light`) {
 		t.Error("SVG missing color-scheme protection")
 	}
@@ -313,6 +316,11 @@ func TestDecodeRoundTrip(t *testing.T) {
 		"A",
 		"https://ygg.example.com/",
 		"http://[200:abcd::1]:8080/",
+		// Realistic Yggdrasil URLs (full IPv6, typical ports)
+		"http://[200:dead:beef:1234:5678:9abc:def0:1234]:8443/",
+		"http://[200:1111:2222:3333:4444:5555:6666:7777]:80/some/page",
+		// Version 5+ (mixed block sizes)
+		"http://[200:aaaa:bbbb:cccc:dddd:eeee:ffff:0000]:8080/path/to/resource?q=1",
 	}
 	for _, input := range inputs {
 		t.Run(input, func(t *testing.T) {
