@@ -10,6 +10,10 @@ import (
 
 	"github.com/voluminor/ratatoskr/mod/ninfo"
 	coresigils "github.com/voluminor/ratatoskr/mod/sigils"
+	"github.com/voluminor/ratatoskr/mod/sigils/inet"
+	"github.com/voluminor/ratatoskr/mod/sigils/info"
+	"github.com/voluminor/ratatoskr/mod/sigils/public"
+	"github.com/voluminor/ratatoskr/mod/sigils/services"
 )
 
 // // // // // // // // // //
@@ -56,6 +60,23 @@ func RenderOne(sg coresigils.Interface) ([]byte, error) {
 // //
 
 func renderSigil(sg coresigils.Interface) ([]byte, error) {
+	// Typed renderers for known sigils.
+	switch o := sg.(type) {
+	case *info.Obj:
+		return RenderInfo(o), nil
+	case *inet.Obj:
+		return RenderInet(o), nil
+	case *public.Obj:
+		return RenderPublic(o), nil
+	case *services.Obj:
+		return RenderServices(o), nil
+	}
+
+	// Fallback: generic render via Interface.Params().
+	return renderGenericSigil(sg)
+}
+
+func renderGenericSigil(sg coresigils.Interface) ([]byte, error) {
 	params := sg.Params()
 	if len(params) == 0 {
 		return nil, nil
@@ -95,6 +116,19 @@ func renderExtra(m map[string]any) ([]byte, error) {
 }
 
 // //
+
+func writeRow(buf *bytes.Buffer, key, val string) {
+	buf.WriteString("  <div class=\"sg-row\" data-key=\"")
+	buf.WriteString(html.EscapeString(key))
+	buf.WriteString("\">\n")
+	buf.WriteString("    <span class=\"sg-key\">")
+	buf.WriteString(html.EscapeString(key))
+	buf.WriteString("</span>\n")
+	buf.WriteString("    <span class=\"sg-val\">")
+	buf.WriteString(html.EscapeString(val))
+	buf.WriteString("</span>\n")
+	buf.WriteString("  </div>\n")
+}
 
 func writeEntry(buf *bytes.Buffer, key string, val any, prefix string) {
 	buf.WriteString(`<div class="`)
