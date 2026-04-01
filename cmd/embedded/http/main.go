@@ -18,6 +18,7 @@ import (
 	"github.com/voluminor/ratatoskr"
 	"github.com/voluminor/ratatoskr/mod/core"
 	htmlimg "github.com/voluminor/ratatoskr/mod/html/img"
+	"github.com/voluminor/ratatoskr/mod/ninfo"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/probe"
 )
@@ -87,10 +88,18 @@ func main() {
 	}
 	defer tr.Close()
 
+	ni, err := ninfo.New(coreNode.UnsafeCore(), logger)
+	if err != nil {
+		fmt.Println("Error: ninfo:", err)
+		os.Exit(1)
+	}
+	defer ni.Close()
+
 	info := newInfoHandler(node, tr, cfg, logger)
 	traceHandler := newTraceHandler(tr)
 	treeHandler := newTreeHandler(tr)
 	treeWSHandler := newTreeWSHandler(tr)
+	ninfoHandler := newNinfoHandler(ni)
 
 	yggAddr := node.Address().String()
 	qrSVG, err := htmlimg.QRCode(node.PublicKey())
@@ -112,7 +121,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler, treeWSHandler),
+			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler, treeWSHandler, ninfoHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -128,7 +137,7 @@ func main() {
 			os.Exit(1)
 		}
 		go (&http.Server{
-			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler, treeWSHandler),
+			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler, treeWSHandler, ninfoHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
 		}).Serve(l)
@@ -140,13 +149,14 @@ func main() {
 
 // //
 
-func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree, treeWS http.Handler) *http.ServeMux {
+func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree, treeWS, ninfoH http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/yggdrasil-server.json", info.Handler(isYgg))
 	mux.Handle("/ygg-qr.svg", qr)
 	mux.Handle("/probe.json", trace)
 	mux.Handle("/tree.json", tree)
 	mux.Handle("/tree-ws", treeWS)
+	mux.Handle("/ninfo.json", ninfoH)
 	if isYgg {
 		mux.Handle("/", newYggFileHandler(wwwPath))
 	} else {

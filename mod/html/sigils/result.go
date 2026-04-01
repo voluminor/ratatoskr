@@ -2,8 +2,8 @@ package sigils
 
 // // // // // // // // // //
 
-// ResultObj holds rendered HTML blocks mirroring sigil_core.Obj layout.
+// ResultObj holds rendered HTML blocks from a parsed NodeInfo.
 type ResultObj struct {
-	LocalNodeInfo []byte
-	Sigils        map[string][]byte
+	Extra  []byte
+	Sigils map[string][]byte
 }

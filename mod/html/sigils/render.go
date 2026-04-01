@@ -8,39 +8,38 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/voluminor/ratatoskr/mod/ninfo"
 	coresigils "github.com/voluminor/ratatoskr/mod/sigils"
-	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 )
 
 // // // // // // // // // //
 
-// Render produces HTML blocks from a sigil_core.Obj.
-// LocalNodeInfo contains one <div> per top-level key from NodeInfo().
-// Sigils contains one HTML block per registered sigil from Sigils().
-func Render(core *sigil_core.Obj) (*ResultObj, error) {
-	if core == nil {
-		return nil, fmt.Errorf("nil core")
+// Render produces HTML blocks from a parsed NodeInfo.
+// Sigils contains one HTML block per recognized sigil.
+// Extra contains one <div> per leftover key not claimed by any sigil.
+func Render(parsed *ninfo.ParsedObj) (*ResultObj, error) {
+	if parsed == nil {
+		return nil, fmt.Errorf("nil parsed")
 	}
 
 	result := &ResultObj{
-		Sigils: make(map[string][]byte),
+		Sigils: make(map[string][]byte, len(parsed.Sigils)),
 	}
 
-	ni := core.NodeInfo()
-	if len(ni) > 0 {
-		buf, err := renderNodeInfo(ni)
-		if err != nil {
-			return nil, fmt.Errorf("nodeinfo: %w", err)
-		}
-		result.LocalNodeInfo = buf
-	}
-
-	for name, sg := range core.Sigils() {
+	for name, sg := range parsed.Sigils {
 		buf, err := renderSigil(sg)
 		if err != nil {
 			return nil, fmt.Errorf("sigil[%s]: %w", name, err)
 		}
 		result.Sigils[name] = buf
+	}
+
+	if len(parsed.Extra) > 0 {
+		buf, err := renderExtra(parsed.Extra)
+		if err != nil {
+			return nil, fmt.Errorf("extra: %w", err)
+		}
+		result.Extra = buf
 	}
 
 	return result, nil
@@ -80,16 +79,16 @@ func renderSigil(sg coresigils.Interface) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-func renderNodeInfo(ni map[string]any) ([]byte, error) {
-	if len(ni) == 0 {
+func renderExtra(m map[string]any) ([]byte, error) {
+	if len(m) == 0 {
 		return nil, nil
 	}
 
 	var buf bytes.Buffer
-	keys := sortedKeys(ni)
+	keys := sortedKeys(m)
 
 	for _, k := range keys {
-		writeEntry(&buf, k, ni[k], "ni")
+		writeEntry(&buf, k, m[k], "ni")
 	}
 
 	return buf.Bytes(), nil

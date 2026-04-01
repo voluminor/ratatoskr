@@ -334,7 +334,10 @@ function onTreeMessage(ev) {
 }
 
 document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape') closeTreeModal();
+    if (e.key === 'Escape') {
+        closeTreeModal();
+        closeNinfoModal();
+    }
 });
 
 // //
@@ -532,6 +535,118 @@ function renderTraceMode(container, data) {
 document.getElementById('trace-key').addEventListener('keydown', function (e) {
     if (e.key === 'Enter') doTrace();
 });
+
+// // // // // // // // // //
+
+// NodeInfo modal
+
+async function doNinfo() {
+    const keyInput = document.getElementById('trace-key');
+    const btn = document.getElementById('ninfo-btn');
+    const errorEl = document.getElementById('trace-error');
+
+    const key = keyInput.value.trim();
+    if (!key || key.length !== 64 || !/^[0-9a-fA-F]+$/.test(key)) {
+        errorEl.textContent = 'Enter a valid 64-char hex public key';
+        errorEl.classList.remove('hidden');
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = '\u2026';
+    errorEl.classList.add('hidden');
+
+    try {
+        const resp = await fetch('/ninfo.json?key=' + key);
+        const data = await resp.json();
+
+        if (data.error) {
+            errorEl.textContent = data.error;
+            errorEl.classList.remove('hidden');
+            return;
+        }
+
+        renderNinfoModal(data);
+    } catch (e) {
+        errorEl.textContent = 'Request failed: ' + e.message;
+        errorEl.classList.remove('hidden');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'NodeInfo';
+    }
+}
+
+function renderNinfoModal(data) {
+    const body = document.getElementById('ninfo-modal-body');
+    body.innerHTML = '';
+
+    // Inject scoped CSS from server
+    if (data.css) {
+        const style = document.createElement('style');
+        style.textContent = data.css;
+        body.appendChild(style);
+    }
+
+    // RTT badge
+    const rtt = document.createElement('div');
+    rtt.className = 'ninfo-rtt';
+    rtt.textContent = data.rtt_ms.toFixed(2) + ' ms';
+    body.appendChild(rtt);
+
+    // Version header (ratatoskr node)
+    if (data.version) {
+        const ver = document.createElement('div');
+        ver.className = 'ninfo-version';
+        ver.textContent = 'ratatoskr ' + data.version;
+        body.appendChild(ver);
+    }
+
+    // Software metadata
+    if (data.software) {
+        const sw = data.software;
+        const parts = [sw.Name, sw.Version, sw.Platform, sw.Arch].filter(Boolean);
+        if (parts.length > 0) {
+            const el = document.createElement('div');
+            el.className = 'ninfo-software';
+            el.textContent = parts.join(' / ');
+            body.appendChild(el);
+        }
+    }
+
+    // Sigils (rendered HTML from server)
+    if (data.sigils_html) {
+        const section = document.createElement('div');
+        section.className = 'ninfo-sigils';
+        for (const [name, html] of Object.entries(data.sigils_html)) {
+            const block = document.createElement('div');
+            block.innerHTML = html;
+            section.appendChild(block);
+        }
+        body.appendChild(section);
+    }
+
+    // Extra fields (rendered HTML from server)
+    if (data.extra_html) {
+        const section = document.createElement('div');
+        section.className = 'ninfo-extra';
+        const header = document.createElement('div');
+        header.className = 'ninfo-section-header';
+        header.textContent = 'Extra';
+        section.appendChild(header);
+
+        const content = document.createElement('div');
+        content.innerHTML = data.extra_html;
+        section.appendChild(content);
+        body.appendChild(section);
+    }
+
+    document.getElementById('ninfo-modal').classList.remove('hidden');
+}
+
+function closeNinfoModal(e) {
+    if (e && e.target !== e.currentTarget) return;
+    document.getElementById('ninfo-modal').classList.add('hidden');
+}
 
 // //
 
