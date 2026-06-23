@@ -6,7 +6,6 @@ import (
 	"net"
 	"sync"
 
-	golog "github.com/gologme/log"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
@@ -49,7 +48,7 @@ func (m *mockNodeObj) Address() net.IP                                          
 func (m *mockNodeObj) Subnet() net.IPNet                                            { return net.IPNet{} }
 func (m *mockNodeObj) PublicKey() ed25519.PublicKey                                 { return nil }
 func (m *mockNodeObj) MTU() uint64                                                  { return 65535 }
-func (m *mockNodeObj) EnableMulticast(_ *golog.Logger) error                        { return nil }
+func (m *mockNodeObj) EnableMulticast() error                                       { return nil }
 func (m *mockNodeObj) DisableMulticast() error                                      { return nil }
 func (m *mockNodeObj) EnableAdmin(_ string) error                                   { return nil }
 func (m *mockNodeObj) DisableAdmin() error                                          { return nil }

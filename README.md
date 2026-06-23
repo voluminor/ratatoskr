@@ -213,7 +213,7 @@ After a successful `New` call, all `core.Interface` network methods are availabl
 | `GetPeers()`                  | Peer list with metrics                    |
 | `AddPeer(uri)`                | Add a peer                                |
 | `RemovePeer(uri)`             | Remove a peer                             |
-| `EnableMulticast(logger)`     | mDNS discovery on local network           |
+| `EnableMulticast()`           | mDNS discovery on local network           |
 | `DisableMulticast()`          | Stop multicast                            |
 | `EnableAdmin(addr)`           | Admin socket (unix/tcp)                   |
 | `DisableAdmin()`              | Stop admin socket                         |
@@ -690,7 +690,7 @@ fmt.Println(string(data))
 
 ```go
 // mDNS peer discovery on local network
-if err := node.EnableMulticast(logger); err != nil {
+if err := node.EnableMulticast(); err != nil {
 log.Fatal(err)
 }
 defer node.DisableMulticast()

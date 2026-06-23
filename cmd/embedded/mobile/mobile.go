@@ -271,7 +271,7 @@ func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 	}
 
 	if y.multicast {
-		if err = node.EnableMulticast(nil); err != nil {
+		if err = node.EnableMulticast(); err != nil {
 			_ = node.Close()
 			return fmt.Errorf("enable multicast: %w", err)
 		}

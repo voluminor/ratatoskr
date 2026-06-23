@@ -213,7 +213,7 @@ flowchart LR
 | `GetPeers()`                  | Список пиров с метриками                     |
 | `AddPeer(uri)`                | Добавить пир                                 |
 | `RemovePeer(uri)`             | Удалить пир                                  |
-| `EnableMulticast(logger)`     | mDNS-обнаружение в локальной сети            |
+| `EnableMulticast()`           | mDNS-обнаружение в локальной сети            |
 | `DisableMulticast()`          | Остановить multicast                         |
 | `EnableAdmin(addr)`           | Admin-сокет (unix/tcp)                       |
 | `DisableAdmin()`              | Остановить admin-сокет                       |
@@ -690,7 +690,7 @@ fmt.Println(string(data))
 
 ```go
 // mDNS-обнаружение пиров в локальной сети
-if err := node.EnableMulticast(logger); err != nil {
+if err := node.EnableMulticast(); err != nil {
 log.Fatal(err)
 }
 defer node.DisableMulticast()
