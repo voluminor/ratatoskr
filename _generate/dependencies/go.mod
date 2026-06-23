@@ -1,3 +1,3 @@
 module gen_dependencies
 
-go 1.24
+go 1.25.0

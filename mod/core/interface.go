@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"net"
 
-	golog "github.com/gologme/log"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
@@ -23,7 +22,7 @@ type Interface interface {
 	AddPeer(uri string) error
 	RemovePeer(uri string) error
 	GetPeers() []yggcore.PeerInfo
-	EnableMulticast(logger *golog.Logger) error // todo: gologme — temporary dependency until a new Yggdrasil release
+	EnableMulticast() error
 	DisableMulticast() error
 	EnableAdmin(addr string) error
 	DisableAdmin() error

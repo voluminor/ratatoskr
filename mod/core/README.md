@@ -147,7 +147,7 @@ and supports the `Enable → Disable → Enable` cycle.
 ### Multicast
 
 ```go
-obj.EnableMulticast(logger) // mDNS discovery on the local network
+obj.EnableMulticast() // mDNS discovery on the local network
 obj.DisableMulticast()
 ```
 

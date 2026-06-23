@@ -187,7 +187,7 @@ func main() {
 	}
 
 	// Multicast
-	if err := node.EnableMulticast(logger); err != nil {
+	if err := node.EnableMulticast(); err != nil {
 		logger.Warnf("Multicast: %v", err)
 	}
 

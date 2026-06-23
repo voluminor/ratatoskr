@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	golog "github.com/gologme/log"
 	"github.com/yggdrasil-network/yggdrasil-go/src/admin"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -286,7 +285,7 @@ func (o *Obj) GetPeers() []yggcore.PeerInfo {
 
 // EnableMulticast enables mDNS discovery on the local network.
 // Interfaces are taken from NodeConfig.MulticastInterfaces
-func (o *Obj) EnableMulticast(logger *golog.Logger) error {
+func (o *Obj) EnableMulticast() error {
 	err := o.multicast.enable(func() (any, func() error, error) {
 		c := o.corePtr.Load()
 		if c == nil {
@@ -307,7 +306,7 @@ func (o *Obj) EnableMulticast(logger *golog.Logger) error {
 				Password: intf.Password,
 			})
 		}
-		mc, err := multicast.New(c, logger, options...)
+		mc, err := multicast.New(c, o.logger, options...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("multicast.New: %w", err)
 		}
