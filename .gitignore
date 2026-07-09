@@ -7,3 +7,5 @@
 .env
 go.sum
 go.work.sum
+*.pem
+/.idea/

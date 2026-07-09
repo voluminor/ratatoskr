@@ -63,14 +63,18 @@ flowchart TB
 ## Initialization
 
 ```go
-p, err := probe.New(yggCore, logger)
+p, err := probe.New(coreNode, logger)
 defer p.Close()
 ```
 
-`New` intercepts the `debug_remoteGetPeers` handler from core via a fake admin socket. This allows querying
+Resource limits (per-node peer cap, total-node cap, concurrency, cache TTL, timeouts) are fixed internal defaults:
+topology data comes from untrusted remote nodes, so those bounds are package constants rather than caller knobs.
+
+`New` intercepts the `debug_remoteGetPeers` handler from `core.ProbeSourceInterface` via a fake admin socket. This
+allows querying
 remote nodes without a real admin socket.
 
-`Close` stops the background cache cleanup goroutine.
+`Close` waits for in-flight remote peer queries, then stops the background cache cleanup goroutine.
 
 ---
 
@@ -80,8 +84,9 @@ remote nodes without a real admin socket.
 
 ```go
 result, err := p.Tree(ctx, maxDepth, concurrency)
-// result.Root  — root node (self)
-// result.Total — total number of discovered nodes
+// result.Root      — root node (self)
+// result.Total     — total number of discovered nodes
+// result.Truncated — true if MaxTotalNodes stopped traversal
 ```
 
 BFS traversal of the network from the current node. At each depth level, peers of remote nodes are queried in parallel
@@ -96,7 +101,9 @@ flowchart LR
 
 - `maxDepth` — maximum BFS depth (required, > 0)
 - `concurrency` — worker pool size (0 → 16 by default)
-- Nodes that did not respond or exceeded `MaxPeersPerNode` are marked as `Unreachable`
+- `ConfigObj.MaxConcurrency` caps the requested worker pool size
+- Nodes that did not respond or exceeded `ConfigObj.MaxPeersPerNode` are marked as `Unreachable`
+- Traversal stops at `ConfigObj.MaxTotalNodes`; `TreeResultObj.Truncated` reports this condition
 - Duplicates are filtered by public key
 
 ### TreeChan
@@ -110,10 +117,12 @@ Same as `Tree`, but sends progress to a channel after each depth level:
 
 ```go
 type TreeProgressObj struct {
-Depth int // current level
-Found int // found at this level
-Total int // total found
-Done  bool // true on the last message
+Depth     int // current level
+Found     int // found at this level
+Total     int // total found
+Done      bool // true on the last message
+Truncated bool // true if MaxTotalNodes stopped traversal
+Limit     int  // configured MaxTotalNodes
 }
 ```
 
@@ -187,31 +196,36 @@ flowchart TB
 | `Paths()`        | `[]yggcore.PathEntryInfo` | Pathfinder routes        |
 | `Lookup(key)`    | —                         | Initiates route lookup   |
 | `FlushCache()`   | —                         | Flushes peer query cache |
+| `CacheTTL()`     | `time.Duration`           | Current peer cache TTL   |
 
 ---
 
 ## Caching
 
 Results of `debug_remoteGetPeers` are cached by the node's public key. The cache is automatically cleaned every
-`CacheTTL/2`.
+configured `CacheTTL/2`.
 Unreachable nodes (those that did not respond) are cached as `nil` — a repeated request within the TTL will immediately
 return `ErrNodeUnreachable`.
 
-The cleanup goroutine stops automatically after 10 iterations with no data.
+The cleanup goroutine is owned by `Obj` and stops on `Close`.
 
 ---
 
-## Configurable parameters
+## Resource limits
 
-Package-level variables that can be changed before use:
+Topology-probing limits are fixed internal defaults (a probe is cheap to re-instantiate, and its inputs come from
+untrusted remote nodes, so the bounds are not caller-tunable):
 
-| Variable           | Description                                       | Default |
-|--------------------|---------------------------------------------------|---------|
-| `MaxPeersPerNode`  | Per-node peer limit; exceeding it → `Unreachable` | `65535` |
-| `CacheTTL`         | Cache entry time-to-live                          | `60s`   |
-| `PollInterval`     | Core polling interval in `Trace`                  | `200ms` |
-| `LookupRetryEvery` | `SendLookup` retry interval in `Trace`            | `1s`    |
-| `HopsWaitTimeout`  | Hops wait timeout when tree path is already found | `2s`    |
+| Constant                 | Description                                             | Default |
+|--------------------------|---------------------------------------------------------|---------|
+| `DefaultMaxPeersPerNode` | Per-node peer limit; exceeding it → `Unreachable`       | `1024`  |
+| `DefaultMaxTotalNodes`   | Maximum discovered nodes in `Tree`, excluding root      | `4096`  |
+| `DefaultMaxConcurrency`  | Maximum concurrent remote peer queries during `Tree`    | `256`   |
+| cache TTL                | Peer query cache entry time-to-live                     | `60s`   |
+| poll interval            | Core polling interval in `Trace`                        | `200ms` |
+| lookup retry             | `SendLookup` retry interval in `Trace`                  | `1s`    |
+| hops wait timeout        | Hops wait timeout when tree path is already found       | `2s`    |
+| max duration             | Internal wall-clock cap for `Tree` without ctx deadline | `5m`    |
 
 ---
 
@@ -237,8 +251,10 @@ Methods: `Find(key)`, `Flatten()`, `PathTo(key)`.
 
 ```go
 type TreeResultObj struct {
-Root  *NodeObj // root node (self)
-Total int      // total discovered nodes
+Root      *NodeObj // root node (self)
+Total     int      // total discovered nodes
+Truncated bool     // true if MaxTotalNodes stopped traversal
+Limit     int // configured MaxTotalNodes
 }
 ```
 
@@ -255,18 +271,18 @@ Hops     []HopObj  // route via pathfinder
 
 ## Errors
 
-| Variable                    | Description                                    |
-|-----------------------------|------------------------------------------------|
-| `ErrCoreRequired`           | Core not provided to `New`                     |
-| `ErrLoggerRequired`         | Logger not provided to `New`                   |
-| `ErrRemotePeersNotCaptured` | `debug_remoteGetPeers` handler not intercepted |
-| `ErrInvalidCacheTTL`        | `CacheTTL` is less than 1 second               |
-| `ErrMaxDepthRequired`       | `maxDepth` must be > 0                         |
-| `ErrInvalidKeyLength`       | Public key is not 32 bytes                     |
-| `ErrKeyNotInTree`           | Key not found in spanning tree                 |
-| `ErrNoActivePath`           | No active route in pathfinder                  |
-| `ErrNodeUnreachable`        | Node is unreachable (cached)                   |
-| `ErrRemotePeersDisabled`    | `debug_remoteGetPeers` is unavailable          |
-| `ErrTreeEmpty`              | Spanning tree entries are empty                |
-| `ErrNoRoot`                 | No root node in tree                           |
-| `ErrLookupTimedOut`         | Route lookup timed out                         |
+| Variable                       | Description                                    |
+|--------------------------------|------------------------------------------------|
+| `ErrCoreRequired`              | Core not provided to `New`                     |
+| `ErrInvalidConfig`             | Per-node peer limit is not positive            |
+| `ErrRemotePeersNotCaptured`    | `debug_remoteGetPeers` handler not intercepted |
+| `ErrMaxDepthRequired`          | `maxDepth` must be > 0                         |
+| `ErrPeersPerNodeLimitExceeded` | Remote node reported too many valid peers      |
+| `ErrInvalidKeyLength`          | Public key is not 32 bytes                     |
+| `ErrKeyNotInTree`              | Key not found in spanning tree                 |
+| `ErrNoActivePath`              | No active route in pathfinder                  |
+| `ErrNodeUnreachable`           | Node is unreachable (cached)                   |
+| `ErrRemotePeersDisabled`       | `debug_remoteGetPeers` is unavailable          |
+| `ErrTreeEmpty`                 | Spanning tree entries are empty                |
+| `ErrNoRoot`                    | No root node in tree                           |
+| `ErrLookupTimedOut`            | Route lookup timed out                         |

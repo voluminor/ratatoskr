@@ -21,12 +21,20 @@ type peerResultObj struct {
 func buildResults(candidates []peerEntryObj, peers []yggcore.PeerInfo) []peerResultObj {
 	peerMap := make(map[string]yggcore.PeerInfo, len(peers))
 	for _, p := range peers {
-		peerMap[p.URI] = p
+		key := normalizePeerURI(p.URI)
+		current, ok := peerMap[key]
+		if !ok || preferPeerInfo(p, current) {
+			peerMap[key] = p
+		}
 	}
 	results := make([]peerResultObj, 0, len(candidates))
 	for _, c := range candidates {
 		r := peerResultObj{URI: c.URI, Proto: c.Scheme}
-		if p, ok := peerMap[c.URI]; ok {
+		matchURI := c.MatchURI
+		if matchURI == "" {
+			matchURI = normalizePeerURI(c.URI)
+		}
+		if p, ok := peerMap[matchURI]; ok {
 			r.Up = p.Up
 			r.Latency = p.Latency
 		}
@@ -35,8 +43,22 @@ func buildResults(candidates []peerEntryObj, peers []yggcore.PeerInfo) []peerRes
 	return results
 }
 
+func preferPeerInfo(candidate, current yggcore.PeerInfo) bool {
+	if candidate.Up != current.Up {
+		return candidate.Up
+	}
+	if candidate.Up && candidate.Latency < current.Latency {
+		return true
+	}
+	return false
+}
+
 // selectBest — top-N peers per protocol among Up==true, sorted by latency
 func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
+	if maxPerProto <= 0 {
+		return nil
+	}
+
 	groups := make(map[string][]peerResultObj)
 	for _, r := range results {
 		if !r.Up {
@@ -75,12 +97,18 @@ func countUpActive(activeURIs []string, peers []yggcore.PeerInfo) int {
 	peerMap := make(map[string]bool, len(peers))
 	for _, p := range peers {
 		if p.Up {
-			peerMap[p.URI] = true
+			peerMap[normalizePeerURI(p.URI)] = true
 		}
 	}
 	n := 0
+	seen := make(map[string]struct{}, len(activeURIs))
 	for _, uri := range activeURIs {
-		if peerMap[uri] {
+		key := normalizePeerURI(uri)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if peerMap[key] {
 			n++
 		}
 	}

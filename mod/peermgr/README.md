@@ -1,7 +1,7 @@
 # mod/peermgr
 
-Peer manager for Yggdrasil. Automatically selects the best peers by latency, supports active (with selection) and
-passive (all peers) modes.
+Peer manager for Yggdrasil. Automatically selects the strongest responsive peers by protocol and observed latency,
+supports active (with selection) and passive (all peers) modes.
 
 ## Table of Contents
 
@@ -61,7 +61,7 @@ Logger:          logger,
 MaxPerProto:     1, // best peer per protocol
 ProbeTimeout:    10 * time.Second,
 RefreshInterval: 5 * time.Minute,
-BatchSize:       0, // all candidates in a single batch
+BatchSize:       0, // bounded default batch size
 OnNoReachablePeers: func () {
 log.Warn("no reachable peers")
 },
@@ -71,16 +71,17 @@ log.Warn("no reachable peers")
 `New` validates peers and configuration. Invalid URIs are skipped with a warning; an error is returned only if there are
 no valid peers at all.
 
-| Field                | Description                                        | Default  |
-|----------------------|----------------------------------------------------|----------|
-| `Peers`              | List of candidate URIs                             | required |
-| `Logger`             | Logger                                             | required |
-| `MaxPerProto`        | Best peers per protocol; `-1` — passive mode       | `1`      |
-| `ProbeTimeout`       | Connection timeout per batch                       | `10s`    |
-| `RefreshInterval`    | Re-evaluation interval; `0` — only at start        | `0`      |
-| `BatchSize`          | Batch size; `0`/`1` — all candidates in one batch  | `1`      |
-| `MinPeers`           | Active peer threshold for watch (active mode only) | `0`      |
-| `OnNoReachablePeers` | Callback if no peers responded after probing       | `nil`    |
+| Field                 | Description                                                             | Default  |
+|-----------------------|-------------------------------------------------------------------------|----------|
+| `Peers`               | List of candidate URIs                                                  | required |
+| `Logger`              | Logger                                                                  | required |
+| `MaxPerProto`         | Best peers per protocol; `-1` — passive mode                            | `1`      |
+| `ProbeTimeout`        | Connection timeout per batch                                            | `10s`    |
+| `RefreshInterval`     | Re-evaluation interval; `0` — only at start; tiny positives are clamped | `0`      |
+| `BatchSize`           | Batch size; `0`/`1` — bounded default, large values are capped          | `32`     |
+| `MinPeers`            | Active peer threshold for watch (active mode only)                      | `0`      |
+| `OnNoReachablePeers`  | Fire-and-forget callback if no peers responded after probing            | `nil`    |
+| `OnActiveChange`      | Fire-and-forget callback when the active peer set changes               | `nil`    |
 
 ---
 
@@ -88,7 +89,8 @@ no valid peers at all.
 
 ### Active Mode
 
-`MaxPerProto >= 0`. The manager probes candidates, measures latency, and keeps only the best ones.
+`MaxPerProto >= 0`. The manager gives each batch a full `ProbeTimeout` window, measures latency among peers that are
+up at the end of that window, and keeps the selected peers per protocol.
 
 ```mermaid
 flowchart LR
@@ -104,7 +106,7 @@ Selection algorithm:
 
 1. Candidates are split into batches
 2. Each batch is added via `AddPeer`
-3. After `ProbeTimeout` — poll `GetPeers` to obtain status and latency
+3. Wait the full `ProbeTimeout` window for that batch
 4. `selectBest` groups by protocol, sorts by latency, picks top-N
 5. Losers are removed via `RemovePeer`
 6. The next batch operates only with previous winners
@@ -122,13 +124,14 @@ are ignored.
 
 `BatchSize` controls probing concurrency:
 
-| Value    | Behavior                                                    |
-|----------|-------------------------------------------------------------|
-| `0`/`1`  | All candidates in a single batch                            |
-| `N >= 2` | Sliding window: N candidates at a time, elimination contest |
+| Value    | Behavior                                                                      |
+|----------|-------------------------------------------------------------------------------|
+| `0`/`1`  | Safe default batch size                                                       |
+| `N >= 2` | Sliding tournament: N new candidates per full probe window, capped internally |
 
-When `BatchSize >= 2`, each subsequent batch includes winners from previous batches plus N new candidates. This allows
-comparing new candidates against already selected ones.
+When `BatchSize >= 2`, each subsequent batch includes winners from previous batches plus N new candidates. This keeps
+large candidate lists bounded while still comparing new candidates against already selected ones. Very large values are
+clamped to avoid dial floods.
 
 ---
 
@@ -142,57 +145,57 @@ mgr.Stop() // stop and remove all peers
 ```
 
 `Start` launches a goroutine that immediately performs optimization and then schedules repeats via `RefreshInterval`.
+`ProbeTimeout` and `RefreshInterval` are immutable: set them once through `ConfigObj` at `New`. To change them, create a
+new manager. `Optimize()` remains available at runtime to force an immediate re-evaluation. Positive `RefreshInterval`
+values below the safety floor are clamped.
 
 `Optimize` can be called manually — it blocks until completion. It is serialized: no more than one optimization runs at
-a time.
+a time. A cycle is bounded only by `Stop` (which cancels the context) — a cycle interrupted mid-tournament rolls its
+partial state back into the active set so `Stop` tears every managed peer down cleanly.
 
-`Stop` cancels the context, waits for the goroutine to finish, then removes all managed peers via `RemovePeer`.
+`Stop` cancels the context, waits for the manager goroutine, then removes all managed peers via `RemovePeer`. User
+feedback callbacks (`OnNoReachablePeers`, `OnActiveChange`) are fire-and-forget: `Stop` never waits for them, so
+shutdown latency does not depend on arbitrary user code and a callback may safely re-enter `Stop`/`Optimize`. Both
+callbacks are dispatched on their own goroutine with panic recovery; a panic is logged and never crashes the manager.
+`OnActiveChange` receives a private copy of the active URIs and fires only when the set actually changes
+(order-insensitive); copy the slice if you retain it beyond the call.
 
 ---
 
 ## MinPeers Watch
 
-When `MinPeers > 0` (active mode only), a background goroutine polls `GetPeers` every `WatchInterval` (default 10s)
-and counts active (Up) peers. If the count stays at or below the threshold for `MinPeersConfirmations` (default 3)
-consecutive ticks, an unscheduled optimize is triggered.
+When `MinPeers > 0` (active mode only), a background goroutine polls `GetPeers` every 10s and counts active (Up) peers.
+If the count stays at or below the threshold for 3 consecutive ticks, an unscheduled optimize is triggered. This gives
+self-healing on peer loss without the churn of a short `RefreshInterval`. The poll interval (10s) and confirmation count
+(3) are fixed internal defaults — only the `MinPeers` threshold is caller-tunable.
 
 ```mermaid
 flowchart LR
-  Tick["WatchInterval tick"] --> Count["countUpActive"]
+  Tick["poll tick (10s)"] --> Count["countUpActive"]
   Count -->|" up > MinPeers "| Reset["reset counter"]
   Count -->|" up ≤ MinPeers "| Inc["confirmCount++"]
-  Inc -->|" < MinPeersConfirmations "| Tick
-  Inc -->|" ≥ MinPeersConfirmations "| Trigger["optimize + reset counter"]
-  Trigger --> ResetRefresh["reset RefreshInterval timer"]
+  Inc -->|" < 3 "| Tick
+  Inc -->|" ≥ 3 "| Trigger["optimize + reset counter"]
 ```
 
-Constraints:
-
-- `MinPeers` must be `< MaxPerProto` (unless `MaxPerProto` defaults to 1, then must be 0)
-- `MinPeers` must be `< len(valid peers)`
-- Ignored in passive mode (`MaxPerProto == -1`); reset to 0 with a warning
-
-Tunable variables (package-level):
-
-| Variable                | Description                         | Default |
-|-------------------------|-------------------------------------|---------|
-| `WatchInterval`         | Polling interval                    | `10s`   |
-| `MinPeersConfirmations` | Consecutive ticks before triggering | `3`     |
+- A nonsensical `MinPeers` (e.g. above the reachable peer count) just re-optimizes often — that is the caller's choice.
+- Ignored in passive mode (`MaxPerProto == -1`); reset to 0 with a warning.
+- `RefreshInterval` of `0` disables periodic refresh, so scheduled optimization runs only at start (the watch still
+  reacts to peer loss).
 
 ---
 
 ## Peer Validation
 
 ```go
-peermgr.AllowedSchemes // ["tcp", "tls", "quic", "ws", "wss"]
-
 entries, errs := peermgr.ValidatePeers(uris)
 ```
 
-`ValidatePeers` checks each URI:
+`ValidatePeers` accepts the Yggdrasil transport schemes `tcp`, `tls`, `quic`, `ws`, `wss`
+and checks each URI:
 
 - Empty strings are skipped
-- Duplicates → error (remaining entries are still processed)
+- Duplicates by normalized URI (query and fragment stripped) → error
 - Scheme and host presence are validated
 - Order is preserved
 
@@ -200,15 +203,12 @@ entries, errs := peermgr.ValidatePeers(uris)
 
 ## Errors
 
-| Variable               | Description                          |
-|------------------------|--------------------------------------|
-| `ErrLoggerRequired`    | Logger not provided                  |
-| `ErrNoPeers`           | No valid peers                       |
-| `ErrAlreadyRunning`    | `Start` called more than once        |
-| `ErrNotRunning`        | `Optimize` called without `Start`    |
-| `ErrDuplicatePeer`     | Duplicate URI                        |
-| `ErrInvalidURI`        | Invalid URI                          |
-| `ErrMissingHost`       | Host missing in URI                  |
-| `ErrUnsupportedScheme` | Unsupported scheme (not tcp/tls/...) |
-| `ErrMinPeersTooHigh`   | `MinPeers >= MaxPerProto`            |
-| `ErrMinPeersTooMany`   | `MinPeers >= len(valid peers)`       |
+| Variable               | Description                            |
+|------------------------|----------------------------------------|
+| `ErrNoPeers`           | No valid peers                         |
+| `ErrAlreadyRunning`    | `Start` called more than once          |
+| `ErrNotRunning`        | `Optimize` called without `Start`      |
+| `ErrDuplicatePeer`     | Duplicate URI                          |
+| `ErrInvalidURI`        | Invalid URI                            |
+| `ErrMissingHost`       | Host missing in URI                    |
+| `ErrUnsupportedScheme` | Unsupported scheme (not tcp/tls/...)   |

@@ -59,7 +59,7 @@ Go-библиотека для встраивания узла Yggdrasil в пр
 go get github.com/voluminor/ratatoskr
 ```
 
-Минимальная версия Go: **1.24**.
+Минимальная версия Go: **1.25**.
 
 ---
 
@@ -217,6 +217,10 @@ flowchart LR
 | `DisableMulticast()`          | Остановить multicast                         |
 | `EnableAdmin(addr)`           | Admin-сокет (unix/tcp)                       |
 | `DisableAdmin()`              | Остановить admin-сокет                       |
+
+Предупреждение: `EnableAdmin` использует upstream admin-сокет `yggdrasil-go`. Эта реализация вызывает `os.Exit(1)` при
+ошибке listen или очистки Unix-сокета. Считайте admin-доступ небезопасным операционным инструментом: проверяйте
+bind-адрес перед включением и не открывайте его недоверенным пользователям.
 
 Подробнее о сетевых операциях, компонентах и NIC — в [mod/core/README.md](mod/core/README.md).
 
@@ -395,12 +399,21 @@ flowchart TD
 
 Параметры SOCKS5-прокси.
 
-| Поле             | Тип    | По умолчанию | Описание                                                                |
-|------------------|--------|--------------|-------------------------------------------------------------------------|
-| `Addr`           | string | обязательное | TCP `"127.0.0.1:1080"` или Unix `"/tmp/ygg.sock"` (`/` или `.` — Unix)  |
-| `Nameserver`     | string | `""`         | DNS в сети Yggdrasil. `"[ipv6]:port"`. Пустая строка — только `.pk.ygg` |
-| `Verbose`        | bool   | `false`      | Логирование каждого SOCKS-соединения                                    |
-| `MaxConnections` | int    | `0`          | Лимит одновременных соединений. `0` — без ограничений                   |
+| Поле                             | Тип                          | По умолчанию | Описание                                                                            |
+|----------------------------------|------------------------------|--------------|-------------------------------------------------------------------------------------|
+| `Addr`                           | string                       | обязательное | TCP `"127.0.0.1:1080"` или Unix `"/tmp/ygg.sock"` (`/` или `.` — Unix)              |
+| `Nameserver`                     | string                       | `""`         | DNS в сети Yggdrasil. `"[ipv6]:port"`. Пустая строка — только `.pk.ygg`             |
+| `Verbose`                        | bool                         | `false`      | Логирование каждого SOCKS-соединения                                                |
+| `MaxConnections`                 | int                          | `0`          | Лимит одновременных соединений. `0` — безопасный дефолт, `<0` — без лимита          |
+| `HandshakeTimeout`               | `time.Duration`              | `0`          | Таймаут SOCKS-handshake. `0` — безопасный дефолт, `<0` — отключено                  |
+| `DialTimeout`                    | `time.Duration`              | `0`          | Таймаут исходящего dial. `0` — безопасный дефолт, `<0` — отключено                  |
+| `TunnelIdleTimeout`              | `time.Duration`              | `0`          | Таймаут простоя установленного туннеля. `0` — безопасное значение, `<0` — отключено |
+| `NameserverLookupTimeout`        | `time.Duration`              | `0`          | Таймаут DNS lookup. `0` — безопасный дефолт, `<0` — жесткий safety cap              |
+| `NameserverMaxConcurrentLookups` | int                          | `0`          | Лимит одновременных DNS lookup. `0` — безопасный дефолт, `<0` — высокий cap         |
+| `NameserverCacheTTL`             | `time.Duration`              | `0`          | TTL кеша успешных DNS-ответов. `0` — безопасный дефолт, `<0` — отключено            |
+| `NameserverCacheMaxEntries`      | int                          | `0`          | Лимит кеша успешных DNS-ответов. `0` — безопасный дефолт, `<0` — отключено          |
+| `UnixSocketMode`                 | `os.FileMode`                | `0`          | Права Unix socket. `0` — `0600`                                                     |
+| `Credentials`                    | `socks.CredentialsInterface` | `nil`        | Опциональная проверка username/password для SOCKS5                                  |
 
 ---
 
@@ -464,10 +477,10 @@ flowchart TD
 |-----------------------------------------|--------------------------------------------------------------|
 | `DialContext`, `Listen`, `ListenPacket` | Потокобезопасны; netstack через `atomic.Pointer`             |
 | `EnableSOCKS` / `DisableSOCKS`          | Защищены мьютексом                                           |
-| `EnableMulticast` / `EnableAdmin`       | Защищены `sync.RWMutex`                                      |
+| `EnableMulticast` / `EnableAdmin`       | Защищены мьютексом                                           |
 | `AddPeer` / `RemovePeer`                | Делегируют в `yggdrasil-go/core` (потокобезопасно)           |
 | `PeerManagerActive`                     | Возвращает копию; защищён мьютексом                          |
-| `PeerManagerOptimize`                   | Блокирует; сериализован через `optimizeMu`                   |
+| `PeerManagerOptimize`                   | Блокирует; сериализован внутри                               |
 | `Ask` / `AskAddr`                       | Потокобезопасны; сетевой вызов в горутине, отменяется по ctx |
 | `Close`                                 | Идемпотентный (`sync.Once`)                                  |
 | `Snapshot`                              | Потокобезопасен; собирает данные из потокобезопасных методов |
@@ -580,10 +593,11 @@ Addr:           "127.0.0.1:1080",
 Nameserver:     "[200:abcd::1]:53",
 Verbose:        true,
 MaxConnections: 128,
+DialTimeout:    10 * time.Second,
 })
 defer node.DisableSOCKS()
 
-// curl --proxy socks5h://127.0.0.1:1080 http://example.pk.ygg/
+// curl --proxy socks5h://127.0.0.1:1080 http://a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg/
 ```
 
 Unix-сокет:
@@ -617,13 +631,19 @@ return node.DialContext(ctx, network, addr)
 return (&net.Dialer{}).DialContext(ctx, network, addr)
 }
 
-srv := socks.New(dialerFunc(dial))
-srv.Enable(socks.EnableConfigObj{
-Addr:     "127.0.0.1:1080",
-Resolver: resolver.New(node, "[200:abcd::1]:53"), // DNS через Yggdrasil
-Logger:   logger,
+srv, err := socks.New(socks.ConfigObj{
+Network: dialerFunc(dial),
+Addr:    "127.0.0.1:1080",
+Resolver: resolver.New(resolver.ConfigObj{
+Dialer:     node,
+Nameserver: "[200:abcd::1]:53", // DNS через Yggdrasil
+}),
+Logger: logger,
 })
-defer srv.Disable()
+if err != nil {
+return err
+}
+defer srv.Close()
 
 // dialerFunc адаптирует функцию в proxy.ContextDialer
 type dialerFunc func (ctx context.Context, network, addr string) (net.Conn, error)
@@ -701,6 +721,9 @@ log.Fatal(err)
 }
 defer node.DisableAdmin()
 ```
+
+`EnableAdmin` делегирует upstream admin-сокету `yggdrasil-go`. Ошибки listen и очистки Unix-сокета в upstream могут
+завершить процесс через `os.Exit(1)`.
 
 ### Адаптер логгера для slog
 

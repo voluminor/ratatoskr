@@ -14,7 +14,29 @@ import (
 type ParsedObj struct {
 	Version string
 	Sigils  map[string]sigils.Interface
-	Extra   map[string]any
+	// SigilNames preserves valid metadata names that this build cannot parse.
+	SigilNames []string
+	Extra      map[string]any
+}
+
+func (p *ParsedObj) sigilNames() []string {
+	seen := make(map[string]struct{}, len(p.SigilNames)+len(p.Sigils))
+	names := make([]string, 0, len(p.SigilNames)+len(p.Sigils))
+	for _, name := range p.SigilNames {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for name := range p.Sigils {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
 }
 
 // NodeInfo reassembles the parsed data back into a map[string]any
@@ -30,7 +52,7 @@ func (p *ParsedObj) NodeInfo() map[string]any {
 		}
 	}
 	if len(p.Version) > 0 {
-		out[target.Name] = sigil_core.CompileInfo(p.Sigils)
+		out[target.Name] = sigil_core.CompileInfoNames(p.sigilNames(), p.Version)
 	}
 	return out
 }
@@ -45,7 +67,7 @@ func (p *ParsedObj) String() string {
 
 // Parse inspects arbitrary NodeInfo from yggdrasil.
 // If the map contains a valid ratatoskr metadata key, sigils are extracted
-// using built-in parsers from target.GlobalSigilParseMap merged with custom
+// using built-in parsers from target.Parse merged with custom
 // user-provided sg. Built-in sigil names are reserved and cannot be overridden.
 // Parsed keys are removed from the remaining map returned in Extra.
 func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
@@ -72,29 +94,30 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	}
 
 	result.Version = ver
+	result.SigilNames = append([]string(nil), sigilsArr...)
 	delete(result.Extra, target.Name)
 
 	// //
 
-	parsers := make(map[string]func(map[string]any) (sigils.Interface, error), len(target.GlobalSigilParseMap))
-	for name, fn := range target.GlobalSigilParseMap {
-		parsers[name] = fn
-	}
-
-	userKeys := make(map[string]func() []string, len(sg))
+	userParsers := make(map[string]func(map[string]any) (sigils.Interface, error), len(sg))
 	for _, s := range sg {
+		if s == nil {
+			continue
+		}
 		name := s.GetName()
 		if reservedSigilName(name) {
 			continue
 		}
-		parsers[name] = wrapUserSigil(s)
-		userKeys[name] = s.GetParams
+		userParsers[name] = wrapUserSigil(s)
 	}
 
 	// //
 
 	for _, name := range sigilsArr {
-		fn, ok := parsers[name]
+		fn, ok := target.Parse(name)
+		if !ok {
+			fn, ok = userParsers[name]
+		}
 		if !ok {
 			continue
 		}
@@ -109,11 +132,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		}
 		result.Sigils[name] = parsed
 
-		keys := parsed.GetParams
-		if ukFn, ok := userKeys[name]; ok {
-			keys = ukFn
-		}
-		for _, key := range keys() {
+		for _, key := range parsed.GetParams() {
 			delete(result.Extra, key)
 		}
 	}
@@ -129,7 +148,15 @@ func wrapUserSigil(s sigils.Interface) func(map[string]any) (sigils.Interface, e
 			return nil, nil
 		}
 		c := s.Clone()
-		c.ParseParams(m)
+		if c == nil {
+			return nil, nil
+		}
+		parsed := c.ParseParams(m)
+		for _, key := range c.GetParams() {
+			if _, ok := parsed[key]; !ok {
+				return nil, nil
+			}
+		}
 		return c, nil
 	}
 }

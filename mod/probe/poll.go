@@ -9,18 +9,11 @@ import (
 
 // // // // // // // // // //
 
-var (
-	// PollInterval controls how often Trace polls core for results.
-	PollInterval = 200 * time.Millisecond
-
-	// LookupRetryEvery controls how often SendLookup is retried during polling.
-	LookupRetryEvery = time.Second
-
-	// HopsWaitTimeout is how long Trace waits for hops when tree path is already found.
-	HopsWaitTimeout = 2 * time.Second
+const (
+	defaultPollInterval     = 200 * time.Millisecond
+	defaultLookupRetryEvery = time.Second
+	defaultHopsWaitTimeout  = 2 * time.Second
 )
-
-const hopsGracePeriod = 10
 
 // // // // // // // // // //
 
@@ -31,6 +24,9 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
+	var cancel context.CancelFunc
+	ctx, cancel = o.boundedContext(ctx)
+	defer cancel()
 	result := o.collect(key)
 
 	if result != nil && result.TreePath != nil && result.Hops != nil {
@@ -41,18 +37,15 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 	o.Lookup(key)
 
 	if result != nil {
-		if result.Hops == nil {
-			enriched := o.pollHops(ctx, key, HopsWaitTimeout)
-			if enriched != nil {
-				result.Hops = enriched
-			}
+		if result.TreePath != nil && result.Hops == nil {
+			result, _ = o.pollFull(ctx, key, result)
 		}
 		o.enrichPath(ctx, result.TreePath)
 		return result, nil
 	}
 
 	o.logger.Infof("[probe] lookup started for %x", key[:8])
-	result, err := o.pollFull(ctx, key)
+	result, err := o.pollFull(ctx, key, nil)
 	if result != nil && result.TreePath != nil {
 		o.enrichPath(ctx, result.TreePath)
 	}
@@ -61,76 +54,59 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 
 // //
 
-// pollHops waits for hops to appear within maxWait. One retry lookup after ~1s.
-func (o *Obj) pollHops(ctx context.Context, key ed25519.PublicKey, maxWait time.Duration) []HopObj {
-	startTime := time.Now()
-	ticker := time.NewTicker(PollInterval)
-	defer ticker.Stop()
-
-	retried := false
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-ticker.C:
-			if time.Since(startTime) > maxWait {
-				hops, _ := o.Hops(key)
-				return hops
-			}
-			if hops, err := o.Hops(key); err == nil {
-				return hops
-			}
-			if !retried && time.Since(startTime) > time.Second {
-				o.Lookup(key)
-				retried = true
-			}
-		}
-	}
-}
-
-// //
-
 // pollFull polls for both tree path and hops until ctx expires.
-// Once tree is found, gives hopsGracePeriod extra ticks before returning.
-func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
-	ticker := time.NewTicker(PollInterval)
+// Once tree is found, waits up to HopsWaitTimeout for hops before returning.
+func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey, initial *TraceResultObj) (*TraceResultObj, error) {
+	ticker := time.NewTicker(o.pollInterval)
 	defer ticker.Stop()
 
 	lastLookup := time.Now()
-	graceTicks := -1
+	result := initial
+	var hopsDeadline time.Time
+	if result != nil && result.TreePath != nil && result.Hops == nil {
+		if o.hopsWaitTimeout <= 0 {
+			return result, nil
+		}
+		hopsDeadline = time.Now().Add(o.hopsWaitTimeout)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
-			if result := o.collect(key); result != nil {
+			if latest := o.collect(key); latest != nil {
+				result = latest
+			}
+			if result != nil {
 				return result, fmt.Errorf("%w: %w", ErrLookupTimedOut, ctx.Err())
 			}
 			return nil, fmt.Errorf("%w for key %x: %w", ErrLookupTimedOut, key[:8], ctx.Err())
 		case <-ticker.C:
-			result := o.collect(key)
+			now := time.Now()
+			if latest := o.collect(key); latest != nil {
+				result = latest
+			}
 
 			if result != nil && result.TreePath != nil && result.Hops != nil {
 				return result, nil
 			}
 
-			if result != nil && result.TreePath != nil && graceTicks < 0 {
-				graceTicks = hopsGracePeriod
-				o.Lookup(key)
-				lastLookup = time.Now()
-			}
-
-			if graceTicks > 0 {
-				graceTicks--
-			} else if graceTicks == 0 {
-				if result != nil {
+			if result != nil && result.TreePath != nil && result.Hops == nil {
+				if o.hopsWaitTimeout <= 0 {
 					return result, nil
 				}
-				graceTicks = -1
+				if hopsDeadline.IsZero() {
+					hopsDeadline = now.Add(o.hopsWaitTimeout)
+					o.Lookup(key)
+					lastLookup = now
+				}
+				if !now.Before(hopsDeadline) {
+					return result, nil
+				}
 			}
 
-			if time.Since(lastLookup) >= LookupRetryEvery {
+			if now.Sub(lastLookup) >= o.lookupRetryEvery {
 				o.Lookup(key)
-				lastLookup = time.Now()
+				lastLookup = now
 			}
 		}
 	}
@@ -146,7 +122,7 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 	}
 
 	peerLatency := make(map[[ed25519.PublicKeySize]byte]time.Duration)
-	for _, p := range o.core.GetPeers() {
+	for _, p := range o.source.GetPeers() {
 		if p.Up && len(p.Key) == ed25519.PublicKeySize && p.Latency > 0 {
 			peerLatency[toKeyArray(p.Key)] = p.Latency
 		}
@@ -170,17 +146,21 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 		return
 	}
 
+	// Concurrency is bounded downstream by remoteLimit inside callRemotePeers,
+	// so no local semaphore is needed here.
 	ch := make(chan rttResultObj, remoteCount)
+	scheduled := 0
 	for i, n := range targets {
 		if n.RTT > 0 {
 			continue
 		}
+		scheduled++
 		go func(idx int, k ed25519.PublicKey) {
 			_, rtt, _ := o.callRemotePeers(ctx, k)
 			ch <- rttResultObj{idx: idx, rtt: rtt}
 		}(i, n.Key)
 	}
-	for range remoteCount {
+	for range scheduled {
 		select {
 		case r := <-ch:
 			targets[r.idx].RTT = r.rtt

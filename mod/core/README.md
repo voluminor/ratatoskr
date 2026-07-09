@@ -122,7 +122,7 @@ Creates a UDP listener. Address format is the same as `Listen`. Automatically cl
 | `Subnet()`     | `net.IPNet`         | Routable `/64` subnet                      |
 | `PublicKey()`  | `ed25519.PublicKey` | Node's public key (32 bytes)               |
 | `MTU()`        | `uint64`            | Network interface MTU                      |
-| `RSTDropped()` | `int64`             | Number of dropped RST packets              |
+| `RSTDropped()` | `uint64`            | Number of dropped RST packets              |
 
 ---
 
@@ -164,6 +164,10 @@ obj.DisableAdmin()
 ```
 
 Once enabled, registers handlers for inter-component communication.
+
+Warning: `EnableAdmin` delegates to the upstream `yggdrasil-go` admin socket. Upstream listen and Unix socket cleanup
+failures can terminate the process with `os.Exit(1)`. Admin access is unsafe operational tooling and should only be
+enabled for trusted operators.
 
 ---
 

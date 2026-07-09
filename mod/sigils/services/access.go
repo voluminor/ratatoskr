@@ -2,7 +2,8 @@ package services
 
 // // // // // // // // // //
 
-// Services returns the service→port map.
+// Services returns a defensive copy of the service→port map.
+// The result is independent of internal state and safe to mutate.
 func (o *Obj) Services() map[string]uint16 {
-	return o.services
+	return cloneServices(o.services)
 }

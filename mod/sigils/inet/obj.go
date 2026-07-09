@@ -31,6 +31,37 @@ func validateAddrs(addrs []string) error {
 	return nil
 }
 
+func cloneAddrs(addrs []string) []string {
+	return append([]string(nil), addrs...)
+}
+
+func parseAddrs(NodeInfo map[string]any) ([]string, bool) {
+	raw, ok := ParseParams(NodeInfo)[sigName]
+	if !ok {
+		return nil, false
+	}
+
+	switch arr := raw.(type) {
+	case []any:
+		if len(arr) > maxAddrs {
+			return nil, false
+		}
+		addrs := make([]string, 0, len(arr))
+		for _, item := range arr {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			addrs = append(addrs, s)
+		}
+		return addrs, true
+	case []string:
+		return cloneAddrs(arr), true
+	default:
+		return nil, false
+	}
+}
+
 // Obj — real internet addresses of the node.
 type Obj struct {
 	addrs []string
@@ -41,7 +72,7 @@ func New(addrs []string) (*Obj, error) {
 	if err := validateAddrs(addrs); err != nil {
 		return nil, err
 	}
-	return &Obj{addrs: addrs}, nil
+	return &Obj{addrs: cloneAddrs(addrs)}, nil
 }
 
 // //
@@ -61,14 +92,10 @@ func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	parsed := ParseParams(NodeInfo)
 
-	if raw, ok := parsed[sigName].([]any); ok {
-		addrs := make([]string, 0, len(raw))
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				addrs = append(addrs, s)
-			}
+	if addrs, ok := parseAddrs(parsed); ok {
+		if err := validateAddrs(addrs); err == nil {
+			o.addrs = cloneAddrs(addrs)
 		}
-		o.addrs = addrs
 	}
 
 	return parsed
@@ -79,12 +106,13 @@ func (o *Obj) Match(NodeInfo map[string]any) bool {
 }
 
 func (o *Obj) Clone() sigils.Interface {
-	return &Obj{addrs: append([]string(nil), o.addrs...)}
+	return &Obj{addrs: cloneAddrs(o.addrs)}
 }
 
 func (o *Obj) Params() map[string]any {
 	if len(o.addrs) == 0 {
 		return map[string]any{}
 	}
-	return map[string]any{sigName: o.addrs}
+	// Deep-copy the nested slice so the returned fragment cannot alias internal state.
+	return map[string]any{sigName: cloneAddrs(o.addrs)}
 }

@@ -102,14 +102,18 @@ type TraceResultObj struct {
 
 // TreeResultObj is the result of Tree() and TreeChan().
 type TreeResultObj struct {
-	Root  *NodeObj
-	Total int // excluding root
+	Root      *NodeObj
+	Total     int // excluding root
+	Truncated bool
+	Limit     int // maximum discovered nodes, excluding root
 }
 
 // TreeProgressObj is emitted after each BFS depth level.
 type TreeProgressObj struct {
-	Depth int
-	Found int  // nodes at this depth level
-	Total int  // cumulative total
-	Done  bool // last message — scan complete
+	Depth     int
+	Found     int  // nodes at this depth level
+	Total     int  // cumulative total
+	Done      bool // last message — scan complete
+	Truncated bool
+	Limit     int // maximum discovered nodes, excluding root
 }

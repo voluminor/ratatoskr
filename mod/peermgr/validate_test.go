@@ -2,6 +2,7 @@ package peermgr
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -22,7 +23,7 @@ func TestValidatePeers_allWhitespace(t *testing.T) {
 }
 
 func TestValidatePeers_allSchemes(t *testing.T) {
-	for _, scheme := range AllowedSchemes {
+	for _, scheme := range allowedSchemes {
 		uri := scheme + "://host.example.com:1234"
 		res, errs := ValidatePeers([]string{uri})
 		if len(errs) != 0 {
@@ -54,6 +55,32 @@ func TestValidatePeers_orderPreserved(t *testing.T) {
 
 func TestValidatePeers_duplicate(t *testing.T) {
 	res, errs := ValidatePeers([]string{"tcp://h:1", "tcp://h:1"})
+	if len(errs) == 0 {
+		t.Fatal("expected duplicate error")
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected 1 valid entry; got %d", len(res))
+	}
+	if !errors.Is(errs[0], ErrDuplicatePeer) {
+		t.Errorf("expected ErrDuplicatePeer, got: %v", errs[0])
+	}
+}
+
+func TestValidatePeers_duplicateNormalized(t *testing.T) {
+	res, errs := ValidatePeers([]string{"TLS://Host:1?password=a#frag", "tls://host:1?password=b"})
+	if len(errs) == 0 {
+		t.Fatal("expected duplicate error")
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected 1 valid entry; got %d", len(res))
+	}
+	if !errors.Is(errs[0], ErrDuplicatePeer) {
+		t.Errorf("expected ErrDuplicatePeer, got: %v", errs[0])
+	}
+}
+
+func TestValidatePeers_duplicateBareQueryMarker(t *testing.T) {
+	res, errs := ValidatePeers([]string{"tls://h:1?", "tls://h:1"})
 	if len(errs) == 0 {
 		t.Fatal("expected duplicate error")
 	}
@@ -110,9 +137,32 @@ func TestValidatePeers_trimSpace(t *testing.T) {
 }
 
 func TestValidatePeers_uriPreserved(t *testing.T) {
-	res, _ := ValidatePeers([]string{"tls://host.example.com:4443"})
+	res, _ := ValidatePeers([]string{"tls://host.example.com:4443?password=x"})
 	if len(res) == 0 || res[0].URI == "" {
 		t.Error("expected non-empty URI in result")
+	}
+	if res[0].URI != "tls://host.example.com:4443?password=x" {
+		t.Fatalf("expected full URI with query preserved, got %q", res[0].URI)
+	}
+	if res[0].MatchURI != "tls://host.example.com:4443" {
+		t.Fatalf("expected query-free MatchURI, got %q", res[0].MatchURI)
+	}
+}
+
+func TestValidatePeers_errorsRedactQuery(t *testing.T) {
+	_, errs := ValidatePeers([]string{
+		"tls://h:1?password=secret",
+		"tls://h:1?password=secret2",
+		"ftp://bad:21?password=secret3",
+	})
+	if len(errs) != 2 {
+		t.Fatalf("expected duplicate and unsupported-scheme errors, got %d: %v", len(errs), errs)
+	}
+	for _, err := range errs {
+		msg := err.Error()
+		if strings.Contains(msg, "password=") || strings.Contains(msg, "secret") {
+			t.Fatalf("validation error leaked query secret: %v", err)
+		}
 	}
 }
 

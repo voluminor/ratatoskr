@@ -7,7 +7,7 @@ SOCKS5 protocol.
 
 - [Overview](#overview)
 - [Initialization](#initialization)
-- [Enabling and disabling](#enabling-and-disabling)
+- [Runtime control](#runtime-control)
 - [TCP and Unix socket](#tcp-and-unix-socket)
 - [Connection limiting](#connection-limiting)
 - [Unix socket handling](#unix-socket-handling)
@@ -41,40 +41,47 @@ and establishes a connection through the Yggdrasil dialer.
 ## Initialization
 
 ```go
-s := socks.New(node) // node — proxy.ContextDialer (usually core.Obj)
+s, err := socks.New(socks.ConfigObj{
+    Network:           node, // proxy.ContextDialer, usually core.Obj
+    Addr:              "127.0.0.1:1080", // or "/tmp/ygg.sock"
+    Resolver:          resolver,         // name resolver (.pk.ygg, DNS)
+    Verbose:           false,
+    Logger:            logger,
+    MaxConnections:    100, // 0 — safe default, <0 — unlimited
+    HandshakeTimeout:  10 * time.Second,
+    DialTimeout:       10 * time.Second,
+    TunnelIdleTimeout: 5 * time.Minute,
+    Credentials:       credentials, // optional username/password auth
+})
 ```
 
-Creates a SOCKS5 proxy but does not start it. Call `Enable` to start.
+Creates and starts a SOCKS5 proxy. Close it with `Close`.
 
 ---
 
-## Enabling and disabling
+## Runtime control
 
 ```go
-err := s.Enable(socks.EnableConfigObj{
-Addr:           "127.0.0.1:1080", // or "/tmp/ygg.sock"
-Resolver:       resolver,         // name resolver (.pk.ygg, DNS)
-Verbose:        false, // log every connection
-Logger:          logger,
-MaxConnections: 100, // 0 — unlimited
-})
-
 s.IsEnabled() // true
-s.Addr()   // "127.0.0.1:1080"
-s.IsUnix() // false
+s.Addr()      // "127.0.0.1:1080"
+s.IsUnix()    // false
 
-err := s.Disable() // stop and clean up
+s.SetMaxConnections(512)
+
+err := s.Close() // stop and clean up
 ```
 
-| Method        | Description                                |
-|---------------|--------------------------------------------|
-| `Enable(cfg)` | Starts the proxy; error if already running |
-| `Disable()`   | Stops the proxy; idempotent                |
-| `Addr()`      | Current listening address                  |
-| `IsUnix()`    | `true` if listening on a Unix socket       |
-| `IsEnabled()` | `true` if the proxy is running             |
+| Method                 | Description                          |
+|------------------------|--------------------------------------|
+| `Close()`              | Stops the proxy; idempotent          |
+| `Addr()`               | Current listening address            |
+| `IsUnix()`             | `true` if listening on a Unix socket |
+| `IsEnabled()`          | `true` if the proxy is running       |
+| `SetMaxConnections(n)` | Updates the active connection limit  |
 
-The `Enable → Disable → Enable` cycle is supported.
+`MaxConnections` is the only runtime-mutable setting. `DialTimeout` and `TunnelIdleTimeout` are immutable: set them once
+via `ConfigObj` at `Start`. `TunnelIdleTimeout` uses a 5 minute safe default when set to `0`; use a negative value only
+when idle tunnels must stay open indefinitely.
 
 ---
 
@@ -96,6 +103,7 @@ Rule: if the address starts with `/` or `.` — Unix socket, otherwise TCP.
 ## Connection limiting
 
 When `MaxConnections > 0`, the listener is wrapped in a `limitedListener` with a semaphore based on a buffered channel.
+`MaxConnections: 0` uses the safe default (`256`); use a negative value only when an unlimited listener is intentional.
 
 ```mermaid
 flowchart LR
@@ -131,8 +139,9 @@ flowchart TB
 - If the socket is held by a live process — error
 - If the socket is stale — it is removed and recreated
 - Symlinks are not removed (protection against attacks)
+- Socket permissions are fixed at `0600`
 
-On `Disable`, the Unix socket file is automatically removed.
+On `Close`, the Unix socket file is automatically removed.
 
 ---
 
@@ -140,6 +149,6 @@ On `Disable`, the Unix socket file is automatically removed.
 
 | Variable              | Description                                  |
 |-----------------------|----------------------------------------------|
-| `ErrAlreadyEnabled`   | `Enable` called on an already running proxy  |
+| `ErrAlreadyEnabled`   | `New` called while the proxy is already open |
 | `ErrAlreadyListening` | Unix socket is held by another process       |
 | `ErrSymlinkRefusal`   | Refusal to remove a symlink (safety measure) |

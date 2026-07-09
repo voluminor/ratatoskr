@@ -66,10 +66,27 @@ Four forwarding directions:
 ## Initialization
 
 ```go
-mgr := forward.New(logger, 30*time.Second) // UDP session timeout
+mgr := forward.New(forward.ConfigObj{
+Logger:     logger,
+Node:       node,
+UDPTimeout: 30 * time.Second,
+})
 ```
 
-`New` creates a manager. `sessionTimeout` is the inactivity timeout for UDP sessions (required, > 0).
+`New` creates a manager. `UDPTimeout` is the inactivity timeout for UDP sessions (required, > 0;
+a non-positive value is reported as an error by `Start()`).
+Optional limits can be supplied in the same `ConfigObj`:
+
+```go
+mgr := forward.New(forward.ConfigObj{
+Logger:            logger,
+Node:              node,
+UDPTimeout:        30 * time.Second,
+DialTimeout:       10 * time.Second,
+MaxTCPConnections: 2048,
+MaxUDPSessions:    2048,
+})
+```
 
 ---
 
@@ -112,14 +129,16 @@ Mapped: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5353},
 ```go
 ctx, cancel := context.WithCancel(context.Background())
 
-mgr.Start(ctx, node) // starts goroutines for all mappings
+if err := mgr.Start(ctx); err != nil { // starts goroutines for all mappings
+// invalid session timeout
+}
 // ...
 cancel() // stops all listeners
 mgr.Wait() // waits for all goroutines to finish
 ```
 
 `Start` launches one goroutine per mapping. Cancelling the context stops all listeners and terminates active
-connections.
+connections. `Wait` also waits for active TCP proxy sessions started by the manager.
 
 ---
 
@@ -130,8 +149,12 @@ forward.ProxyTCP(c1, c2, 30*time.Second)
 ```
 
 Bidirectional TCP proxy between two connections. Two goroutines copy data in both directions. If an error occurs in one
-direction, both connections are closed. `closeTimeout` is the time to wait for the second goroutine after the first
-error.
+direction, both connections are closed. After a clean TCP half-close, `closeTimeout` is an idle timeout for the
+remaining
+direction: active response streams may run longer, but a silent peer is closed.
+
+Manager-created TCP proxies use `ProxyTCPContext`, so context cancellation unblocks idle TCP tunnels. Backend dials are
+performed outside the accept loop and are bounded by `DialTimeout`.
 
 ```mermaid
 flowchart LR
@@ -150,9 +173,9 @@ connection to the target address.
 flowchart TB
   Pkt["packet from client"] --> Lookup{"session exists?"}
   Lookup -->|" yes "| Write["write → upstream"]
-  Lookup -->|" no "| Dial["dialFn → new session"]
+  Lookup -->|" no "| Dial["async dial → pending session"]
   Dial --> Reverse["goroutine: upstream → client"]
-    Dial --> Write
+  Dial -->|" ready "| Write
   Cleanup["cleanup goroutine"] -->|" every timeout/4 "| Expire["removes inactive sessions"]
 ```
 
@@ -160,16 +183,42 @@ flowchart TB
 sends them
 to the client.
 
+New sessions reserve a slot and dial asynchronously. Packets received before the upstream connection is ready are
+queued in the session buffer and are dropped only if that buffer is full or the session is cancelled.
+The buffer is sized by an approximate 64 KiB per-session byte budget, capped at 64 packets. Manager-created UDP
+mappings use a safe default session cap.
+
 ---
 
 ## Settings
 
-All settings are called before `Start()`:
+All tunables are immutable and set once through `ConfigObj` at `New()`. Except for the required `ConfigObj.UDPTimeout`,
+optional fields use the same convention: `0` means default, and negative values mean disabled or unlimited where that
+is meaningful.
 
-| Method                  | Description                                  | Default      |
-|-------------------------|----------------------------------------------|--------------|
-| `SetTimeout(d)`         | UDP session inactivity timeout               | from `New()` |
-| `SetTCPCloseTimeout(d)` | Time to wait for TCP peer after disconnect   | 30 seconds   |
-| `SetMaxUDPSessions(n)`  | Max UDP sessions per mapping (0 — unlimited) | 0            |
-| `ClearLocal()`          | Clear all local mappings                     | —            |
-| `ClearRemote()`         | Clear all remote mappings                    | —            |
+| `ConfigObj` field         | Description                                                | Default    |
+|---------------------------|------------------------------------------------------------|------------|
+| `UDPTimeout`              | UDP session inactivity timeout; must be `> 0`              | required   |
+| `DialTimeout`             | Backend dial timeout; `0` default, `<0` disabled           | 10 seconds |
+| `TCPIdleTimeout`          | Established TCP idle timeout; `0` default, `<0` disabled   | 5 minutes  |
+| `MaxTCPConnections`       | Max TCP sessions per mapping; `0` default, `<0` unlimited  | 1024       |
+| `MaxUDPSessions`          | Max UDP sessions per mapping; `0` default, `<0` unlimited  | 1024       |
+| `MaxUDPSessionsPerSource` | Max UDP sessions per source IP; `0` default, `<0` disabled | 64         |
+| `UDPMaxPacketSize`        | Max UDP payload bytes; `0` node MTU, `<0` max datagram     | node MTU   |
+
+The TCP half-close idle timeout is fixed at 30 seconds. UDP writes go to the kernel send buffer and carry no
+per-write deadline, so a single lock-free `net.PacketConn` is shared across all reverse sessions.
+
+Mapping helpers remain available before `Start()`:
+
+| Method          | Description               |
+|-----------------|---------------------------|
+| `ClearLocal()`  | Clear all local mappings  |
+| `ClearRemote()` | Clear all remote mappings |
+
+Read-only analytics reflect live counts at any time:
+
+| Method                       | Description                           |
+|------------------------------|---------------------------------------|
+| `ActiveTCPConnections() int` | Live TCP sessions across all mappings |
+| `ActiveUDPSessions() int`    | Live UDP sessions across all mappings |

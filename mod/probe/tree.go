@@ -30,7 +30,9 @@ func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj
 	for k, node := range index {
 		pk := toKeyArray(node.Parent)
 		if pk == k {
-			root = node
+			if root == nil || compareKeys(node.Key, root.Key) < 0 {
+				root = node
+			}
 			continue
 		}
 		if parent, ok := index[pk]; ok {
@@ -46,6 +48,9 @@ func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj
 
 	if root == nil {
 		return nil, ErrNoRoot
+	}
+	for i := range nodes {
+		sortNodes(nodes[i].Children)
 	}
 	setDepth(root, 0, 1024)
 	return root, nil

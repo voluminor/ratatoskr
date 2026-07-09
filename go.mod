@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	github.com/things-go/go-socks5 v0.1.1
 	github.com/yggdrasil-network/yggdrasil-go v0.5.14
-	golang.org/x/crypto v0.53.0
 	golang.org/x/net v0.56.0
 	gvisor.dev/gvisor v0.0.0-20250812171554-968e93457fe6
 )
@@ -22,6 +21,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/quic-go/quic-go v0.60.0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
+	golang.org/x/crypto v0.53.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect

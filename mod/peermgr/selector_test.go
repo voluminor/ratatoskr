@@ -47,6 +47,59 @@ func TestBuildResults_missing(t *testing.T) {
 	}
 }
 
+func TestBuildResults_matchesPeerWithoutQuery(t *testing.T) {
+	candidates := []peerEntryObj{{
+		URI:      "tls://a:1?password=x",
+		Scheme:   "tls",
+		MatchURI: "tls://a:1",
+	}}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 10*time.Millisecond),
+	}
+	results := buildResults(candidates, peers)
+	if len(results) != 1 {
+		t.Fatalf("expected 1, got %d", len(results))
+	}
+	if !results[0].Up {
+		t.Fatalf("candidate with query should match query-free PeerInfo: %+v", results[0])
+	}
+	if results[0].URI != "tls://a:1?password=x" {
+		t.Fatalf("candidate URI should be preserved, got %q", results[0].URI)
+	}
+}
+
+func TestBuildResults_prefersUpPeerOnNormalizedCollision(t *testing.T) {
+	candidates := []peerEntryObj{{
+		URI:      "tls://a:1?password=x",
+		Scheme:   "tls",
+		MatchURI: "tls://a:1",
+	}}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1?old", false, 0),
+		makePeerInfo("tls://a:1", true, 10*time.Millisecond),
+	}
+	results := buildResults(candidates, peers)
+	if len(results) != 1 || !results[0].Up {
+		t.Fatalf("expected up peer to win normalized collision, got %v", results)
+	}
+}
+
+func TestBuildResults_prefersLowestLatencyOnNormalizedCollision(t *testing.T) {
+	candidates := []peerEntryObj{{
+		URI:      "tls://a:1?password=x",
+		Scheme:   "tls",
+		MatchURI: "tls://a:1",
+	}}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1?slow", true, 20*time.Millisecond),
+		makePeerInfo("tls://a:1?fast", true, 5*time.Millisecond),
+	}
+	results := buildResults(candidates, peers)
+	if len(results) != 1 || results[0].Latency != 5*time.Millisecond {
+		t.Fatalf("expected lowest latency peer to win normalized collision, got %v", results)
+	}
+}
+
 func TestBuildResults_orderPreserved(t *testing.T) {
 	candidates := []peerEntryObj{
 		{URI: "tls://a:1", Scheme: "tls"},
@@ -150,6 +203,15 @@ func TestSelectBest_maxLargerThanGroup(t *testing.T) {
 	}
 }
 
+func TestSelectBest_nonPositiveMax(t *testing.T) {
+	results := []peerResultObj{
+		{URI: "tls://a:1", Proto: "tls", Up: true, Latency: 10 * time.Millisecond},
+	}
+	if selected := selectBest(results, -2); len(selected) != 0 {
+		t.Errorf("expected empty selection for invalid max, got %v", selected)
+	}
+}
+
 func TestSelectBest_multipleProtos(t *testing.T) {
 	protos := []string{"tls", "tcp", "quic", "ws", "wss"}
 	var results []peerResultObj
@@ -225,6 +287,27 @@ func TestCountUpActive_allDown(t *testing.T) {
 	}
 	if n := countUpActive(active, peers); n != 0 {
 		t.Errorf("expected 0, got %d", n)
+	}
+}
+
+func TestCountUpActive_matchesQueryFreePeers(t *testing.T) {
+	active := []string{"tls://a:1?password=x", "tcp://b:2#frag"}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+		makePeerInfo("tcp://b:2", true, 10*time.Millisecond),
+	}
+	if n := countUpActive(active, peers); n != 2 {
+		t.Errorf("expected 2, got %d", n)
+	}
+}
+
+func TestCountUpActive_deduplicatesNormalizedActiveURIs(t *testing.T) {
+	active := []string{"tls://a:1?password=a", "tls://a:1?password=b"}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
+	}
+	if n := countUpActive(active, peers); n != 1 {
+		t.Errorf("expected 1, got %d", n)
 	}
 }
 

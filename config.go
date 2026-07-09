@@ -9,6 +9,7 @@ import (
 
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/sigils"
+	"github.com/voluminor/ratatoskr/mod/socks"
 )
 
 // // // // // // // // // //
@@ -28,6 +29,9 @@ type ConfigObj struct {
 
 	// core.Stop() timeout; 0 → no limit
 	CoreStopTimeout time.Duration
+
+	// RST packet deferred queue size; 0 → core default.
+	RSTQueueSize int
 
 	// Peers enables the peer manager instead of the standard Yggdrasil mechanism.
 	// nil → peers are taken from Config.Peers as usual.
@@ -55,6 +59,27 @@ type SOCKSConfigObj struct {
 	// Verbose logging of SOCKS connections
 	Verbose bool
 
-	// Maximum simultaneous connections; 0 → unlimited
+	// Maximum simultaneous connections; 0 → safe default, <0 → unlimited
 	MaxConnections int
+
+	// SOCKS handshake timeout; 0 → safe default, <0 → disabled
+	HandshakeTimeout time.Duration
+
+	// SOCKS outbound dial timeout; 0 -> safe default, <0 -> disabled
+	DialTimeout time.Duration
+
+	// SOCKS established tunnel idle timeout; 0 -> safe default, <0 -> disabled
+	TunnelIdleTimeout time.Duration
+
+	// DNS lookup timeout for Nameserver; 0 -> safe default, <0 -> hard safety cap
+	NameserverLookupTimeout time.Duration
+
+	// Positive DNS cache TTL for Nameserver; 0 -> safe default, <0 -> disabled
+	NameserverCacheTTL time.Duration
+
+	// Positive DNS cache cap for Nameserver; 0 -> safe default, <0 -> disabled
+	NameserverCacheMaxEntries int
+
+	// Optional SOCKS5 username/password credentials
+	Credentials socks.CredentialsInterface
 }

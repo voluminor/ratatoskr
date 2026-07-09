@@ -3,6 +3,7 @@ package sigil_core
 import (
 	"testing"
 
+	"github.com/voluminor/ratatoskr/mod/sigils/info"
 	"github.com/voluminor/ratatoskr/target"
 )
 
@@ -30,6 +31,37 @@ func TestNew_with_nodeInfo(t *testing.T) {
 	}
 }
 
+func TestNodeInfo_returnsIndependentCopy(t *testing.T) {
+	obj, errs := New(map[string]any{"custom": "value"}, newMockSigil("aaa", "key1"))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	// Structural mutation of the returned map must not reach internal state.
+	out := obj.NodeInfo()
+	out["custom"] = "tampered"
+	delete(out, target.Name)
+	if obj.NodeInfo()["custom"] != "value" {
+		t.Fatal("NodeInfo leaked internal map: value mutated")
+	}
+	if _, ok := obj.NodeInfo()[target.Name]; !ok {
+		t.Fatal("NodeInfo leaked internal map: key deleted")
+	}
+}
+
+func TestNew_doesNotMutateInputNodeInfo(t *testing.T) {
+	base := map[string]any{"custom": "value"}
+	_, errs := New(base, newMockSigil("aaa", "key1"))
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if _, ok := base[target.Name]; ok {
+		t.Fatal("metadata should not be written into input map")
+	}
+	if _, ok := base["key1"]; ok {
+		t.Fatal("sigil key should not be written into input map")
+	}
+}
+
 func TestNew_with_sigils(t *testing.T) {
 	obj, errs := New(nil, newMockSigil("aaa", "key1"))
 	if len(errs) != 0 {
@@ -50,6 +82,16 @@ func TestNew_invalid_sigil_skipped(t *testing.T) {
 	}
 	if obj.Get("AB") != nil {
 		t.Fatal("invalid sigil should not be stored")
+	}
+}
+
+func TestNew_nil_sigil_skipped(t *testing.T) {
+	obj, errs := New(nil, nil)
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+	if obj.LenSigils() != 0 {
+		t.Fatal("nil sigil should not be stored")
 	}
 }
 
@@ -113,6 +155,48 @@ func TestDel_valid(t *testing.T) {
 	}
 }
 
+func TestDel_removesOnlyOwnedParams(t *testing.T) {
+	sg, err := info.New(info.ConfigObj{Name: "test.node", Type: "router"})
+	if err != nil {
+		t.Fatalf("info.New: %v", err)
+	}
+	obj, errs := New(map[string]any{"location": "user-value"}, sg)
+	if len(errs) != 0 {
+		t.Fatalf("New errors: %v", errs)
+	}
+	if err = obj.Del("info"); err != nil {
+		t.Fatalf("Del: %v", err)
+	}
+	if got := obj.NodeInfo()["location"]; got != "user-value" {
+		t.Fatalf("user-owned location was removed: %v", got)
+	}
+	if _, ok := obj.NodeInfo()["name"]; ok {
+		t.Fatal("owned name key should be removed")
+	}
+	if _, ok := obj.NodeInfo()["type"]; ok {
+		t.Fatal("owned type key should be removed")
+	}
+}
+
+func TestDel_removesInPlaceAndUndeclaredOwnedParams(t *testing.T) {
+	obj, errs := New(map[string]any{"kept": "user-value"}, newInPlaceSigilObj("custom", "hidden", "declared"))
+	if len(errs) != 0 {
+		t.Fatalf("New errors: %v", errs)
+	}
+	if err := obj.Del("custom"); err != nil {
+		t.Fatalf("Del: %v", err)
+	}
+	if got := obj.NodeInfo()["kept"]; got != "user-value" {
+		t.Fatalf("user-owned key was removed: %v", got)
+	}
+	if _, ok := obj.NodeInfo()["declared"]; ok {
+		t.Fatal("declared owned key should be removed")
+	}
+	if _, ok := obj.NodeInfo()["hidden"]; ok {
+		t.Fatal("undeclared owned key should be removed")
+	}
+}
+
 func TestDel_notFound(t *testing.T) {
 	obj, _ := New(nil)
 	if err := obj.Del("missing"); err == nil {
@@ -128,6 +212,16 @@ func TestSigils_map(t *testing.T) {
 	obj.Add(newMockSigil("aaa"), newMockSigil("bbb"))
 	if len(obj.Sigils()) != 2 {
 		t.Fatalf("expected 2 sigils, got %d", len(obj.Sigils()))
+	}
+}
+
+func TestSigils_returnsIndependentCopy(t *testing.T) {
+	obj, _ := New(nil)
+	obj.Add(newMockSigil("aaa"))
+	out := obj.Sigils()
+	delete(out, "aaa")
+	if obj.Get("aaa") == nil {
+		t.Fatal("Sigils leaked internal map")
 	}
 }
 
@@ -161,6 +255,13 @@ func TestString(t *testing.T) {
 	obj, _ := New(nil, newMockSigil("aaa"))
 	s := obj.String()
 	if s == "" {
+		t.Fatal("expected non-empty string")
+	}
+}
+
+func TestString_withoutMetadataDoesNotPanic(t *testing.T) {
+	obj, _ := New(nil)
+	if obj.String() == "" {
 		t.Fatal("expected non-empty string")
 	}
 }

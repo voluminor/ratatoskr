@@ -19,6 +19,10 @@ func TestKeys(t *testing.T) {
 	if len(k) != 1 || k[0] != "inet" {
 		t.Fatalf("unexpected keys: %v", k)
 	}
+	k[0] = "changed"
+	if Keys()[0] != "inet" {
+		t.Fatal("Keys leaked internal slice")
+	}
 }
 
 // // // // // // // // // //
@@ -248,6 +252,24 @@ func TestParse_multipleAddrs(t *testing.T) {
 	}
 }
 
+func TestParse_rejectsInvalidAddr(t *testing.T) {
+	_, err := Parse(map[string]any{"inet": []any{"addr with spaces"}})
+	if err == nil {
+		t.Fatal("expected error for invalid parsed addr")
+	}
+}
+
+func TestParse_rejectsTooManyAddrs(t *testing.T) {
+	addrs := make([]any, maxAddrs+1)
+	for i := range addrs {
+		addrs[i] = "addr" + strings.Repeat("x", i)
+	}
+	_, err := Parse(map[string]any{"inet": addrs})
+	if err == nil {
+		t.Fatal("expected error for too many parsed addrs")
+	}
+}
+
 // // // // // // // // // //
 // ParseParams
 
@@ -300,7 +322,9 @@ func TestSetParams_conflict(t *testing.T) {
 func TestSetParams_doesNotMutateInput(t *testing.T) {
 	obj, _ := New([]string{"1.2.3.4:80"})
 	ni := map[string]any{"other": "data"}
-	obj.SetParams(ni)
+	if _, err := obj.SetParams(ni); err != nil {
+		t.Fatalf("SetParams: %v", err)
+	}
 	if _, ok := ni["inet"]; ok {
 		t.Fatal("SetParams should not mutate input")
 	}
@@ -353,6 +377,49 @@ func TestParams_populated(t *testing.T) {
 	}
 }
 
+func TestNew_clonesInput(t *testing.T) {
+	addrs := []string{"1.2.3.4:80"}
+	obj, err := New(addrs)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	addrs[0] = "bad addr"
+	if got := obj.Addrs()[0]; got != "1.2.3.4:80" {
+		t.Fatalf("input mutation changed object: %s", got)
+	}
+}
+
+func TestAccessorsReturnCopy(t *testing.T) {
+	obj, err := New([]string{"1.2.3.4:80"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out := obj.Addrs()
+	out[0] = "5.6.7.8:80"
+	if got := obj.Addrs()[0]; got != "1.2.3.4:80" {
+		t.Fatalf("accessor must return a copy, internal data leaked: %s", got)
+	}
+}
+
+func TestParams_returnsIndependentCopy(t *testing.T) {
+	obj, err := New([]string{"1.2.3.4:80"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mutating a returned fragment must not reach internal state.
+	obj.Params()["inet"].([]string)[0] = "9.9.9.9:80"
+	if got := obj.Params()["inet"].([]string)[0]; got != "1.2.3.4:80" {
+		t.Fatalf("Params leaked internal slice: %s", got)
+	}
+	// Two calls must yield independent slices.
+	a := obj.Params()["inet"].([]string)
+	b := obj.Params()["inet"].([]string)
+	a[0] = "mutated"
+	if b[0] == "mutated" {
+		t.Fatal("Params returned aliased slices across calls")
+	}
+}
+
 // // // // // // // // // //
 // GetParams
 
@@ -369,7 +436,9 @@ func TestGetParams(t *testing.T) {
 func BenchmarkNew(b *testing.B) {
 	addrs := []string{"192.168.1.1:8080", "10.0.0.1:443", "example.com:80"}
 	for b.Loop() {
-		New(addrs)
+		if _, err := New(addrs); err != nil {
+			b.Fatalf("New: %v", err)
+		}
 	}
 }
 
@@ -383,6 +452,8 @@ func BenchmarkMatch(b *testing.B) {
 func BenchmarkParse(b *testing.B) {
 	ni := map[string]any{"inet": []any{"1.2.3.4:80", "5.6.7.8:443"}}
 	for b.Loop() {
-		Parse(ni)
+		if _, err := Parse(ni); err != nil {
+			b.Fatalf("Parse: %v", err)
+		}
 	}
 }

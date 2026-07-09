@@ -64,3 +64,25 @@ func newMockSigil(name string, keys ...string) *mockSigilObj {
 	}
 	return &mockSigilObj{name: name, params: keys, data: data}
 }
+
+type inPlaceSigilObj struct {
+	*mockSigilObj
+	extraKey string
+}
+
+func (m *inPlaceSigilObj) SetParams(mp map[string]any) (map[string]any, error) {
+	for k, v := range m.data {
+		mp[k] = v
+	}
+	if m.extraKey != "" {
+		mp[m.extraKey] = "extra"
+	}
+	return mp, nil
+}
+
+func newInPlaceSigilObj(name string, extraKey string, keys ...string) *inPlaceSigilObj {
+	return &inPlaceSigilObj{
+		mockSigilObj: newMockSigil(name, keys...),
+		extraKey:     extraKey,
+	}
+}

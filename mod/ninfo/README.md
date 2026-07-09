@@ -29,11 +29,11 @@ and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handle
 ```mermaid
 flowchart LR
     subgraph Obj["Obj — query & sigil management"]
-        New["New(core, logger)"]
+        New["New(ConfigObj)"]
         AskAddr["AskAddr(ctx, addr)"]
         Ask["Ask(ctx, key)"]
         AddSigil["AddSigil / GetSigil / DelSigil"]
-        ImportSigils["ImportSigils(src, mode)"]
+        ImportSigils["ImportSigils(src)"]
     end
 
     subgraph Free["Package-level"]
@@ -53,13 +53,17 @@ flowchart LR
 ## Initialization
 
 ```go
-obj, err := ninfo.New(core, logger)
+obj, err := ninfo.New(ninfo.ConfigObj{
+    Source: coreNode,
+})
 ```
 
-`New` captures the `getNodeInfo` handler from `yggcore.Core` via `SetAdmin`. Returns `ErrCoreRequired`,
-`ErrLoggerRequired`, or `ErrNodeInfoNotCaptured` on failure.
+`New` captures the `getNodeInfo` handler from `core.NodeInfoSourceInterface` via `SetAdmin`. Returns `ErrCoreRequired`
+or `ErrNodeInfoNotCaptured` on failure. NodeInfo timing and limits are fixed internal defaults; there are no tuning
+knobs.
 
-`Close()` releases resources (currently a no-op, reserved for future use).
+`Close()` cancels the module context, waits for in-flight `Ask` handlers to finish, and makes future `Ask` calls return
+`ErrClosed`.
 
 ---
 
@@ -74,7 +78,8 @@ Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error)
 Sends a `getNodeInfo` request to the node identified by `key`. Returns parsed metadata with measured RTT. Uses sigils
 registered via `AddSigil`/`ImportSigils` for response parsing.
 
-The underlying network call runs in a goroutine — cancelling `ctx` returns immediately with `ctx.Err()`.
+The underlying network call runs in a goroutine. Cancelling `ctx` returns immediately with `ctx.Err()`, while the
+handler itself remains bounded by the module concurrency limit and is joined by `Close`.
 
 ### AskAddr
 
@@ -94,8 +99,8 @@ Resolves `addr` to a public key, then calls `Ask`.
 | Bare IPv6        | `200:abcd::1`        | Network lookup via yggdrasil core |
 
 IPv6 resolution works by deriving a partial key from the address and calling `SendLookup`, then polling peers, sessions,
-and paths until a match is found or the context expires. Polling interval is controlled by `LookupInterval` (default
-100ms). `MaxLookupTime` (default 30s) caps the total wait even when the caller's context has no deadline.
+and paths until a match is found or the context expires. The poll interval is a fixed 100ms, and a fixed 30s cap
+bounds the total wait even when the caller's context has no deadline.
 
 ```mermaid
 flowchart LR
@@ -190,16 +195,10 @@ collected as errors.
 ### ImportSigils
 
 ```go
-ImportSigils(src *sigil_core.Obj, mode ImportModeObj) []error
+ImportSigils(src *sigil_core.Obj) []error
 ```
 
-Transfers sigils from a `sigil_core.Obj` into parse sigils. Conflict behavior depends on mode:
-
-| Mode            | Behavior                                          |
-|-----------------|---------------------------------------------------|
-| `ImportAppend`  | Error on name conflict, keep existing             |
-| `ImportReplace` | Overwrite on name conflict                        |
-| `ImportReset`   | Clear all existing sigils, write only from source |
+Appends sigils from a `sigil_core.Obj` into parse sigils. Existing names are preserved and returned as conflict errors.
 
 ---
 
@@ -208,7 +207,6 @@ Transfers sigils from a `sigil_core.Obj` into parse sigils. Conflict behavior de
 | Variable                 | Description                                                |
 |--------------------------|------------------------------------------------------------|
 | `ErrCoreRequired`        | `New`: core argument is nil                                |
-| `ErrLoggerRequired`      | `New`: logger argument is nil                              |
 | `ErrNodeInfoNotCaptured` | `New`: getNodeInfo handler not found in core               |
 | `ErrInvalidKeyLength`    | `Ask`: public key has wrong length                         |
 | `ErrUnexpectedResponse`  | `callNodeInfo`: response is not `GetNodeInfoResponse`      |

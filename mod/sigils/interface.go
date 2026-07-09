@@ -8,9 +8,6 @@ type Interface interface {
 	GetName() string
 	GetParams() []string
 
-	// SetParams writes sigil data into a copy of NodeInfo; never mutates the input.
-	SetParams(map[string]any) (map[string]any, error)
-
 	// ParseParams extracts this sigil's keys from foreign NodeInfo
 	// and stores the result into the object for later retrieval via Params.
 	ParseParams(map[string]any) map[string]any

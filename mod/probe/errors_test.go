@@ -8,8 +8,8 @@ import (
 
 func TestErrors_distinct(t *testing.T) {
 	errs := []error{
-		ErrCoreRequired, ErrLoggerRequired, ErrRemotePeersNotCaptured,
-		ErrInvalidCacheTTL, ErrMaxDepthRequired, ErrInvalidKeyLength,
+		ErrCoreRequired, ErrRemotePeersNotCaptured,
+		ErrMaxDepthRequired, ErrInvalidKeyLength,
 		ErrKeyNotInTree, ErrNoActivePath, ErrNodeUnreachable,
 		ErrRemotePeersDisabled, ErrTreeEmpty, ErrNoRoot, ErrLookupTimedOut,
 	}

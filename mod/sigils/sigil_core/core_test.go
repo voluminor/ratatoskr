@@ -1,6 +1,7 @@
 package sigil_core
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
@@ -56,14 +57,14 @@ func TestParseInfo_valid(t *testing.T) {
 }
 
 func TestParseInfo_withPrefix(t *testing.T) {
-	ver, names, err := ParseInfo("ratatoskr [a] v2")
+	ver, names, err := ParseInfo("ratatoskr [abc] v2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if ver != "v2" {
 		t.Fatalf("expected version v2, got %s", ver)
 	}
-	if len(names) != 1 || names[0] != "a" {
+	if len(names) != 1 || names[0] != "abc" {
 		t.Fatalf("unexpected sigils: %v", names)
 	}
 }
@@ -102,11 +103,55 @@ func TestParseInfo_missingVersion_whitespace(t *testing.T) {
 	}
 }
 
+func TestParseInfo_deduplicates(t *testing.T) {
+	_, names, err := ParseInfo("[foo,bar,foo] v1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(names) != 2 || names[0] != "foo" || names[1] != "bar" {
+		t.Fatalf("unexpected sigils: %v", names)
+	}
+}
+
+func TestParseInfo_invalidName(t *testing.T) {
+	_, _, err := ParseInfo("[ok,bad name] v1")
+	if err == nil {
+		t.Fatal("expected error for invalid sigil name")
+	}
+}
+
+func TestParseInfo_tooManyNames(t *testing.T) {
+	body := "sig"
+	for i := 0; i < maxInfoSigils; i++ {
+		body += ",sig" + string(rune('a'+i%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i/26/26%26))
+	}
+	_, _, err := ParseInfo("[" + body + "] v1")
+	if err == nil {
+		t.Fatal("expected error for too many sigil names")
+	}
+}
+
+func TestParseInfo_rejectsLongVersion(t *testing.T) {
+	_, _, err := ParseInfo("[abc] " + strings.Repeat("x", maxInfoVersionLength+1))
+	if err == nil {
+		t.Fatal("expected error for long version")
+	}
+}
+
+func TestParseInfo_rejectsControlVersion(t *testing.T) {
+	_, _, err := ParseInfo("[abc] v1\x1b[31m")
+	if err == nil {
+		t.Fatal("expected error for control version")
+	}
+}
+
 // // // // // // // // // //
 
 func BenchmarkParseInfo(b *testing.B) {
 	raw := "[inet,info,public,services] v0.1.3"
 	for b.Loop() {
-		ParseInfo(raw)
+		if _, _, err := ParseInfo(raw); err != nil {
+			b.Fatalf("ParseInfo: %v", err)
+		}
 	}
 }

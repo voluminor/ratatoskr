@@ -11,7 +11,7 @@ import (
 
 // // // // // // // // // //
 
-// mockNodeObj — minimal core.Interface for peermgr tests
+// mockNodeObj — minimal peer-capable node for peermgr tests
 type mockNodeObj struct {
 	mu      sync.Mutex
 	peers   []yggcore.PeerInfo
@@ -40,6 +40,8 @@ func (m *mockNodeObj) GetPeers() []yggcore.PeerInfo {
 	copy(out, m.peers)
 	return out
 }
+
+func (m *mockNodeObj) RetryPeers() error { return nil }
 
 func (m *mockNodeObj) DialContext(_ context.Context, _, _ string) (net.Conn, error) { return nil, nil }
 func (m *mockNodeObj) Listen(_, _ string) (net.Listener, error)                     { return nil, nil }

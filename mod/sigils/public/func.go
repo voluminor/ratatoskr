@@ -11,7 +11,7 @@ func Name() string {
 }
 
 func Keys() []string {
-	return sigKeys
+	return append([]string(nil), sigKeys...)
 }
 
 // //
@@ -26,44 +26,20 @@ func ParseParams(NodeInfo map[string]any) map[string]any {
 
 // Match expects map[string]any where each value is []any of strings.
 func Match(NodeInfo map[string]any) bool {
-	raw, ok := NodeInfo[sigName]
+	peers, ok := parsePeers(NodeInfo)
 	if !ok {
 		return false
 	}
-
-	peers, ok := raw.(map[string]any)
-	if !ok {
-		return false
-	}
-	if len(peers) == 0 {
-		return false
-	}
-
-	for group, v := range peers {
-		if !reGroup.MatchString(group) {
-			return false
-		}
-		arr, ok := v.([]any)
-		if !ok {
-			return false
-		}
-		for _, item := range arr {
-			if _, ok := item.(string); !ok {
-				return false
-			}
-		}
-	}
-	return true
+	return validatePeers(peers) == nil
 }
 
 // //
 
 // Parse creates an Obj from foreign NodeInfo.
 func Parse(NodeInfo map[string]any) (*Obj, error) {
-	if !Match(NodeInfo) {
+	peers, ok := parsePeers(NodeInfo)
+	if !ok {
 		return nil, errors.New("public sigil not found or malformed")
 	}
-	o := &Obj{}
-	o.ParseParams(NodeInfo)
-	return o, nil
+	return New(peers)
 }

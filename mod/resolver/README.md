@@ -36,25 +36,41 @@ flowchart LR
 ## Initialization
 
 ```go
-r := resolver.New(dialer, "200::1:53") // DNS over Yggdrasil
-r := resolver.New(dialer, "") // no DNS, only .pk.ygg and literals
+r := resolver.New(resolver.ConfigObj{
+    Dialer:     dialer,
+    Nameserver: "[200::1]:53", // DNS over Yggdrasil
+})
+r := resolver.New(resolver.ConfigObj{}) // no DNS, only .pk.ygg and literals
+r := resolver.New(resolver.ConfigObj{
+Dialer:               dialer,
+Nameserver:           "[200::1]:53",
+LookupTimeout:   10 * time.Second,
+CacheTTL:        30 * time.Second,
+CacheMaxEntries: 4096,
+})
 ```
-
-| Parameter    | Description                                           |
-|--------------|-------------------------------------------------------|
-| `dialer`     | `proxy.ContextDialer` — dialer for DNS queries        |
-| `nameserver` | DNS server address (`host:port` or `host`, port → 53) |
 
 If `nameserver` is empty — DNS resolution is disabled, only `.pk.ygg` and IP literals work.
 
 The resolver uses `PreferGo: true` (pure Go DNS, no cgo).
+
+`ConfigObj` is optional. Defaults are safe for embedded use:
+
+| Field                  | Default | Description                                              |
+|------------------------|---------|----------------------------------------------------------|
+| `LookupTimeout`        | `10s`   | DNS lookup timeout. `0` — default, `<0` uses hard cap    |
+| `CacheTTL`             | `30s`   | Positive DNS cache TTL. `0` — default, `<0` off          |
+| `CacheMaxEntries`      | `4096`  | Positive DNS cache cap. `0` — default, `<0` off          |
+
+Concurrency of DNS lookups is bounded by the caller (the SOCKS connection limit) and by singleflight collapsing
+duplicate in-flight names, so the resolver has no separate lookup limiter.
 
 ---
 
 ## Name resolution
 
 ```go
-ctx, ip, err := r.Resolve(ctx, "home.abc123def456.pk.ygg")
+ctx, ip, err := r.Resolve(ctx, "a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg")
 ```
 
 Returns `net.IP` and the original `ctx` (for passing values through the chain).
@@ -71,19 +87,21 @@ The first successful strategy wins.
 
 ### .pk.ygg mapping
 
-Suffix: `NameMappingSuffix = ".pk.ygg"`
+Suffix: `.pk.ygg`
 
 ```
 <hex-encoded-ed25519-key>.pk.ygg → IPv6 via address.AddrForKey()
 ```
 
-Subdomains are allowed — only the last segment before `.pk.ygg` is used:
-
-```
-subdomain.abc123...def456.pk.ygg → abc123...def456 is taken
-```
-
+Only the canonical `<64hex>.pk.ygg` form is accepted. Subdomains such as `name.<64hex>.pk.ygg` are rejected.
 The key must be exactly 32 bytes after hex decoding.
+
+### Settings
+
+`LookupTimeout` and `CacheTTL` are immutable: set them once through `ConfigObj` at `New`. The getters
+`LookupTimeout()` and `CacheTTL()` expose the current values; to change them, create a new resolver. `LookupTimeout < 0`
+uses the hard safety cap instead of disabling the deadline. `CacheTTL < 0` disables caching entirely. Failed DNS lookups
+are cached for a short bounded TTL to avoid repeated timeout amplification while a nameserver is down.
 
 ### IP literals
 
@@ -108,8 +126,10 @@ Returns the first address found. If no addresses are found — `ErrNoAddresses`.
 
 ## Errors
 
-| Variable              | Description                     |
-|-----------------------|---------------------------------|
-| `ErrNoNameserver`     | DNS server is not configured    |
-| `ErrNoAddresses`      | DNS query returned no addresses |
-| `ErrInvalidKeyLength` | Public key is not 32 bytes      |
+| Variable                    | Description                                      |
+|-----------------------------|--------------------------------------------------|
+| `ErrNoNameserver`           | DNS server is not configured                     |
+| `ErrNoAddresses`            | DNS query returned no addresses                  |
+| `ErrDialerRequired`         | DNS is configured without a dialer               |
+| `ErrInvalidPublicKeyDomain` | `.pk.ygg` public key domain is invalid           |
+| `ErrInvalidKeyLength`       | Public key is not 32 bytes                       |

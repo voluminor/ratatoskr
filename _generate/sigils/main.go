@@ -24,16 +24,26 @@ var template_text string
 
 //
 
+// SigilObj describes one discovered sigil package.
+// Alias is the folder name, which also becomes the import alias and the
+// package identifier used to qualify every generated reference. Name is the
+// sigName literal from values.go, kept only for duplicate detection.
 type SigilObj struct {
-	Name  string
-	Dir   string
 	Alias string
+	Name  string
+}
+
+// ImportObj is a single aliased import line for the generated file.
+type ImportObj struct {
+	Alias string
+	Path  string
 }
 
 type TemplateObj struct {
 	GenerationTime string
 	PackageName    string
-	ImportsArr     []string
+	SigilsImport   string
+	Imports        []ImportObj
 	Sigils         []SigilObj
 }
 
@@ -59,19 +69,31 @@ func extractSigName(path string) (string, error) {
 
 	m := reSigName.FindSubmatch(data)
 	if m == nil {
-		return "", fmt.Errorf("sigName not found in %s", path)
+		return "", fmt.Errorf("top-level `const sigName = \"...\"` not found in %s", path)
 	}
 
 	return string(m[1]), nil
 }
 
+// checkDuplicates fails when two folders declare the same sigName, which would
+// otherwise produce colliding map keys in the generated file.
+func checkDuplicates(list []SigilObj) error {
+	seen := make(map[string]string, len(list))
+	for _, s := range list {
+		if prev, ok := seen[s.Name]; ok {
+			return fmt.Errorf("duplicate sigName %q in folders %q and %q", s.Name, prev, s.Alias)
+		}
+		seen[s.Name] = s.Alias
+	}
+	return nil
+}
+
 // //
 
-func main() {
+func run() error {
 	entries, err := os.ReadDir(sigilsDir)
 	if err != nil {
-		fmt.Println("Error reading sigils directory:", err)
-		return
+		return fmt.Errorf("read sigils directory: %w", err)
 	}
 
 	var found []SigilObj
@@ -87,15 +109,15 @@ func main() {
 
 		name, err := extractSigName(filepath.Join(dir, "values.go"))
 		if err != nil {
-			fmt.Printf("Error extracting sigName from %s: %s\n", dir, err)
+			fmt.Fprintf(os.Stderr, "Warning: skipping %s: %s\n", dir, err)
 			continue
 		}
 
-		found = append(found, SigilObj{
-			Name:  name,
-			Dir:   e.Name(),
-			Alias: e.Name(),
-		})
+		found = append(found, SigilObj{Alias: e.Name(), Name: name})
+	}
+
+	if err := checkDuplicates(found); err != nil {
+		return err
 	}
 
 	sort.Slice(found, func(i, j int) bool {
@@ -104,22 +126,32 @@ func main() {
 
 	//
 
-	imports := []string{
-		modulePath + "/mod/sigils",
-	}
+	imports := make([]ImportObj, 0, len(found))
 	for _, s := range found {
-		imports = append(imports, modulePath+"/mod/sigils/"+s.Dir)
+		imports = append(imports, ImportObj{
+			Alias: s.Alias,
+			Path:  modulePath + "/mod/sigils/" + s.Alias,
+		})
 	}
 
 	data := &TemplateObj{
 		GenerationTime: time.Now().Format(time.RFC3339),
 		PackageName:    packageName,
-		ImportsArr:     imports,
+		SigilsImport:   modulePath + "/mod/sigils",
+		Imports:        imports,
 		Sigils:         found,
 	}
 
-	err = writeFileFromTemplate(filepath.Join("target", fileName), template_text, data)
-	if err != nil {
-		fmt.Println("Error saving generated file:", err)
+	if err := writeFileFromTemplate(filepath.Join("target", fileName), template_text, data); err != nil {
+		return fmt.Errorf("write generated file: %w", err)
+	}
+
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
 	}
 }

@@ -35,18 +35,9 @@ const (
 	keyBuildVersion  = "buildversion"
 	keyBuildPlatform = "buildplatform"
 	keyBuildArch     = "buildarch"
+
+	maxNodeInfoBytes = 16 * 1024
 )
-
-// //
-
-type adminCaptureObj struct {
-	handlers map[string]yggcore.AddHandlerFunc
-}
-
-func (a *adminCaptureObj) AddHandler(name, _ string, _ []string, fn yggcore.AddHandlerFunc) error {
-	a.handlers[name] = fn
-	return nil
-}
 
 // //
 
@@ -64,8 +55,9 @@ func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
 		return nil, ErrUnexpectedResponse
 	}
 
-	for _, msg := range resp {
-		return msg, nil
+	// A single-key query yields exactly one entry; take it without scanning.
+	for _, v := range resp {
+		return v, nil
 	}
 	return nil, ErrEmptyResponse
 }
@@ -73,6 +65,9 @@ func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
 // //
 
 func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskResultObj, error) {
+	if len(raw) > maxNodeInfoBytes {
+		return nil, fmt.Errorf("%w: %d bytes", ErrNodeInfoTooLarge, len(raw))
+	}
 	var nodeInfo map[string]any
 	if err := json.Unmarshal(raw, &nodeInfo); err != nil {
 		return nil, fmt.Errorf("ninfo: failed to unmarshal nodeinfo: %w", err)

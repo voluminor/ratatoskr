@@ -19,6 +19,10 @@ func TestKeys(t *testing.T) {
 	if len(k) != 5 {
 		t.Fatalf("expected 5 keys, got %d", len(k))
 	}
+	k[0] = "changed"
+	if Keys()[0] != sigKeys[0] {
+		t.Fatal("Keys leaked internal slice")
+	}
 }
 
 // // // // // // // // // //
@@ -161,7 +165,7 @@ func TestNew_invalidPeering_singleChar(t *testing.T) {
 	_, err := New(ConfigObj{
 		Name:        "test.node",
 		Type:        "server",
-		Description: "a", // reText requires at least 2 non-space chars
+		Description: "a", // free text requires at least 2 non-space chars
 	})
 	if err == nil {
 		t.Fatal("expected error for single-char peering")
@@ -190,6 +194,28 @@ func TestNew_invalidPeering_trailingSpace(t *testing.T) {
 	}
 }
 
+func TestNew_invalidPeeringControlRune(t *testing.T) {
+	_, err := New(ConfigObj{
+		Name:        "test.node",
+		Type:        "server",
+		Description: "hello \x1b[31m",
+	})
+	if err == nil {
+		t.Fatal("expected error for control rune in peering")
+	}
+}
+
+func TestNew_invalidPeeringFormatRune(t *testing.T) {
+	_, err := New(ConfigObj{
+		Name:        "test.node",
+		Type:        "server",
+		Description: "hello \u202eworld",
+	})
+	if err == nil {
+		t.Fatal("expected error for format rune in peering")
+	}
+}
+
 func TestNew_validPeering_minimal(t *testing.T) {
 	_, err := New(ConfigObj{
 		Name:        "test.node",
@@ -202,7 +228,7 @@ func TestNew_validPeering_minimal(t *testing.T) {
 }
 
 func TestNew_peeringTooLong(t *testing.T) {
-	// reText: ^\S[\S ]{0,512}\S$ — so total max is 514 chars
+	// Free text max is 514 runes.
 	_, err := New(ConfigObj{
 		Name:        "test.node",
 		Type:        "server",
@@ -298,7 +324,7 @@ func TestNew_invalidContactValue(t *testing.T) {
 	_, err := New(ConfigObj{
 		Name:     "test.node",
 		Type:     "server",
-		Contacts: map[string][]string{"email": {"a"}}, // too short for reContacts
+		Contacts: map[string][]string{"email": {"a"}}, // too short for contact text
 	})
 	if err == nil {
 		t.Fatal("expected error for invalid contact value")
@@ -462,6 +488,35 @@ func TestParse_nameAndTypeOnly(t *testing.T) {
 	}
 }
 
+func TestParse_rejectsInvalidName(t *testing.T) {
+	_, err := Parse(map[string]any{"name": "Bad Name", "type": "sv"})
+	if err == nil {
+		t.Fatal("expected error for invalid parsed name")
+	}
+}
+
+func TestParse_rejectsInvalidLocation(t *testing.T) {
+	_, err := Parse(map[string]any{"name": "test", "type": "sv", "location": " leading"})
+	if err == nil {
+		t.Fatal("expected error for invalid parsed location")
+	}
+}
+
+func TestParse_rejectsTooManyContacts(t *testing.T) {
+	contacts := make([]any, maxContactsPerGroup+1)
+	for i := range contacts {
+		contacts[i] = "contact" + strings.Repeat("x", i) + "@example.com"
+	}
+	_, err := Parse(map[string]any{
+		"name":    "test",
+		"type":    "sv",
+		"contact": map[string]any{"email": contacts},
+	})
+	if err == nil {
+		t.Fatal("expected error for too many parsed contacts")
+	}
+}
+
 // // // // // // // // // //
 // ParseParams
 
@@ -532,9 +587,54 @@ func TestSetParams_skipsEmpty(t *testing.T) {
 func TestSetParams_doesNotMutateInput(t *testing.T) {
 	obj, _ := New(ConfigObj{Name: "test.node", Type: "sv"})
 	ni := map[string]any{"other": "data"}
-	obj.SetParams(ni)
+	if _, err := obj.SetParams(ni); err != nil {
+		t.Fatalf("SetParams: %v", err)
+	}
 	if _, ok := ni["name"]; ok {
 		t.Fatal("SetParams should not mutate input")
+	}
+}
+
+func TestNew_clonesInput(t *testing.T) {
+	contacts := map[string][]string{"email": {"admin@example.com"}}
+	obj, err := New(ConfigObj{Name: "test.node", Type: "sv", Contacts: contacts})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	contacts["email"][0] = "bad"
+	if got := obj.Info().Contacts["email"][0]; got != "admin@example.com" {
+		t.Fatalf("input mutation changed object: %s", got)
+	}
+}
+
+func TestAccessorsReturnCopy(t *testing.T) {
+	obj, err := New(ConfigObj{Name: "test.node", Type: "sv", Contacts: map[string][]string{"email": {"admin@example.com"}}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	info := obj.Info()
+	info.Contacts["email"][0] = "root@example.com"
+	if got := obj.Info().Contacts["email"][0]; got != "admin@example.com" {
+		t.Fatalf("accessor must return a copy, internal data leaked: %s", got)
+	}
+}
+
+func TestParams_returnsIndependentCopy(t *testing.T) {
+	obj, err := New(ConfigObj{Name: "test.node", Type: "sv", Contacts: map[string][]string{"email": {"admin@example.com"}}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mutating a returned nested contact slice must not reach internal state.
+	obj.Params()["contact"].(map[string][]string)["email"][0] = "root@example.com"
+	if got := obj.Params()["contact"].(map[string][]string)["email"][0]; got != "admin@example.com" {
+		t.Fatalf("Params leaked internal contacts: %s", got)
+	}
+	// Two calls must yield independent maps.
+	a := obj.Params()["contact"].(map[string][]string)
+	b := obj.Params()["contact"].(map[string][]string)
+	a["email"][0] = "mutated"
+	if b["email"][0] == "mutated" {
+		t.Fatal("Params returned aliased contacts across calls")
 	}
 }
 
@@ -609,7 +709,9 @@ func BenchmarkNew(b *testing.B) {
 		Description: "open peering",
 	}
 	for b.Loop() {
-		New(conf)
+		if _, err := New(conf); err != nil {
+			b.Fatalf("New: %v", err)
+		}
 	}
 }
 
@@ -634,6 +736,8 @@ func BenchmarkParse(b *testing.B) {
 		"contact":  map[string]any{"email": []any{"a@b.com"}},
 	}
 	for b.Loop() {
-		Parse(ni)
+		if _, err := Parse(ni); err != nil {
+			b.Fatalf("Parse: %v", err)
+		}
 	}
 }

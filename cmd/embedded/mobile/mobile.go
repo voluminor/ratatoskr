@@ -116,7 +116,7 @@ func (y *Ratatoskr) SetMulticastEnabled(enabled bool) {
 	y.mu.Unlock()
 }
 
-// SetSOCKSMaxConnections — SOCKS5 connection limit; 0 = unlimited. Before Start()
+// SetSOCKSMaxConnections — SOCKS5 connection limit; 0 = safe default. Before Start()
 func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
 	y.mu.Lock()
 	y.socksMaxConn = max
@@ -281,7 +281,12 @@ func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 
 	fwdCtx, fwdCancel := context.WithCancel(context.Background())
 	y.fwdCancel = fwdCancel
-	y.fwdMgr.Start(fwdCtx, node)
+	if err = y.fwdMgr.Start(fwdCtx, node); err != nil {
+		fwdCancel()
+		_ = node.Close()
+		y.node = nil
+		return fmt.Errorf("start forwarding: %w", err)
+	}
 
 	y.peerMonWg.Add(1)
 	go y.peerMonitorLoop(fwdCtx)

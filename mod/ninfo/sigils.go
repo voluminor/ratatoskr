@@ -5,6 +5,6 @@ import "github.com/voluminor/ratatoskr/target"
 // // // // // // // // // //
 
 func reservedSigilName(name string) bool {
-	_, ok := target.GlobalSigilParseMap[name]
+	_, ok := target.Parse(name)
 	return ok
 }

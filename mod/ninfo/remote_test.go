@@ -4,22 +4,23 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
-// adminCaptureObj
+// AdminCaptureObj
 
 func TestAdminCapture(t *testing.T) {
-	cap := &adminCaptureObj{handlers: make(map[string]yggcore.AddHandlerFunc)}
+	cap := common.NewAdminCapture()
 	fn := func(json.RawMessage) (interface{}, error) { return nil, nil }
 	if err := cap.AddHandler("test_fn", "desc", nil, fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cap.handlers["test_fn"] == nil {
+	if cap.Handlers["test_fn"] == nil {
 		t.Fatal("handler not captured")
 	}
-	if cap.handlers["missing"] != nil {
+	if cap.Handlers["missing"] != nil {
 		t.Fatal("unexpected handler for missing key")
 	}
 }

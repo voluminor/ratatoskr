@@ -19,6 +19,10 @@ func TestKeys(t *testing.T) {
 	if len(k) != 1 || k[0] != "public" {
 		t.Fatalf("unexpected keys: %v", k)
 	}
+	k[0] = "changed"
+	if Keys()[0] != "public" {
+		t.Fatal("Keys leaked internal slice")
+	}
 }
 
 // // // // // // // // // //
@@ -289,6 +293,30 @@ func TestParse_noMatch(t *testing.T) {
 	}
 }
 
+func TestParse_rejectsInvalidURI(t *testing.T) {
+	_, err := Parse(map[string]any{
+		"public": map[string]any{
+			"eu": []any{"tls://bad uri:12345"},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid parsed URI")
+	}
+}
+
+func TestParse_rejectsTooManyURIs(t *testing.T) {
+	uris := make([]any, maxURIsPerGroup+1)
+	for i := range uris {
+		uris[i] = "tls://host" + strings.Repeat("x", i) + ":12345"
+	}
+	_, err := Parse(map[string]any{
+		"public": map[string]any{"eu": uris},
+	})
+	if err == nil {
+		t.Fatal("expected error for too many parsed URIs")
+	}
+}
+
 // // // // // // // // // //
 // ParseParams
 
@@ -338,9 +366,54 @@ func TestSetParams_conflict(t *testing.T) {
 func TestSetParams_doesNotMutateInput(t *testing.T) {
 	obj, _ := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
 	ni := map[string]any{"other": "data"}
-	obj.SetParams(ni)
+	if _, err := obj.SetParams(ni); err != nil {
+		t.Fatalf("SetParams: %v", err)
+	}
 	if _, ok := ni["public"]; ok {
 		t.Fatal("SetParams should not mutate input")
+	}
+}
+
+func TestNew_clonesInput(t *testing.T) {
+	peers := map[string][]string{"eu": {"tls://1.2.3.4:12345"}}
+	obj, err := New(peers)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	peers["eu"][0] = "bad"
+	if got := obj.Peers()["eu"][0]; got != "tls://1.2.3.4:12345" {
+		t.Fatalf("input mutation changed object: %s", got)
+	}
+}
+
+func TestAccessorsReturnCopy(t *testing.T) {
+	obj, err := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out := obj.Peers()
+	out["eu"][0] = "tls://5.6.7.8:12345"
+	if got := obj.Peers()["eu"][0]; got != "tls://1.2.3.4:12345" {
+		t.Fatalf("accessor must return a copy, internal data leaked: %s", got)
+	}
+}
+
+func TestParams_returnsIndependentCopy(t *testing.T) {
+	obj, err := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mutating a returned nested slice must not reach internal state.
+	obj.Params()["public"].(map[string][]string)["eu"][0] = "tls://9.9.9.9:12345"
+	if got := obj.Params()["public"].(map[string][]string)["eu"][0]; got != "tls://1.2.3.4:12345" {
+		t.Fatalf("Params leaked internal slice: %s", got)
+	}
+	// Two calls must yield independent maps.
+	a := obj.Params()["public"].(map[string][]string)
+	b := obj.Params()["public"].(map[string][]string)
+	a["eu"][0] = "tls://mutated:12345"
+	if b["eu"][0] == "tls://mutated:12345" {
+		t.Fatal("Params returned aliased maps across calls")
 	}
 }
 
@@ -402,7 +475,9 @@ func BenchmarkNew(b *testing.B) {
 		"us": {"tls://10.0.0.1:12345"},
 	}
 	for b.Loop() {
-		New(peers)
+		if _, err := New(peers); err != nil {
+			b.Fatalf("New: %v", err)
+		}
 	}
 }
 
@@ -425,6 +500,8 @@ func BenchmarkParse(b *testing.B) {
 		},
 	}
 	for b.Loop() {
-		Parse(ni)
+		if _, err := Parse(ni); err != nil {
+			b.Fatalf("Parse: %v", err)
+		}
 	}
 }

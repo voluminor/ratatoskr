@@ -1,6 +1,7 @@
 package services
 
 import (
+	"math"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,10 @@ func TestKeys(t *testing.T) {
 	k := Keys()
 	if len(k) != 1 || k[0] != "services" {
 		t.Fatalf("unexpected keys: %v", k)
+	}
+	k[0] = "changed"
+	if Keys()[0] != "services" {
+		t.Fatal("Keys leaked internal slice")
 	}
 }
 
@@ -56,16 +61,6 @@ func TestNew_nil(t *testing.T) {
 }
 
 func TestNew_tooMany(t *testing.T) {
-	svc := make(map[string]uint16)
-	for i := range 257 {
-		name := "svc" + strings.Repeat("x", 2) + strings.Repeat("0", i%10)
-		if len(name) > 32 {
-			name = name[:32]
-		}
-		// ensure unique names
-		svc["s"+strings.Repeat("a", min(29, i/10))+strings.Repeat("b", i%10)] = uint16(i + 1)
-	}
-	// fallback: just build 257 unique valid names
 	svc2 := make(map[string]uint16)
 	for i := range 257 {
 		name := "svc" + string(rune('a'+i/26/26%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
@@ -254,6 +249,19 @@ func TestMatch_portFractional(t *testing.T) {
 	}
 }
 
+func TestMatch_portNonFinite(t *testing.T) {
+	for _, port := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		ni := map[string]any{
+			"services": map[string]any{
+				"http": port,
+			},
+		}
+		if Match(ni) {
+			t.Fatalf("expected no match for non-finite port %v", port)
+		}
+	}
+}
+
 func TestMatch_port65535(t *testing.T) {
 	ni := map[string]any{
 		"services": map[string]any{
@@ -332,6 +340,18 @@ func TestParse_noMatch(t *testing.T) {
 	}
 }
 
+func TestParse_rejectsTooManyServices(t *testing.T) {
+	svc := make(map[string]any, maxServices+1)
+	for i := range maxServices + 1 {
+		name := "svc" + string(rune('a'+i/26/26%26)) + string(rune('a'+i/26%26)) + string(rune('a'+i%26))
+		svc[name] = float64(i%65535 + 1)
+	}
+	_, err := Parse(map[string]any{"services": svc})
+	if err == nil {
+		t.Fatal("expected error for too many parsed services")
+	}
+}
+
 // // // // // // // // // //
 // ParseParams
 
@@ -381,9 +401,54 @@ func TestSetParams_conflict(t *testing.T) {
 func TestSetParams_doesNotMutateInput(t *testing.T) {
 	obj, _ := New(map[string]uint16{"http": 80})
 	ni := map[string]any{"other": "data"}
-	obj.SetParams(ni)
+	if _, err := obj.SetParams(ni); err != nil {
+		t.Fatalf("SetParams: %v", err)
+	}
 	if _, ok := ni["services"]; ok {
 		t.Fatal("SetParams should not mutate input")
+	}
+}
+
+func TestNew_clonesInput(t *testing.T) {
+	services := map[string]uint16{"http": 80}
+	obj, err := New(services)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	services["http"] = 81
+	if got := obj.Services()["http"]; got != 80 {
+		t.Fatalf("input mutation changed object: %d", got)
+	}
+}
+
+func TestAccessorsReturnCopy(t *testing.T) {
+	obj, err := New(map[string]uint16{"http": 80})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out := obj.Services()
+	out["http"] = 81
+	if got := obj.Services()["http"]; got != 80 {
+		t.Fatalf("accessor must return a copy, internal data leaked: %d", got)
+	}
+}
+
+func TestParams_returnsIndependentCopy(t *testing.T) {
+	obj, err := New(map[string]uint16{"http": 80})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// Mutating a returned fragment must not reach internal state.
+	obj.Params()["services"].(map[string]uint16)["http"] = 81
+	if got := obj.Params()["services"].(map[string]uint16)["http"]; got != 80 {
+		t.Fatalf("Params leaked internal map: %d", got)
+	}
+	// Two calls must yield independent maps.
+	a := obj.Params()["services"].(map[string]uint16)
+	b := obj.Params()["services"].(map[string]uint16)
+	a["http"] = 8080
+	if b["http"] == 8080 {
+		t.Fatal("Params returned aliased maps across calls")
 	}
 }
 
@@ -408,7 +473,7 @@ func TestObjParseParams(t *testing.T) {
 	}
 }
 
-func TestObjParseParams_filtersInvalid(t *testing.T) {
+func TestObjParseParams_rejectsInvalidSet(t *testing.T) {
 	obj, _ := New(map[string]uint16{"http": 80})
 	ni := map[string]any{
 		"services": map[string]any{
@@ -422,23 +487,8 @@ func TestObjParseParams_filtersInvalid(t *testing.T) {
 	}
 	obj.ParseParams(ni)
 	svc := obj.Params()["services"].(map[string]uint16)
-	if svc["valid"] != 22 {
-		t.Fatal("expected valid=22")
-	}
-	if _, ok := svc["zero"]; ok {
-		t.Fatal("zero port should be filtered")
-	}
-	if _, ok := svc["negative"]; ok {
-		t.Fatal("negative port should be filtered")
-	}
-	if _, ok := svc["too-high"]; ok {
-		t.Fatal("too-high port should be filtered")
-	}
-	if _, ok := svc["fraction"]; ok {
-		t.Fatal("fractional port should be filtered")
-	}
-	if _, ok := svc["string"]; ok {
-		t.Fatal("string port should be filtered")
+	if len(svc) != 1 || svc["http"] != 80 {
+		t.Fatalf("invalid parse should keep previous services, got %v", svc)
 	}
 }
 
@@ -477,7 +527,9 @@ func TestParams_populated(t *testing.T) {
 func BenchmarkNew(b *testing.B) {
 	svc := map[string]uint16{"http": 80, "ssh": 22, "xmpp": 5222}
 	for b.Loop() {
-		New(svc)
+		if _, err := New(svc); err != nil {
+			b.Fatalf("New: %v", err)
+		}
 	}
 }
 
@@ -502,6 +554,8 @@ func BenchmarkParse(b *testing.B) {
 		},
 	}
 	for b.Loop() {
-		Parse(ni)
+		if _, err := Parse(ni); err != nil {
+			b.Fatalf("Parse: %v", err)
+		}
 	}
 }

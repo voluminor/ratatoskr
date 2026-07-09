@@ -6,7 +6,6 @@ import (
 	"go/format"
 	"os"
 	"path/filepath"
-	"strings"
 	"text/template"
 )
 
@@ -15,12 +14,7 @@ import (
 func writeFileFromTemplate(pathToFile string, textTemplate string, dataTemplate any) error {
 	fileName := filepath.Base(pathToFile)
 
-	tmpl := template.New("sigils-template").Funcs(template.FuncMap{
-		"split":   strings.Split,
-		"replace": strings.ReplaceAll,
-	})
-
-	t, err := tmpl.New(fileName).Parse(textTemplate)
+	t, err := template.New(fileName).Parse(textTemplate)
 	if err != nil {
 		return fmt.Errorf("init template [%s]: %s", fileName, err.Error())
 	}

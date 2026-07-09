@@ -26,6 +26,7 @@ conflict detection, and assembly into the final NodeInfo. The `ninfo` module han
   - [Clone](#clone)
 - [Package-level functions](#package-level-functions)
 - [Direct data access](#direct-data-access)
+- [Mutability and concurrency](#mutability-and-concurrency)
 - [Built-in sigils](#built-in-sigils)
     - [info](#info)
     - [public](#public)
@@ -110,13 +111,17 @@ Defined in `interface.go`:
 type Interface interface {
 GetName() string
 GetParams() []string
-SetParams(map[string]any) (map[string]any, error)
 ParseParams(map[string]any) map[string]any
 Match(map[string]any) bool
 Params() map[string]any
 Clone() Interface
 }
 ```
+
+Assembly is done by the package itself: `sigil_core.Add` merges each sigil's `Params()` into the served NodeInfo via
+`sigils.MergeParams`, so a sigil never receives the live map and cannot mutate shared state. Built-in sigils also expose
+a convenience `SetParams(NodeInfo) (map[string]any, error)` (a thin wrapper over `MergeParams(NodeInfo, Params())`),
+but it is not part of the `Interface`.
 
 ### GetName
 
@@ -127,14 +132,15 @@ Returns the unique sigil identifier (e.g. `"info"`, `"services"`). Must pass `Va
 Returns the list of top-level NodeInfo keys this sigil owns. Used by `ninfo` for conflict detection when adding sigils
 and for cleanup when removing them.
 
-### SetParams
+### SetParams (convenience, not part of the Interface)
 
 ```go
 SetParams(NodeInfo map[string]any) (map[string]any, error)
 ```
 
-Writes sigil data into a **copy** of the input map. Returns the new map with sigil keys added. On key conflict, returns
-an error — the original map is never touched. Empty optional fields are skipped.
+Built-in sigils expose this thin wrapper over `MergeParams(NodeInfo, Params())`: it writes sigil data into a **copy**
+of the input map and returns the new map with sigil keys added; on key conflict it returns an error and the original
+map is never touched. Custom sigils do not need to implement it — assembly uses `Params()` directly.
 
 ### ParseParams
 
@@ -175,8 +181,8 @@ never panics, never returns an error.
 
 **What Match does NOT check:**
 
-- Content validity (string lengths, regexp patterns on values, duplicate detection). That is `New()`'s job.
-- Whether the data makes semantic sense. A service named `"zzz"` on port 1 passes Match if the types are correct.
+- Cross-sigil relationships or whether the data is useful for a specific application.
+- Transformations or normalization. `Match` only accepts or rejects the foreign value; `ParseParams` extracts it.
 
 **Implementation rules:**
 
@@ -193,6 +199,12 @@ Params() map[string]any
 ```
 
 Returns the sigil's current data as a NodeInfo fragment. Empty when the object has no data.
+
+Built-in sigils return a defensive copy from `Params()`, including nested maps and slices. This lets callers assemble or
+inspect NodeInfo fragments without receiving mutable access to the sigil's internal state.
+
+Third-party sigils should follow the same rule. If a custom implementation returns internal containers for performance,
+it must document that choice clearly and should still make `Clone()` return a fully independent deep copy.
 
 ### Clone
 
@@ -234,6 +246,8 @@ Each sigil may provide typed accessor methods on `*Obj` via `access.go`. These m
 `sigils.Interface`** — they are available only after a type assertion from `Interface` to the concrete `*Obj`.
 
 This avoids the overhead of working with `map[string]any` when the caller already knows which sigil it is dealing with.
+Accessors follow the same ownership rule as `Params()`: returned maps and slices may be direct views. Treat them as
+borrowed data unless the concrete accessor explicitly documents that it returns a copy.
 
 | Sigil      | Method       | Return type           |
 |------------|--------------|-----------------------|
@@ -260,6 +274,23 @@ fmt.Printf("%s:%d\n", name, port)
 }
 }
 ```
+
+---
+
+## Mutability and concurrency
+
+Sigil objects are lightweight data carriers, not synchronized containers. Build or parse a sigil, pass ownership to the
+caller that needs it, and use `Clone()` when two owners need independent mutable state.
+
+- `Params()` and typed accessors may expose direct internal data. Use `Clone()` before sharing data across ownership
+  boundaries.
+- `SetParams` must return a map containing the sigil's local NodeInfo keys and must not mutate the input map. Built-in
+  sigils copy the input map before writing to it; third-party sigils must follow the same rule.
+- `ParseParams` stores parsed data inside the receiver. Do not call it concurrently with `Params()`, `Clone()`, or typed
+  accessors on the same object.
+- The package does not guarantee concurrent read/write safety for a single sigil instance. External synchronization is
+  the
+  caller's responsibility.
 
 ---
 

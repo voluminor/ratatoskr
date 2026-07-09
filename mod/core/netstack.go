@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"sync"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
@@ -21,12 +22,13 @@ import (
 
 // netstackObj — userspace TCP/UDP stack on top of gVisor
 type netstackObj struct {
-	stack  *stack.Stack
-	nic    *nicObj
-	logger yggcore.Logger
+	stack     *stack.Stack
+	nic       *nicObj
+	logger    yggcore.Logger
+	closeOnce sync.Once
 }
 
-func newNetstack(ygg *yggcore.Core, log yggcore.Logger, rstQueueSize int) (*netstackObj, error) {
+func newNetstack(ygg *yggcore.Core, log yggcore.Logger, rstQueueSize int, ifMTU uint64) (*netstackObj, error) {
 	s := &netstackObj{
 		stack: stack.New(stack.Options{
 			NetworkProtocols:   []stack.NetworkProtocolFactory{ipv6.NewProtocol},
@@ -36,7 +38,7 @@ func newNetstack(ygg *yggcore.Core, log yggcore.Logger, rstQueueSize int) (*nets
 		logger: log,
 	}
 	s.stack.AllowICMPMessage()
-	nic, tcpErr := s.newNIC(ygg, rstQueueSize)
+	nic, tcpErr := s.newNIC(ygg, rstQueueSize, ifMTU)
 	if tcpErr != nil {
 		s.stack.Destroy()
 		return nil, fmt.Errorf("newNIC: %s", tcpErr.String())
@@ -46,10 +48,12 @@ func newNetstack(ygg *yggcore.Core, log yggcore.Logger, rstQueueSize int) (*nets
 }
 
 func (s *netstackObj) close() {
-	if s.nic != nil {
-		s.nic.Close()
-	}
-	s.stack.Destroy()
+	s.closeOnce.Do(func() {
+		if s.nic != nil {
+			s.nic.Close()
+		}
+		s.stack.Destroy()
+	})
 }
 
 // //
@@ -59,21 +63,24 @@ func parseAddress(address string) (tcpip.FullAddress, tcpip.NetworkProtocolNumbe
 	if err != nil {
 		return tcpip.FullAddress{}, 0, fmt.Errorf("net.SplitHostPort: %w", err)
 	}
-	port := 80
-	if portStr != "" {
-		port, err = strconv.Atoi(portStr)
-		if err != nil {
-			return tcpip.FullAddress{}, 0, fmt.Errorf("strconv.Atoi: %w", err)
-		}
-		if port < 0 || port > 65535 {
-			return tcpip.FullAddress{}, 0, fmt.Errorf("%w: %d", ErrPortOutOfRange, port)
-		}
+	if portStr == "" {
+		return tcpip.FullAddress{}, 0, ErrPortRequired
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return tcpip.FullAddress{}, 0, fmt.Errorf("strconv.Atoi: %w", err)
+	}
+	if port < 0 || port > 65535 {
+		return tcpip.FullAddress{}, 0, fmt.Errorf("%w: %d", ErrPortOutOfRange, port)
 	}
 	addr := tcpip.Address{}
 	if host != "" {
 		ip := net.ParseIP(host)
 		if ip == nil {
 			return tcpip.FullAddress{}, 0, fmt.Errorf("%w %q", ErrInvalidAddress, host)
+		}
+		if ip.To4() != nil {
+			return tcpip.FullAddress{}, 0, fmt.Errorf("%w: %s", ErrIPv6Only, host)
 		}
 		addr = tcpip.AddrFromSlice(ip.To16())
 	}
@@ -84,6 +91,11 @@ func parseAddress(address string) (tcpip.FullAddress, tcpip.NetworkProtocolNumbe
 
 // DialContext — tcp, tcp6, udp, udp6
 func (s *netstackObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+	}
 	fa, pn, err := parseAddress(address)
 	if err != nil {
 		return nil, err

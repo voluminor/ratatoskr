@@ -3,6 +3,7 @@ package ninfo
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"sync/atomic"
 	"testing"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
@@ -86,6 +87,21 @@ func newMockSigil(name string, keys ...string) *mockSigilObj {
 		data[k] = "test"
 	}
 	return &mockSigilObj{name: name, params: keys, data: data}
+}
+
+type cloneCountingSigilObj struct {
+	*mockSigilObj
+	clones *atomic.Int64
+}
+
+func (m *cloneCountingSigilObj) Clone() sigils.Interface {
+	m.clones.Add(1)
+	// Return a counting clone so the whole clone chain (sigil_core.Add stores a
+	// clone, Sigils() clones again) is observed by the same counter.
+	return &cloneCountingSigilObj{
+		mockSigilObj: &mockSigilObj{name: m.name, params: append([]string(nil), m.params...), data: map[string]any{}},
+		clones:       m.clones,
+	}
 }
 
 // //

@@ -5,15 +5,18 @@ import (
 	"crypto/ed25519"
 	"net"
 	"testing"
+	"time"
 
+	"github.com/voluminor/ratatoskr/mod/core"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
 
-// mockNodeObj — core.Interface backed by real loopback TCP/UDP
+// mockNodeObj — network-capable node backed by real loopback TCP/UDP
 type mockNodeObj struct {
 	addr net.IP
+	mtu  uint64
 }
 
 func (m *mockNodeObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -38,7 +41,12 @@ func (m *mockNodeObj) Address() net.IP {
 
 func (m *mockNodeObj) Subnet() net.IPNet            { return net.IPNet{} }
 func (m *mockNodeObj) PublicKey() ed25519.PublicKey { return nil }
-func (m *mockNodeObj) MTU() uint64                  { return 65535 }
+func (m *mockNodeObj) MTU() uint64 {
+	if m.mtu > 0 {
+		return m.mtu
+	}
+	return 65535
+}
 func (m *mockNodeObj) AddPeer(_ string) error       { return nil }
 func (m *mockNodeObj) RemovePeer(_ string) error    { return nil }
 func (m *mockNodeObj) GetPeers() []yggcore.PeerInfo { return nil }
@@ -67,6 +75,15 @@ func (noopLogObj) Traceln(...interface{})        {}
 
 // //
 
+func newTestManagerObj(node core.NetworkInterface, timeout time.Duration, cfg ConfigObj) *ManagerObj {
+	cfg.Logger = noopLogObj{}
+	cfg.Node = node
+	cfg.UDPTimeout = timeout
+	return New(cfg)
+}
+
+// //
+
 // checkIPv6 skips the test if IPv6 loopback is unavailable
 func checkIPv6(t *testing.T) {
 	t.Helper()
@@ -74,7 +91,7 @@ func checkIPv6(t *testing.T) {
 	if err != nil {
 		t.Skip("IPv6 not available on this host")
 	}
-	ln.Close()
+	_ = ln.Close()
 }
 
 // echoTCPServer6 starts a TCP echo server on [::1]:0 and returns its address
@@ -85,7 +102,7 @@ func echoTCPServer6(t *testing.T) *net.TCPAddr {
 	if err != nil {
 		t.Fatalf("echoTCPServer6: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -99,7 +116,7 @@ func echoTCPServer6(t *testing.T) *net.TCPAddr {
 }
 
 func echoConn(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	buf := make([]byte, 4096)
 	for {
 		n, err := c.Read(buf)
@@ -127,6 +144,6 @@ func freePort(t *testing.T, ip string) int {
 		}
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	_ = ln.Close()
 	return port
 }

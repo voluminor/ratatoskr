@@ -2,6 +2,7 @@ package sigil_core
 
 import (
 	"fmt"
+	"maps"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/target"
@@ -22,10 +23,10 @@ func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 	s := new(Obj)
 	s.sigils = make(map[string]sigils.Interface)
 
-	if nodeInfo == nil {
-		nodeInfo = make(map[string]any)
+	s.localNodeInfo = maps.Clone(nodeInfo)
+	if s.localNodeInfo == nil {
+		s.localNodeInfo = make(map[string]any)
 	}
-	s.localNodeInfo = nodeInfo
 
 	errs := make([]error, 0)
 	if len(sg) > 0 {
@@ -37,17 +38,34 @@ func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 
 // //
 
-// NodeInfo returns the assembled map ready for yggcore.NodeInfo option.
+// NodeInfo returns a copy of the assembled map ready for yggcore.NodeInfo option.
+// A copy prevents a holder from structurally mutating the served map; nested
+// values are already independent because each sigil's Params deep-copies them.
 func (s *Obj) NodeInfo() map[string]any {
-	return s.localNodeInfo
+	return maps.Clone(s.localNodeInfo)
 }
 
 func (s *Obj) Sigils() map[string]sigils.Interface {
-	return s.sigils
+	out := make(map[string]sigils.Interface, len(s.sigils))
+	for name, sg := range s.sigils {
+		if sg == nil {
+			continue
+		}
+		cloned := sg.Clone()
+		if cloned == nil {
+			continue
+		}
+		out[name] = cloned
+	}
+	return out
 }
 
 func (s *Obj) String() string {
-	return fmt.Sprintf("%s %s", target.Name, s.localNodeInfo[target.Name].(string))
+	value, _ := s.localNodeInfo[target.Name].(string)
+	if value == "" {
+		value = CompileInfo(s.sigils)
+	}
+	return fmt.Sprintf("%s %s", target.Name, value)
 }
 
 func (s *Obj) LenSigils() int {
@@ -65,16 +83,28 @@ func (s *Obj) Len() int {
 // //
 
 // Add registers sigils and writes their keys into localNodeInfo.
-// Each sigil is validated, checked for name conflicts, and then
-// applied via SetParams. On failure it is skipped and the error is collected.
+// Each sigil is validated, checked for name conflicts, and then merged in via
+// the package-owned MergeParams over the sigil's own Params — the sigil never
+// receives the live map, so a contract-violating third-party sigil cannot mutate
+// shared state. On failure it is skipped and the error is collected.
 // After all sigils are processed, the ratatoskr metadata key is updated.
 func (s *Obj) Add(sg ...sigils.Interface) []error {
+	if s.sigils == nil {
+		s.sigils = make(map[string]sigils.Interface)
+	}
+	if s.localNodeInfo == nil {
+		s.localNodeInfo = make(map[string]any)
+	}
 	errs := make([]error, 0)
 	defer func() {
 		s.localNodeInfo[target.Name] = CompileInfo(s.sigils)
 	}()
 
-	for _, si := range sg {
+	for i, si := range sg {
+		if si == nil {
+			errs = append(errs, fmt.Errorf("sigil[%d] is nil", i))
+			continue
+		}
 		if !sigils.ValidateName(si.GetName()) {
 			errs = append(errs, fmt.Errorf("sigil[%s] is invalid", si.GetName()))
 			continue
@@ -85,26 +115,36 @@ func (s *Obj) Add(sg ...sigils.Interface) []error {
 			continue
 		}
 
-		bufMap, err := si.SetParams(s.localNodeInfo)
+		bufMap, err := sigils.MergeParams(s.localNodeInfo, si.Params())
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sigil[%s] not add: %v", si.GetName(), err))
 			continue
 		}
 
-		s.sigils[si.GetName()] = si
+		// Store a clone so the module fully owns its state: a caller mutating its
+		// own sigil after Add cannot change what Del later removes (Del reads
+		// Params off the stored value). A sigil that cannot clone itself is rejected.
+		clone := si.Clone()
+		if clone == nil {
+			errs = append(errs, fmt.Errorf("sigil[%s] Clone returned nil", si.GetName()))
+			continue
+		}
+		name := si.GetName()
+		s.sigils[name] = clone
 		s.localNodeInfo = bufMap
 	}
 
 	return errs
 }
 
-// Get returns a registered sigil by name, or nil if not found.
+// Get returns an independent clone of a registered sigil by name, or nil if not
+// found. Cloning keeps a caller from mutating the module's stored sigil state.
 func (s *Obj) Get(name string) sigils.Interface {
 	sg, ok := s.sigils[name]
 	if !ok {
 		return nil
 	}
-	return sg
+	return sg.Clone()
 }
 
 // Del removes a sigil and deletes its keys from localNodeInfo.
@@ -116,7 +156,9 @@ func (s *Obj) Del(name string) error {
 
 	delete(s.sigils, sg.GetName())
 
-	for _, key := range sg.GetParams() {
+	// Remove exactly the keys the sigil wrote (its own Params); declared-but-unset
+	// keys stay untouched so a user's base value under the same key survives.
+	for key := range sg.Params() {
 		delete(s.localNodeInfo, key)
 	}
 

@@ -2,11 +2,48 @@ package ninfo
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/mod/sigils/inet"
 	"github.com/voluminor/ratatoskr/target"
 )
+
+// // // // // // // // // //
+
+type emptyParseSigilObj struct {
+	name string
+	keys []string
+}
+
+func (e *emptyParseSigilObj) GetName() string { return e.name }
+func (e *emptyParseSigilObj) GetParams() []string {
+	return append([]string(nil), e.keys...)
+}
+func (e *emptyParseSigilObj) SetParams(mp map[string]any) (map[string]any, error) {
+	return mp, nil
+}
+func (e *emptyParseSigilObj) ParseParams(map[string]any) map[string]any {
+	return nil
+}
+func (e *emptyParseSigilObj) Match(map[string]any) bool {
+	return true
+}
+func (e *emptyParseSigilObj) Params() map[string]any {
+	return nil
+}
+func (e *emptyParseSigilObj) Clone() sigils.Interface {
+	return &emptyParseSigilObj{name: e.name, keys: append([]string(nil), e.keys...)}
+}
+
+type nilCloneParseSigilObj struct {
+	emptyParseSigilObj
+}
+
+func (n *nilCloneParseSigilObj) Clone() sigils.Interface {
+	return nil
+}
 
 // // // // // // // // // //
 // Parse
@@ -74,6 +111,19 @@ func TestParse_invalidRatatoskrString(t *testing.T) {
 	}
 }
 
+func TestParse_invalidVersionLeavesMetadataInExtra(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[abc] " + strings.Repeat("x", 65),
+	}
+	p := Parse(m)
+	if p.Version != "" {
+		t.Fatal("expected empty Version for invalid version")
+	}
+	if _, ok := p.Extra[target.Name]; !ok {
+		t.Fatal("ratatoskr key should remain in Extra on parse failure")
+	}
+}
+
 func TestParse_nonStringRatatoskrKey(t *testing.T) {
 	m := map[string]any{
 		target.Name: 12345,
@@ -95,6 +145,48 @@ func TestParse_doesNotMutateInput(t *testing.T) {
 	}
 	if m["keep"] != "me" {
 		t.Fatal("Parse should not mutate input values")
+	}
+}
+
+func TestParse_userSigilWithoutParsedKeysStaysInExtra(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	p := Parse(m, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
+	if p.Sigils != nil {
+		t.Fatal("sigil without parsed keys should not be accepted")
+	}
+	if p.Extra["custom"] != "value" {
+		t.Fatal("unparsed custom key should stay in Extra")
+	}
+}
+
+func TestParse_nilUserSigilIsSkipped(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	// A nil element in the variadic must be skipped, not dereferenced.
+	p := Parse(m, nil, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
+	if p.Extra["custom"] != "value" {
+		t.Fatal("nil sigil must not disrupt parsing")
+	}
+}
+
+func TestParse_nilCloneUserSigilIsSkipped(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	p := Parse(m, &nilCloneParseSigilObj{
+		emptyParseSigilObj: emptyParseSigilObj{name: "custom", keys: []string{"custom"}},
+	})
+	if p.Sigils != nil {
+		t.Fatal("nil-clone sigil should not be accepted")
+	}
+	if p.Extra["custom"] != "value" {
+		t.Fatal("nil-clone sigil must leave custom data in Extra")
 	}
 }
 
@@ -128,6 +220,38 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 	}
 	if _, ok := ni[target.Name]; !ok {
 		t.Fatal("ratatoskr metadata key should be present")
+	}
+}
+
+func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
+	obj := newTestObj()
+	obj.AddSigil(newMockSigil("aaa", "key1"))
+	m := map[string]any{
+		target.Name: "[aaa] v9.9.9",
+		"key1":      "test",
+	}
+	p := Parse(m, obj.sigilSlice()...)
+	ni := p.NodeInfo()
+	if ni[target.Name] != "[aaa] v9.9.9" {
+		t.Fatalf("unexpected metadata: %v", ni[target.Name])
+	}
+}
+
+func TestParsedObj_NodeInfo_preservesUnknownSigilNames(t *testing.T) {
+	obj := newTestObj()
+	obj.AddSigil(newMockSigil("aaa", "key1"))
+	m := map[string]any{
+		target.Name: "[aaa,zzz] v9.9.9",
+		"key1":      "test",
+		"zzz":       "opaque",
+	}
+	p := Parse(m, obj.sigilSlice()...)
+	ni := p.NodeInfo()
+	if ni[target.Name] != "[aaa,zzz] v9.9.9" {
+		t.Fatalf("unexpected metadata: %v", ni[target.Name])
+	}
+	if ni["zzz"] != "opaque" {
+		t.Fatal("unknown sigil params should stay in NodeInfo")
 	}
 }
 
