@@ -57,7 +57,7 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 	nodeCfg.NodeInfoPrivacy = false
 	nodeCfg.NodeInfo = map[string]interface{}{
 		"type":      "forward",
-		"ratatoskr": target.GlobalVersion,
+		"ratatoskr": target.Version,
 	}
 
 	logger := &cliLoggerObj{}

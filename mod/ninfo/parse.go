@@ -30,7 +30,7 @@ func (p *ParsedObj) NodeInfo() map[string]any {
 		}
 	}
 	if len(p.Version) > 0 {
-		out[target.GlobalName] = sigil_core.CompileInfo(p.Sigils)
+		out[target.Name] = sigil_core.CompileInfo(p.Sigils)
 	}
 	return out
 }
@@ -57,7 +57,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		result.Extra[k] = v
 	}
 
-	raw, ok := result.Extra[target.GlobalName]
+	raw, ok := result.Extra[target.Name]
 	if !ok {
 		return result
 	}
@@ -72,7 +72,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	}
 
 	result.Version = ver
-	delete(result.Extra, target.GlobalName)
+	delete(result.Extra, target.Name)
 
 	// //
 

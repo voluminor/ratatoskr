@@ -21,7 +21,7 @@ func CompileInfo(sg map[string]sigils.Interface) string {
 
 	return fmt.Sprintf("[%s] %s",
 		strings.Join(names, ","),
-		target.GlobalVersion,
+		target.Version,
 	)
 }
 

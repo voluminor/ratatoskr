@@ -1,6 +1,9 @@
 /target/
 /tmp/
+/cmd/ratatoskr/target/
+/cmd/ratatoskr/tmp/
 *.bin
 *.exe
 .env
 go.sum
+go.work.sum

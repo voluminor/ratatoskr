@@ -15,7 +15,7 @@ func TestCompileInfo_sorted(t *testing.T) {
 		"zzz": &mockSigilObj{name: "zzz"},
 		"aaa": &mockSigilObj{name: "aaa"},
 	})
-	expected := "[aaa,zzz] " + target.GlobalVersion
+	expected := "[aaa,zzz] " + target.Version
 	if s != expected {
 		t.Fatalf("expected %q, got %q", expected, s)
 	}
@@ -23,7 +23,7 @@ func TestCompileInfo_sorted(t *testing.T) {
 
 func TestCompileInfo_empty(t *testing.T) {
 	s := CompileInfo(nil)
-	expected := "[] " + target.GlobalVersion
+	expected := "[] " + target.Version
 	if s != expected {
 		t.Fatalf("expected %q, got %q", expected, s)
 	}
@@ -33,7 +33,7 @@ func TestCompileInfo_single(t *testing.T) {
 	s := CompileInfo(map[string]sigils.Interface{
 		"info": &mockSigilObj{name: "info"},
 	})
-	expected := "[info] " + target.GlobalVersion
+	expected := "[info] " + target.Version
 	if s != expected {
 		t.Fatalf("expected %q, got %q", expected, s)
 	}

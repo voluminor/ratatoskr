@@ -83,14 +83,19 @@ jobs:
 
       - uses: ./.github/actions/github-setup-user
 
+      - uses: ./.github/actions/init-go
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
       - name: 📦 Increment patch version
         shell: bash
         run: |
           set -Eeuo pipefail
-          new_ver=$(./_run/scripts/sys.sh --increment --patch)
+          gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
+          new_ver=$(go run "${gometagen}" version patch -source _run/values.yml)
           echo "New version: $new_ver"
 
-          git add _run/values/ver.txt
+          git add _run/values.yml
           git commit -m "patch(${new_ver}): auto-bump on PR merge"
           git push origin HEAD:main
 

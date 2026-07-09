@@ -736,7 +736,6 @@ Logger: slogAdapter{l: slog.Default()},
 | [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                       |
 | [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                        |
 | [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов                         |
-| [`mod/settings`](mod/settings/README.md) | Загрузка, парсинг и сохранение конфигурации (WIP — схема не финализирована) |
 | [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet)                |
 | [`mod/ninfo`](mod/ninfo/README.md)       | Запрос и парсинг NodeInfo удалённых узлов, управление parse-сигилами        |
 
@@ -752,8 +751,6 @@ Logger: slogAdapter{l: slog.Default()},
 | [`tiny-http`](cmd/embedded/tiny-http) | Минимальный HTTP-сервер       |
 | [`tiny-chat`](cmd/embedded/tiny-chat) | Чат через Yggdrasil           |
 | [`mobile`](cmd/embedded/mobile)       | Пример для мобильных платформ |
-
-Также в [`cmd/yggstack/`](cmd/yggstack/) — реализация yggstack на базе ratatoskr.
 
 ---
 

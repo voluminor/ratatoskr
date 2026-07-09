@@ -145,21 +145,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          new_ver=$(./_run/scripts/sys.sh --increment --minor)
+          gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
+          new_ver=$(go run "${gometagen}" version minor -source _run/values.yml)
           echo "New version: $new_ver"
 
-          git add _run/values/ver.txt
+          git add _run/values.yml
           git commit -m "minor(${new_ver}): release"
           git push origin HEAD:main
 
-      - name: 🛠️ Regenerate with new version
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p target tmp
-          go work sync
-          go generate .
-          ./_run/scripts/go_tidy_all.sh
+      - uses: ./.github/actions/tidy-all-and-generate
 
       - uses: ./.github/actions/generate-build-env
 

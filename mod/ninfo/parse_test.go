@@ -26,14 +26,14 @@ func TestParse_noRatatoskrKey(t *testing.T) {
 
 func TestParse_withRatatoskrKey(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: "[] v1.0",
-		"extra_key":       "extra_val",
+		target.Name: "[] v1.0",
+		"extra_key": "extra_val",
 	}
 	p := Parse(m)
 	if p.Version != "v1.0" {
 		t.Fatalf("expected version v1.0, got %s", p.Version)
 	}
-	if _, ok := p.Extra[target.GlobalName]; ok {
+	if _, ok := p.Extra[target.Name]; ok {
 		t.Fatal("ratatoskr key should be removed from Extra")
 	}
 	if p.Extra["extra_key"] != "extra_val" {
@@ -43,20 +43,20 @@ func TestParse_withRatatoskrKey(t *testing.T) {
 
 func TestParse_invalidRatatoskrString(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: "invalid format",
+		target.Name: "invalid format",
 	}
 	p := Parse(m)
 	if p.Version != "" {
 		t.Fatal("expected empty Version for invalid format")
 	}
-	if _, ok := p.Extra[target.GlobalName]; !ok {
+	if _, ok := p.Extra[target.Name]; !ok {
 		t.Fatal("ratatoskr key should remain in Extra on parse failure")
 	}
 }
 
 func TestParse_nonStringRatatoskrKey(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: 12345,
+		target.Name: 12345,
 	}
 	p := Parse(m)
 	if p.Version != "" {
@@ -66,11 +66,11 @@ func TestParse_nonStringRatatoskrKey(t *testing.T) {
 
 func TestParse_doesNotMutateInput(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: "[] v1",
-		"keep":            "me",
+		target.Name: "[] v1",
+		"keep":      "me",
 	}
 	Parse(m)
-	if _, ok := m[target.GlobalName]; !ok {
+	if _, ok := m[target.Name]; !ok {
 		t.Fatal("Parse should not mutate the input map")
 	}
 	if m["keep"] != "me" {
@@ -94,9 +94,9 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 	obj := newTestObj()
 	obj.AddSigil(newMockSigil("aaa", "key1"))
 	m := map[string]any{
-		target.GlobalName: "[aaa] " + target.GlobalVersion,
-		"key1":            "test",
-		"extra":           "val",
+		target.Name: "[aaa] " + target.Version,
+		"key1":      "test",
+		"extra":     "val",
 	}
 	p := Parse(m, obj.sigilSlice()...)
 	ni := p.NodeInfo()
@@ -106,7 +106,7 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 	if ni["key1"] != "test" {
 		t.Fatal("sigil key should be reassembled")
 	}
-	if _, ok := ni[target.GlobalName]; !ok {
+	if _, ok := ni[target.Name]; !ok {
 		t.Fatal("ratatoskr metadata key should be present")
 	}
 }
@@ -114,7 +114,7 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 func TestParsedObj_NodeInfo_noVersion(t *testing.T) {
 	p := &ParsedObj{Extra: map[string]any{"foo": "bar"}}
 	ni := p.NodeInfo()
-	if _, ok := ni[target.GlobalName]; ok {
+	if _, ok := ni[target.Name]; ok {
 		t.Fatal("ratatoskr key should not be present without Version")
 	}
 }
@@ -147,10 +147,10 @@ func TestParsedObj_String_empty(t *testing.T) {
 
 func BenchmarkParse_withRatatoskr(b *testing.B) {
 	m := map[string]any{
-		target.GlobalName: "[inet,info] v0.1.3",
-		"buildname":       "yggdrasil",
-		"buildversion":    "0.5.13",
-		"extra":           "data",
+		target.Name:    "[inet,info] v0.1.3",
+		"buildname":    "yggdrasil",
+		"buildversion": "0.5.13",
+		"extra":        "data",
 	}
 	for b.Loop() {
 		Parse(m)

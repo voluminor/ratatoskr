@@ -8,8 +8,6 @@ import (
 	"regexp"
 	"sort"
 	"time"
-
-	dep "github.com/voluminor/ratatoskr/_generate"
 )
 
 // // // // // // // // // //
@@ -40,6 +38,32 @@ type TemplateObj struct {
 }
 
 var reSigName = regexp.MustCompile(`(?m)^const sigName\s*=\s*"([^"]+)"`)
+
+// //
+
+func hasRequiredFiles(dir string) bool {
+	for _, name := range []string{"func.go", "obj.go", "values.go"} {
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+func extractSigName(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	m := reSigName.FindSubmatch(data)
+	if m == nil {
+		return "", fmt.Errorf("sigName not found in %s", path)
+	}
+
+	return string(m[1]), nil
+}
 
 // //
 
@@ -94,34 +118,8 @@ func main() {
 		Sigils:         found,
 	}
 
-	err = dep.WriteFileFromTemplate(filepath.Join("target", fileName), template_text, data)
+	err = writeFileFromTemplate(filepath.Join("target", fileName), template_text, data)
 	if err != nil {
 		fmt.Println("Error saving generated file:", err)
 	}
-}
-
-// //
-
-func hasRequiredFiles(dir string) bool {
-	for _, name := range []string{"func.go", "obj.go", "values.go"} {
-		info, err := os.Stat(filepath.Join(dir, name))
-		if err != nil || info.IsDir() {
-			return false
-		}
-	}
-	return true
-}
-
-func extractSigName(path string) (string, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-
-	m := reSigName.FindSubmatch(data)
-	if m == nil {
-		return "", fmt.Errorf("sigName not found in %s", path)
-	}
-
-	return string(m[1]), nil
 }

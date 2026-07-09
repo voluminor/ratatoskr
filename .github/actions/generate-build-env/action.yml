@@ -9,8 +9,9 @@ runs:
       shell: bash
       run: |
         set -Eeuo pipefail
-        nameBuild=$(./_run/scripts/sys.sh -n)
-        versionBuild=$(./_run/scripts/sys.sh -v)
+        gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
+        nameBuild=$(go run "${gometagen}" manifest get -source ./_run/values.yml -field name)
+        versionBuild=$(go run "${gometagen}" version print -source ./_run/values.yml)
 
         echo "BUILD_NAME=$nameBuild"   >  build_env.txt
         echo "BUILD_VER=$versionBuild" >> build_env.txt

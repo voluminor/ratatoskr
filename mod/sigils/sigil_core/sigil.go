@@ -47,7 +47,7 @@ func (s *Obj) Sigils() map[string]sigils.Interface {
 }
 
 func (s *Obj) String() string {
-	return fmt.Sprintf("%s %s", target.GlobalName, s.localNodeInfo[target.GlobalName].(string))
+	return fmt.Sprintf("%s %s", target.Name, s.localNodeInfo[target.Name].(string))
 }
 
 func (s *Obj) LenSigils() int {
@@ -71,7 +71,7 @@ func (s *Obj) Len() int {
 func (s *Obj) Add(sg ...sigils.Interface) []error {
 	errs := make([]error, 0)
 	defer func() {
-		s.localNodeInfo[target.GlobalName] = CompileInfo(s.sigils)
+		s.localNodeInfo[target.Name] = CompileInfo(s.sigils)
 	}()
 
 	for _, si := range sg {
@@ -120,7 +120,7 @@ func (s *Obj) Del(name string) error {
 		delete(s.localNodeInfo, key)
 	}
 
-	s.localNodeInfo[target.GlobalName] = CompileInfo(s.sigils)
+	s.localNodeInfo[target.Name] = CompileInfo(s.sigils)
 
 	return nil
 }

@@ -14,4 +14,17 @@ runs:
 
     - name: 📥 go mod tidy-all
       shell: bash
-      run: ./_run/scripts/go_tidy_all.sh
+      run: |
+        set -Eeuo pipefail
+        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+          [ -n "$dir" ] || continue
+          echo "Tidying ${dir}"
+          go -C "$dir" mod tidy
+        done
+
+    - name: 🛠️ regenerate after tidy
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        mkdir -p target tmp
+        go generate .

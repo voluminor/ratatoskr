@@ -44,7 +44,7 @@ updates the `ratatoskr` metadata key via `CompileInfo`.
 [sigil1,sigil2] v0.1.3
 ```
 
-Sigil names are sorted alphabetically. The version comes from `target.GlobalVersion`.
+Sigil names are sorted alphabetically. The version comes from `target.Version`.
 
 ```mermaid
 flowchart LR

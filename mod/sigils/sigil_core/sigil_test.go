@@ -79,8 +79,8 @@ func TestAdd_duplicate(t *testing.T) {
 func TestAdd_updates_metadata(t *testing.T) {
 	obj, _ := New(nil)
 	obj.Add(newMockSigil("aaa"), newMockSigil("bbb"))
-	expected := "[aaa,bbb] " + target.GlobalVersion
-	got := obj.NodeInfo()[target.GlobalName]
+	expected := "[aaa,bbb] " + target.Version
+	got := obj.NodeInfo()[target.Name]
 	if got != expected {
 		t.Fatalf("expected %q, got %q", expected, got)
 	}
