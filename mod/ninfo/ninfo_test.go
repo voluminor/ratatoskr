@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
+	"github.com/voluminor/ratatoskr/mod/sigils/inet"
 	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 )
 
@@ -46,6 +47,17 @@ func TestAddSigil_invalidName(t *testing.T) {
 	}
 	if obj.GetSigil("AB") != nil {
 		t.Fatal("invalid sigil should not be stored")
+	}
+}
+
+func TestAddSigil_reservedBuiltinName(t *testing.T) {
+	obj := newTestObj()
+	errs := obj.AddSigil(newMockSigil(inet.Name(), inet.Name()))
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 reserved-name error, got %d", len(errs))
+	}
+	if obj.GetSigil(inet.Name()) != nil {
+		t.Fatal("reserved built-in sigil should not be stored")
 	}
 }
 
@@ -121,6 +133,19 @@ func TestImportSigils_append_conflict(t *testing.T) {
 	errs := obj.ImportSigils(src, ImportAppend)
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 conflict error, got %d", len(errs))
+	}
+}
+
+func TestImportSigils_skipsReservedBuiltinNames(t *testing.T) {
+	obj := newTestObj()
+
+	src, _ := sigil_core.New(nil, newMockSigil(inet.Name(), inet.Name()))
+	errs := obj.ImportSigils(src, ImportAppend)
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errors: %v", errs)
+	}
+	if obj.GetSigil(inet.Name()) != nil {
+		t.Fatal("reserved built-in sigil should not be imported")
 	}
 }
 

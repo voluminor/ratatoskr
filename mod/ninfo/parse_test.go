@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/voluminor/ratatoskr/mod/sigils/inet"
 	"github.com/voluminor/ratatoskr/target"
 )
 
@@ -38,6 +39,25 @@ func TestParse_withRatatoskrKey(t *testing.T) {
 	}
 	if p.Extra["extra_key"] != "extra_val" {
 		t.Fatal("extra key should be preserved")
+	}
+}
+
+func TestParse_builtinSigilNameIsReserved(t *testing.T) {
+	m := map[string]any{
+		target.Name:  "[" + inet.Name() + "] " + target.Version,
+		inet.Name():  []any{"example.org"},
+		"shadow_key": "keep",
+	}
+
+	p := Parse(m, newMockSigil(inet.Name(), "shadow_key"))
+	if p.Sigils == nil || p.Sigils[inet.Name()] == nil {
+		t.Fatal("built-in sigil parser should handle reserved names")
+	}
+	if _, ok := p.Extra[inet.Name()]; ok {
+		t.Fatal("built-in sigil key should be removed from Extra")
+	}
+	if p.Extra["shadow_key"] != "keep" {
+		t.Fatal("custom sigil with reserved name should not override built-in parser")
 	}
 }
 

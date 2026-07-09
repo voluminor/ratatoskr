@@ -152,6 +152,10 @@ func (obj *Obj) AddSigil(sg ...sigils.Interface) []error {
 			errs = append(errs, fmt.Errorf("sigil[%s] is invalid", name))
 			continue
 		}
+		if reservedSigilName(name) {
+			errs = append(errs, fmt.Errorf("sigil[%s] is reserved", name))
+			continue
+		}
 		if _, ok := obj.sigils[name]; ok {
 			errs = append(errs, fmt.Errorf("duplicated sigil[%s]", name))
 			continue
@@ -186,6 +190,9 @@ func (obj *Obj) ImportSigils(src *sigil_core.Obj, mode ImportModeObj) []error {
 	if mode == ImportReset {
 		obj.sigils = make(map[string]sigils.Interface, src.LenSigils())
 		for name, si := range src.Sigils() {
+			if reservedSigilName(name) {
+				continue
+			}
 			obj.sigils[name] = si
 		}
 		return nil
@@ -193,6 +200,9 @@ func (obj *Obj) ImportSigils(src *sigil_core.Obj, mode ImportModeObj) []error {
 
 	var errs []error
 	for name, si := range src.Sigils() {
+		if reservedSigilName(name) {
+			continue
+		}
 		if _, exists := obj.sigils[name]; exists {
 			if mode == ImportAppend {
 				errs = append(errs, fmt.Errorf("sigil[%s] already exists", name))
