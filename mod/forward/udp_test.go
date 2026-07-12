@@ -249,9 +249,6 @@ func TestManagerDefaultsAndConfig(t *testing.T) {
 	if mgr.tcpIdleTimeout != DefaultTCPIdleTimeout {
 		t.Fatalf("default TCP idle timeout = %s, want %s", mgr.tcpIdleTimeout, DefaultTCPIdleTimeout)
 	}
-	if mgr.maxUDPSessionsPerSource != DefaultMaxUDPSessionsPerSource {
-		t.Fatalf("default UDP source limit = %d, want %d", mgr.maxUDPSessionsPerSource, DefaultMaxUDPSessionsPerSource)
-	}
 	mgr = newTestManagerObj(&mockNodeObj{mtu: 1280}, 5*time.Second, ConfigObj{})
 	if got := mgr.effectiveUDPMaxPacketSize(); got != 1280 {
 		t.Fatalf("default UDP max packet size = %d, want node MTU", got)
@@ -265,24 +262,17 @@ func TestManagerDefaultsAndConfig(t *testing.T) {
 	if zero.maxUDPSessions != DefaultMaxUDPSessions {
 		t.Fatalf("UDP default value = %d, want %d", zero.maxUDPSessions, DefaultMaxUDPSessions)
 	}
-	if zero.maxUDPSessionsPerSource != DefaultMaxUDPSessionsPerSource {
-		t.Fatalf("UDP source default value = %d, want %d", zero.maxUDPSessionsPerSource, DefaultMaxUDPSessionsPerSource)
-	}
 
 	// Negative config values disable the respective limits.
 	unlimited := newTestManagerObj(&mockNodeObj{}, 5*time.Second, ConfigObj{
-		MaxTCPConnections:       -1,
-		MaxUDPSessions:          -1,
-		MaxUDPSessionsPerSource: -1,
+		MaxTCPConnections: -1,
+		MaxUDPSessions:    -1,
 	})
 	if unlimited.maxTCPConnections != -1 {
 		t.Fatalf("TCP unlimited value = %d, want -1", unlimited.maxTCPConnections)
 	}
 	if unlimited.maxUDPSessions != -1 {
 		t.Fatalf("UDP unlimited value = %d, want -1", unlimited.maxUDPSessions)
-	}
-	if unlimited.maxUDPSessionsPerSource != 0 {
-		t.Fatalf("UDP source disabled value = %d, want 0", unlimited.maxUDPSessionsPerSource)
 	}
 
 	mgr = newTestManagerObj(&mockNodeObj{}, 5*time.Second, ConfigObj{UDPMaxPacketSize: 512})
@@ -556,7 +546,7 @@ func TestRunUDPLoop_echoRoundtrip(t *testing.T) {
 	}
 }
 
-func TestManagerActiveUDPSessions(t *testing.T) {
+func TestManagerUDPStandaloneAppliesSafeDefaults(t *testing.T) {
 	echoAddr := echoUDPServer(t)
 
 	listenConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -565,20 +555,18 @@ func TestManagerActiveUDPSessions(t *testing.T) {
 	}
 	defer func() { _ = listenConn.Close() }()
 
-	mgr := newTestManagerObj(&mockNodeObj{}, 2*time.Second, ConfigObj{})
 	ctx, cancel := context.WithCancel(context.Background())
-
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		runUDPLoopWithWait(ctx, UDPLoopConfigObj{
-			Logger:        noopLogObj{},
-			ListenConn:    listenConn,
-			Dial:          func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
-			Timeout:       2 * time.Second,
-			activeCounter: &mgr.activeUDPSessions,
-		}, &mgr.wg)
-		mgr.wg.Wait()
+		// Zero MaxSessions must resolve to a safe default on the standalone
+		// entrypoint, not "unlimited"; the loop must still relay traffic.
+		RunUDPLoop(ctx, UDPLoopConfigObj{
+			Logger:     noopLogObj{},
+			ListenConn: listenConn,
+			Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
+			Timeout:    2 * time.Second,
+		})
 	}()
 
 	clientConn, err := net.DialUDP("udp4", nil, listenConn.LocalAddr().(*net.UDPAddr))
@@ -590,18 +578,12 @@ func TestManagerActiveUDPSessions(t *testing.T) {
 	if got := readUDPEchoWithRetry(t, clientConn, []byte("active")); string(got) != "active" {
 		t.Fatalf("echo mismatch: got %q, want %q", got, "active")
 	}
-	if active := mgr.ActiveUDPSessions(); active != 1 {
-		t.Fatalf("ActiveUDPSessions = %d, want 1", active)
-	}
 
 	cancel()
 	select {
 	case <-loopDone:
 	case <-time.After(2 * time.Second):
 		t.Fatal("UDP loop did not stop after cancel")
-	}
-	if active := mgr.ActiveUDPSessions(); active != 0 {
-		t.Fatalf("ActiveUDPSessions after stop = %d, want 0", active)
 	}
 }
 
@@ -982,52 +964,6 @@ func TestRunUDPLoop_maxSessions(t *testing.T) {
 	}
 }
 
-func TestRunUDPLoop_maxSessionsPerSource(t *testing.T) {
-	echoAddr := echoUDPServer(t)
-
-	listenConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = listenConn.Close() }()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	go runUDPLoop(ctx, UDPLoopConfigObj{
-		Logger:               noopLogObj{},
-		ListenConn:           listenConn,
-		Dial:                 func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
-		Timeout:              5 * time.Second,
-		MaxSessions:          10,
-		MaxSessionsPerSource: 1,
-	})
-
-	addr := listenConn.LocalAddr().(*net.UDPAddr)
-	c1, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c1.Close() }()
-	_ = readUDPEchoWithRetry(t, c1, []byte("first"))
-
-	c2, err := net.DialUDP("udp4", nil, addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = c2.Close() }()
-	if _, err = c2.Write([]byte("second")); err != nil {
-		t.Fatalf("write second: %v", err)
-	}
-	if err = c2.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
-		t.Fatalf("set second read deadline: %v", err)
-	}
-	buf := make([]byte, 16)
-	if _, err = c2.Read(buf); err == nil {
-		t.Fatal("expected second source-port session to be dropped by per-source limit")
-	}
-}
-
 func TestRunUDPLoop_cancelStops(t *testing.T) {
 	echoAddr := echoUDPServer(t)
 
@@ -1146,5 +1082,30 @@ func BenchmarkReverseProxyUDP(b *testing.B) {
 		_ = srcWriter.Close()
 		<-done
 		_ = dstConn.Close()
+	}
+}
+
+// BenchmarkUDPSessionRouting exercises the per-datagram hot path: derive the NAT
+// key from the source address and look up its session. It must stay at 0 allocs/op
+// — the typed netip.AddrPort key must never be boxed into interface{}.
+func BenchmarkUDPSessionRouting(b *testing.B) {
+	addr := &net.UDPAddr{IP: net.ParseIP("200:1234::1"), Port: 5000}
+	sessions := newUDPSessionMap()
+	key, ok := udpSessionKey(addr)
+	if !ok {
+		b.Fatal("udpSessionKey failed")
+	}
+	sessions.store(key, &udpSessionObj{})
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		k, keyOK := udpSessionKey(addr)
+		if !keyOK {
+			b.Fatal("udpSessionKey failed")
+		}
+		if _, found := sessions.load(k); !found {
+			b.Fatal("session not found")
+		}
 	}
 }

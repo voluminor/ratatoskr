@@ -5,6 +5,8 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"maps"
+	"net"
 	"slices"
 	"sync"
 
@@ -24,13 +26,13 @@ import (
 
 // Obj — Yggdrasil node for embedding in applications.
 // Combines core (DialContext/Listen), resolver (.pk.ygg), and SOCKS5.
-// All core networking methods are available directly via interface embedding.
-// Multicast and Admin are accessible via core.Interface
+// The primary networking and peer methods are exposed directly; the full node
+// contract (multicast, admin, retry, stats) is reachable via Core().
 type Obj struct {
-	// core.Interface is read-only; do not reassign, use Close().
-	core.Interface
+	// core is assigned once in New and read-only afterwards; use Close() to stop.
+	core core.Interface
 	// socks is assigned once in New and read-only afterwards; safe to read lock-free.
-	socks       socks.Interface
+	socks       *socks.Obj
 	peerManager *peermgr.Obj
 	nodeInfo    *ninfo.Obj
 	logger      yggcore.Logger
@@ -39,54 +41,20 @@ type Obj struct {
 	closeErr    error
 }
 
-// socksStarterInterface recovers Start, which socks.Interface deliberately omits.
-type socksStarterInterface interface {
-	Start(cfg socks.ConfigObj) error
-}
-
-// cloneCallerConfig insulates New from the caller's config: sigils write into
-// NodeInfo, and MulticastInterfaces is read after New (EnableMulticast), so both
-// reference fields are cloned. NodeInfo is deep-cloned (its nested JSON-shaped
-// maps/slices, not just the top level) so a later caller mutation cannot reach
-// the served NodeInfo. Other NodeConfig fields are consumed once at construction,
-// so a shallow copy of the rest is sufficient.
+// cloneCallerConfig insulates New from the caller's config: sigils add top-level
+// keys to NodeInfo and MulticastInterfaces is read after New (EnableMulticast), so
+// both reference fields are copied. A shallow NodeInfo clone suffices — the library
+// only adds top-level keys; a caller that later mutates its own nested map/slice
+// values owns that data and is out of scope. Other NodeConfig fields are consumed
+// once at construction, so a shallow copy of the rest is sufficient.
 func cloneCallerConfig(cfg *config.NodeConfig) *config.NodeConfig {
 	if cfg == nil {
 		return nil
 	}
 	cloned := *cfg
-	cloned.NodeInfo = deepCloneNodeInfo(cfg.NodeInfo)
+	cloned.NodeInfo = maps.Clone(cfg.NodeInfo)
 	cloned.MulticastInterfaces = slices.Clone(cfg.MulticastInterfaces)
 	return &cloned
-}
-
-// deepCloneNodeInfo recursively copies a NodeInfo map, cloning nested
-// map[string]any / []any (the shapes config decoding produces). Scalars and
-// other value types are copied by value; callers must keep NodeInfo JSON-shaped.
-func deepCloneNodeInfo(m map[string]any) map[string]any {
-	if m == nil {
-		return nil
-	}
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = deepCloneJSONValue(v)
-	}
-	return out
-}
-
-func deepCloneJSONValue(v any) any {
-	switch t := v.(type) {
-	case map[string]any:
-		return deepCloneNodeInfo(t)
-	case []any:
-		s := make([]any, len(t))
-		for i, e := range t {
-			s[i] = deepCloneJSONValue(e)
-		}
-		return s
-	default:
-		return v
-	}
 }
 
 // New creates and starts the node.
@@ -144,11 +112,11 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 
 	obj := &Obj{
-		Interface: coreNode,
-		socks:     socks.NewDisabled(),
-		nodeInfo:  ni,
-		logger:    cfg.Logger,
-		done:      make(chan struct{}),
+		core:     coreNode,
+		socks:    socks.NewDisabled(),
+		nodeInfo: ni,
+		logger:   cfg.Logger,
+		done:     make(chan struct{}),
 	}
 
 	if cfg.Peers != nil {
@@ -187,6 +155,49 @@ func New(cfg ConfigObj) (*Obj, error) {
 	return obj, nil
 }
 
+// // // // // // // // // //
+
+// Core exposes the full underlying node contract (multicast, admin, retry peers,
+// stats). The primary methods below are promoted directly, so the embeddable
+// surface stays small and advanced controls live behind one accessor.
+func (o *Obj) Core() core.Interface { return o.core }
+
+// DialContext opens a connection to a Yggdrasil address; compatible with http.Transport.DialContext.
+func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return o.core.DialContext(ctx, network, address)
+}
+
+// Listen creates a TCP listener; closed automatically on Close().
+func (o *Obj) Listen(network, address string) (net.Listener, error) {
+	return o.core.Listen(network, address)
+}
+
+// ListenPacket creates a UDP listener; closed automatically on Close().
+func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
+	return o.core.ListenPacket(network, address)
+}
+
+// Address — node IPv6 address in the 200::/7 range.
+func (o *Obj) Address() net.IP { return o.core.Address() }
+
+// Subnet — routable /64 subnet of the node in the 300::/7 range.
+func (o *Obj) Subnet() net.IPNet { return o.core.Subnet() }
+
+// PublicKey — ed25519 public key of the node.
+func (o *Obj) PublicKey() ed25519.PublicKey { return o.core.PublicKey() }
+
+// MTU — MTU of the node interface.
+func (o *Obj) MTU() uint64 { return o.core.MTU() }
+
+// AddPeer adds a peer; URI: "tcp://...", "quic://...", etc.
+func (o *Obj) AddPeer(uri string) error { return o.core.AddPeer(uri) }
+
+// RemovePeer removes a previously added peer.
+func (o *Obj) RemovePeer(uri string) error { return o.core.RemovePeer(uri) }
+
+// GetPeers returns all peers (connected and configured).
+func (o *Obj) GetPeers() []yggcore.PeerInfo { return o.core.GetPeers() }
+
 // //
 
 func (o *Obj) isClosed() bool {
@@ -207,15 +218,11 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 		return ErrClosed
 	}
 	server := o.socks
-	network := o.Interface
+	network := o.core
 	logger := o.logger
 
 	if server.IsEnabled() {
 		return fmt.Errorf("%w on %s", socks.ErrAlreadyEnabled, server.Addr())
-	}
-	starter, ok := server.(socksStarterInterface)
-	if !ok {
-		return fmt.Errorf("socks handle does not support Start")
 	}
 	resolverCfg := resolver.ConfigObj{
 		Dialer:          network,
@@ -224,7 +231,7 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 		CacheTTL:        cfg.NameserverCacheTTL,
 		CacheMaxEntries: cfg.NameserverCacheMaxEntries,
 	}
-	err := starter.Start(socks.ConfigObj{
+	err := server.Start(socks.ConfigObj{
 		Network:           network,
 		Addr:              cfg.Addr,
 		Resolver:          resolver.New(resolverCfg),
@@ -340,7 +347,7 @@ func (o *Obj) Close() error {
 		o.closeErr = errors.Join(
 			nodeInfoErr,
 			socksErr,
-			o.Interface.Close(),
+			o.core.Close(),
 		)
 	})
 	return o.closeErr

@@ -66,10 +66,10 @@ func (p *ParsedObj) String() string {
 // //
 
 // Parse inspects arbitrary NodeInfo from yggdrasil.
-// If the map contains a valid ratatoskr metadata key, sigils are extracted
-// using built-in parsers from target.Parse merged with custom
-// user-provided sg. Built-in sigil names are reserved and cannot be overridden.
-// Parsed keys are removed from the remaining map returned in Extra.
+// If the map contains a valid ratatoskr metadata key, sigils are extracted using
+// built-in parsers from target.Parse merged with the caller's registered sigils.
+// Built-in sigil names are reserved and take priority. A sigil is accepted when a
+// parser matches it; the parsed sigil's claimed keys are removed from Extra.
 func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	result := &ParsedObj{
 		Extra: make(map[string]any, len(nodeInfo)),
@@ -140,23 +140,19 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	return result
 }
 
-// //
-
+// wrapUserSigil adapts a registered sigil into a stateless parser. It clones
+// before Match so a stateful third-party Match never races on the shared stored
+// sigil; a matched sigil is accepted even when optional keys are absent.
 func wrapUserSigil(s sigils.Interface) func(map[string]any) (sigils.Interface, error) {
 	return func(m map[string]any) (sigils.Interface, error) {
-		if !s.Match(m) {
-			return nil, nil
-		}
 		c := s.Clone()
 		if c == nil {
 			return nil, nil
 		}
-		parsed := c.ParseParams(m)
-		for _, key := range c.GetParams() {
-			if _, ok := parsed[key]; !ok {
-				return nil, nil
-			}
+		if !c.Match(m) {
+			return nil, nil
 		}
+		c.ParseParams(m)
 		return c, nil
 	}
 }

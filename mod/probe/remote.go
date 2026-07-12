@@ -1,7 +1,6 @@
 package probe
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/voluminor/ratatoskr/internal/common"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
@@ -21,27 +19,31 @@ type remoteCallResultObj struct {
 	err   error
 }
 
-const (
-	maxRemotePeerMessageBytes = 1024 * 1024
-	maxRemotePeerJSONTokens   = 8192
-)
+// remotePeerMessageObj is the per-node debug_remoteGetPeers payload; only the
+// key list is consumed, other fields are ignored.
+type remotePeerMessageObj struct {
+	Keys []string `json:"keys"`
+}
+
+const maxRemotePeerMessageBytes = 1024 * 1024
 
 // //
 
-func acquireRemoteSlot(ctx context.Context, limit *common.DynamicLimitObj) error {
-	for {
-		if limit == nil {
-			return nil
-		}
-		acquired, ready := limit.AcquireOrReady()
-		if acquired {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-ready:
-		}
+func acquireRemoteSlot(ctx context.Context, sem chan struct{}) error {
+	if sem == nil {
+		return nil
+	}
+	select {
+	case sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func releaseRemoteSlot(sem chan struct{}) {
+	if sem != nil {
+		<-sem
 	}
 }
 
@@ -88,44 +90,29 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 		return nil, 0, ErrClosed
 	}
 
-	k := toKeyArray(key)
-	if cached, rtt, ok := o.cache.get(k); ok {
-		if cached == nil {
-			return nil, rtt, ErrNodeUnreachable
-		}
-		return cached, rtt, nil
-	}
-
 	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key)})
 	ch := make(chan remoteCallResultObj, 1)
-	if err := acquireRemoteSlot(ctx, o.remoteLimit); err != nil {
+	if err := acquireRemoteSlot(ctx, o.remoteSem); err != nil {
 		return nil, 0, err
 	}
 	if err := o.startRemoteCall(); err != nil {
-		if o.remoteLimit != nil {
-			o.remoteLimit.Release()
-		}
+		releaseRemoteSlot(o.remoteSem)
 		return nil, 0, err
 	}
 
 	go func() {
 		defer o.finishRemoteCall()
-		if o.remoteLimit != nil {
-			defer o.remoteLimit.Release()
-		}
+		defer releaseRemoteSlot(o.remoteSem)
 		start := time.Now()
 		raw, err := o.remotePeers(req)
 		rtt := time.Since(start)
 		if err != nil {
-			o.cache.set(k, nil, rtt)
 			ch <- remoteCallResultObj{rtt: rtt, err: err}
 			return
 		}
-		peers, err := parseRemotePeersResponse(raw, o.maxPeersPerNode)
-		if err != nil {
-			o.cache.set(k, nil, rtt)
-		} else {
-			o.cache.set(k, peers, rtt)
+		peers, truncated, err := parseRemotePeersResponse(raw, DefaultMaxPeersPerNode)
+		if truncated {
+			o.logger.Warnf("[probe] node %x returned more than %d peers, truncated to cap", key[:8], DefaultMaxPeersPerNode)
 		}
 		ch <- remoteCallResultObj{peers: peers, rtt: rtt, err: err}
 	}()
@@ -145,13 +132,17 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 // //
 
 // parseRemotePeersResponse parses DebugGetPeersResponse into a key list.
-func parseRemotePeersResponse(raw interface{}, limit int) ([]ed25519.PublicKey, error) {
+// The payload is already fully materialised in RAM, so keys are unmarshalled in
+// one pass rather than streamed. Over-cap peer sets are truncated to the first
+// limit valid keys (truncated=true) so an over-sharing node stays reachable with
+// a bounded peer set; messages larger than maxRemotePeerMessageBytes are rejected.
+func parseRemotePeersResponse(raw interface{}, limit int) ([]ed25519.PublicKey, bool, error) {
 	if limit <= 0 {
-		return nil, fmt.Errorf("%w: MaxPeersPerNode must be > 0", ErrInvalidConfig)
+		return nil, false, fmt.Errorf("%w: MaxPeersPerNode must be > 0", ErrInvalidConfig)
 	}
 	outer, ok := raw.(yggcore.DebugGetPeersResponse)
 	if !ok {
-		return nil, fmt.Errorf("probe: unexpected response type %T", raw)
+		return nil, false, fmt.Errorf("probe: unexpected response type %T", raw)
 	}
 
 	capacityHint := limit
@@ -159,130 +150,44 @@ func parseRemotePeersResponse(raw interface{}, limit int) ([]ed25519.PublicKey, 
 		capacityHint = 16
 	}
 	peers := make([]ed25519.PublicKey, 0, capacityHint)
+	truncated := false
 	for _, v := range outer {
 		msg, ok := v.(json.RawMessage)
 		if !ok {
 			continue
 		}
-		next, err := appendRemotePeerKeys(peers, msg, limit)
+		next, cut, err := appendRemotePeerKeys(peers, msg, limit)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		peers = next
+		truncated = truncated || cut
 	}
-	return peers, nil
+	return peers, truncated, nil
 }
 
-func appendRemotePeerKeys(peers []ed25519.PublicKey, msg json.RawMessage, limit int) ([]ed25519.PublicKey, error) {
+// appendRemotePeerKeys decodes one node's payload and appends its valid keys,
+// stopping once the accumulator reaches limit. Invalid or wrong-length hex keys
+// are skipped without consuming a slot. Returns truncated=true when keys were
+// dropped because the cap was reached.
+func appendRemotePeerKeys(peers []ed25519.PublicKey, msg json.RawMessage, limit int) ([]ed25519.PublicKey, bool, error) {
 	if len(msg) > maxRemotePeerMessageBytes {
-		return nil, fmt.Errorf("%w: %d bytes", ErrRemoteResponseTooLarge, len(msg))
+		return nil, false, fmt.Errorf("%w: %d bytes", ErrRemoteResponseTooLarge, len(msg))
 	}
-	dec := json.NewDecoder(bytes.NewReader(msg))
-	tok, err := dec.Token()
-	if err != nil {
-		return peers, nil
+	var decoded remotePeerMessageObj
+	if err := json.Unmarshal(msg, &decoded); err != nil {
+		// Malformed payloads contribute no peers rather than failing the node.
+		return peers, false, nil
 	}
-	delim, ok := tok.(json.Delim)
-	if !ok || delim != '{' {
-		return peers, nil
-	}
-	tokenBudget := maxRemotePeerJSONTokens
-	for dec.More() {
-		nameTok, err := dec.Token()
-		if err != nil {
-			return peers, nil
-		}
-		name, ok := nameTok.(string)
-		if !ok {
-			return peers, nil
-		}
-		if name != "keys" {
-			if err := skipJSONValue(dec, &tokenBudget); err != nil {
-				return peers, nil
-			}
-			continue
-		}
-		return decodeRemotePeerKeys(dec, peers, limit, &tokenBudget)
-	}
-	return peers, nil
-}
-
-func skipJSONValue(dec *json.Decoder, budget *int) error {
-	if *budget <= 0 {
-		return ErrRemoteResponseTooLarge
-	}
-	*budget--
-	tok, err := dec.Token()
-	if err != nil {
-		return err
-	}
-	delim, ok := tok.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delim {
-	case '{':
-		for dec.More() {
-			if *budget <= 0 {
-				return ErrRemoteResponseTooLarge
-			}
-			*budget--
-			if _, err = dec.Token(); err != nil {
-				return err
-			}
-			if err = skipJSONValue(dec, budget); err != nil {
-				return err
-			}
-		}
-	case '[':
-		for dec.More() {
-			if err = skipJSONValue(dec, budget); err != nil {
-				return err
-			}
-		}
-	default:
-		return nil
-	}
-	if *budget <= 0 {
-		return ErrRemoteResponseTooLarge
-	}
-	*budget--
-	_, err = dec.Token()
-	return err
-}
-
-func decodeRemotePeerKeys(dec *json.Decoder, peers []ed25519.PublicKey, limit int, budget *int) ([]ed25519.PublicKey, error) {
-	tok, err := dec.Token()
-	if err != nil {
-		return peers, nil
-	}
-	delim, ok := tok.(json.Delim)
-	if !ok || delim != '[' {
-		return peers, nil
-	}
-	seen := 0
-	for dec.More() {
-		if *budget <= 0 {
-			return nil, ErrRemoteResponseTooLarge
-		}
-		*budget--
-		if seen >= limit {
-			return nil, fmt.Errorf("%w: limit %d", ErrPeersPerNodeLimitExceeded, limit)
-		}
-		seen++
-		var hexKey string
-		if err := dec.Decode(&hexKey); err != nil {
-			return peers, nil
+	for _, hexKey := range decoded.Keys {
+		if len(peers) >= limit {
+			return peers, true, nil
 		}
 		kbs, err := hex.DecodeString(hexKey)
 		if err != nil || len(kbs) != ed25519.PublicKeySize {
 			continue
 		}
-		if len(peers) >= limit {
-			return nil, fmt.Errorf("%w: limit %d", ErrPeersPerNodeLimitExceeded, limit)
-		}
 		peers = append(peers, ed25519.PublicKey(kbs))
 	}
-	_, _ = dec.Token()
-	return peers, nil
+	return peers, false, nil
 }

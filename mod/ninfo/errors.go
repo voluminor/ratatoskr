@@ -13,8 +13,5 @@ var (
 	ErrNodeInfoTooLarge    = errors.New("ninfo: nodeinfo response too large")
 	ErrUnresolvableAddr    = errors.New("ninfo: cannot resolve address to public key")
 	ErrInvalidAddr         = errors.New("ninfo: invalid address format")
-	ErrAskLimit            = errors.New("ninfo: too many concurrent asks")
-	ErrLookupBusy          = errors.New("ninfo: too many concurrent address lookups")
 	ErrClosed              = errors.New("ninfo: closed")
-	ErrCloseTimedOut       = errors.New("ninfo: close timed out")
 )

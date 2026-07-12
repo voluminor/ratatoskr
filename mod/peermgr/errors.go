@@ -11,7 +11,5 @@ var (
 	ErrNotRunning         = errors.New("peermgr: not running")
 	ErrDuplicatePeer      = errors.New("peermgr: duplicate peer")
 	ErrInvalidURI         = errors.New("peermgr: invalid URI")
-	ErrMissingHost        = errors.New("peermgr: missing host")
-	ErrUnsupportedScheme  = errors.New("peermgr: unsupported scheme")
-	ErrInvalidMaxPerProto = errors.New("peermgr: MaxPerProto must be -1 or greater")
+	ErrInvalidMaxPerProto = errors.New("peermgr: MaxPerProto must be 0 or greater")
 )

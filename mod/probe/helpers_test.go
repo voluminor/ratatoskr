@@ -3,12 +3,20 @@ package probe
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"testing"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
+
+// cacheTestKey builds a deterministic public key from a seed for tests.
+func cacheTestKey(seed int) ed25519.PublicKey {
+	key := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	binary.LittleEndian.PutUint64(key, uint64(seed)+1)
+	return key
+}
 
 type noopLoggerObj struct{}
 

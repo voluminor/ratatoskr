@@ -1248,7 +1248,6 @@ func TestAssociate_targetDialedAfterCloseReleasesResources(t *testing.T) {
 		cancel:        cancel,
 		network:       dialer,
 		relay:         relay,
-		targetLimit:   10,
 		globalLimiter: limiter,
 		targets:       make(map[string]*associateTargetObj),
 	}

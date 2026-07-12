@@ -64,10 +64,7 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey, initial *Trac
 	result := initial
 	var hopsDeadline time.Time
 	if result != nil && result.TreePath != nil && result.Hops == nil {
-		if o.hopsWaitTimeout <= 0 {
-			return result, nil
-		}
-		hopsDeadline = time.Now().Add(o.hopsWaitTimeout)
+		hopsDeadline = time.Now().Add(defaultHopsWaitTimeout)
 	}
 
 	for {
@@ -91,11 +88,8 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey, initial *Trac
 			}
 
 			if result != nil && result.TreePath != nil && result.Hops == nil {
-				if o.hopsWaitTimeout <= 0 {
-					return result, nil
-				}
 				if hopsDeadline.IsZero() {
-					hopsDeadline = now.Add(o.hopsWaitTimeout)
+					hopsDeadline = now.Add(defaultHopsWaitTimeout)
 					o.Lookup(key)
 					lastLookup = now
 				}

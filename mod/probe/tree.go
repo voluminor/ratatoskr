@@ -8,66 +8,41 @@ import (
 
 // // // // // // // // // //
 
-// buildTree builds a tree from flat TreeEntryInfo. Root is the self-parented node.
-func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj, error) {
+// spanningTreePath returns [root, ..., target] by walking parent links from the
+// target up to the self-parented root, without materialising the whole tree.
+func spanningTreePath(entries []yggcore.TreeEntryInfo, key ed25519.PublicKey) ([]*NodeObj, error) {
 	if len(entries) == 0 {
 		return nil, ErrTreeEmpty
 	}
-
-	nodes := make([]NodeObj, len(entries))
-	index := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(entries))
-	for i, e := range entries {
-		nodes[i] = NodeObj{
-			Key:      e.Key,
-			Parent:   e.Parent,
-			Sequence: e.Sequence,
-		}
-		index[toKeyArray(e.Key)] = &nodes[i]
+	index := make(map[[ed25519.PublicKeySize]byte]yggcore.TreeEntryInfo, len(entries))
+	for _, e := range entries {
+		index[toKeyArray(e.Key)] = e
 	}
-
-	orphans := 0
-	var root *NodeObj
-	for k, node := range index {
-		pk := toKeyArray(node.Parent)
-		if pk == k {
-			if root == nil || compareKeys(node.Key, root.Key) < 0 {
-				root = node
+	cur := toKeyArray(key)
+	if _, ok := index[cur]; !ok {
+		return nil, ErrKeyNotInTree
+	}
+	// reversed holds target..root; the loop is bounded by the node count so a
+	// cycle in malformed remote tree data cannot spin forever.
+	reversed := make([]*NodeObj, 0, len(index))
+	for i := 0; i <= len(index); i++ {
+		e, ok := index[cur]
+		if !ok {
+			return nil, ErrNoRoot
+		}
+		reversed = append(reversed, &NodeObj{Key: e.Key, Parent: e.Parent, Sequence: e.Sequence})
+		pk := toKeyArray(e.Parent)
+		if pk == cur {
+			path := make([]*NodeObj, len(reversed))
+			for j, n := range reversed {
+				n.Depth = len(reversed) - 1 - j
+				path[n.Depth] = n
 			}
-			continue
+			return path, nil
 		}
-		if parent, ok := index[pk]; ok {
-			parent.Children = append(parent.Children, node)
-		} else {
-			orphans++
-		}
+		cur = pk
 	}
-
-	if orphans > 0 && logger != nil {
-		logger.Warnf("[probe] buildTree: %d orphan nodes (parent not in tree)", orphans)
-	}
-
-	if root == nil {
-		return nil, ErrNoRoot
-	}
-	for i := range nodes {
-		sortNodes(nodes[i].Children)
-	}
-	setDepth(root, 0, 1024)
-	return root, nil
-}
-
-// //
-
-// setDepth recursively assigns depth. maxDepth guards against cycles.
-func setDepth(n *NodeObj, d, maxDepth int) {
-	n.Depth = d
-	if d >= maxDepth {
-		n.Children = nil
-		return
-	}
-	for _, ch := range n.Children {
-		setDepth(ch, d+1, maxDepth)
-	}
+	return nil, ErrNoRoot
 }
 
 // // // // // // // // // //

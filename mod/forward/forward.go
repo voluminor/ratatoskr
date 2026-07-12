@@ -39,16 +39,13 @@ type UDPMappingObj struct {
 
 // UDPLoopConfigObj contains all inputs for a UDP session loop.
 type UDPLoopConfigObj struct {
-	Logger               yggcore.Logger
-	ListenConn           net.PacketConn
-	Dial                 func(context.Context, net.Addr) (net.Conn, error)
-	DialTimeout          time.Duration
-	MaxPacketSize        int
-	Timeout              time.Duration
-	MaxSessions          int
-	MaxSessionsPerSource int
-	// activeCounter tracks manager-wide active UDP sessions; nil for standalone loops.
-	activeCounter *atomic.Int64
+	Logger        yggcore.Logger
+	ListenConn    net.PacketConn
+	Dial          func(context.Context, net.Addr) (net.Conn, error)
+	DialTimeout   time.Duration
+	MaxPacketSize int
+	Timeout       time.Duration
+	MaxSessions   int
 }
 
 // UDPReverseConfigObj contains all inputs for a UDP reverse proxy worker.
@@ -84,9 +81,6 @@ type ConfigObj struct {
 	// Active UDP sessions per mapping; 0 -> safe default, <0 -> unlimited.
 	MaxUDPSessions int
 
-	// Active UDP sessions per source IP; 0 -> safe default, <0 -> disabled.
-	MaxUDPSessionsPerSource int
-
 	// UDPMaxPacketSize bounds UDP payload bytes per datagram; 0 -> node MTU, <0 -> max datagram size.
 	UDPMaxPacketSize int
 }
@@ -106,9 +100,6 @@ const (
 	// DefaultMaxUDPSessions bounds active UDP sessions per mapping.
 	DefaultMaxUDPSessions = 1024
 
-	// DefaultMaxUDPSessionsPerSource bounds active UDP sessions per source IP.
-	DefaultMaxUDPSessionsPerSource = 64
-
 	// DefaultTCPIdleTimeout bounds established TCP sessions with no traffic.
 	DefaultTCPIdleTimeout = 5 * time.Minute
 
@@ -120,18 +111,15 @@ const (
 
 // ManagerObj — forwarding rule manager: New → Add* → Start
 type ManagerObj struct {
-	log                     yggcore.Logger
-	node                    core.NetworkInterface
-	timeout                 time.Duration
-	dialTimeout             time.Duration
-	tcpIdleTimeout          time.Duration
-	maxTCPConnections       int
-	maxUDPSessions          int
-	maxUDPSessionsPerSource int
-	udpMaxPacketSize        int
-	activeUDPSessions       atomic.Int64
-	wg                      sync.WaitGroup
-	tcpLimiters             sync.Map
+	log               yggcore.Logger
+	node              core.NetworkInterface
+	timeout           time.Duration
+	dialTimeout       time.Duration
+	tcpIdleTimeout    time.Duration
+	maxTCPConnections int
+	maxUDPSessions    int
+	udpMaxPacketSize  int
+	wg                sync.WaitGroup
 
 	localTCPs  []TCPMappingObj
 	remoteTCPs []TCPMappingObj
@@ -238,16 +226,6 @@ func effectiveMaxConnections(n, def int) int {
 	return n
 }
 
-func effectiveSourceLimit(n int) int {
-	if n < 0 {
-		return 0
-	}
-	if n == 0 {
-		return DefaultMaxUDPSessionsPerSource
-	}
-	return n
-}
-
 func (m *ManagerObj) effectiveUDPMaxPacketSize() int {
 	if m.udpMaxPacketSize > 0 {
 		return m.udpMaxPacketSize
@@ -261,25 +239,8 @@ func (m *ManagerObj) hasUDPMappings() bool {
 
 // //
 
-// ActiveTCPConnections sums live TCP sessions across all per-mapping limiters.
-func (m *ManagerObj) ActiveTCPConnections() int {
-	total := 0
-	m.tcpLimiters.Range(func(k, _ any) bool {
-		total += k.(*tcpLimitObj).activeCount()
-		return true
-	})
-	return total
-}
-
-// ActiveUDPSessions returns the manager-wide count of live UDP sessions.
-func (m *ManagerObj) ActiveUDPSessions() int {
-	return int(m.activeUDPSessions.Load())
-}
-
 func (m *ManagerObj) newTCPLimit() *tcpLimitObj {
-	limiter := &tcpLimitObj{max: int64(m.maxTCPConnections)}
-	m.tcpLimiters.Store(limiter, struct{}{})
-	return limiter
+	return &tcpLimitObj{max: int64(m.maxTCPConnections)}
 }
 
 // applyConfig sets all immutable tunables once through the effective* helpers.
@@ -291,7 +252,6 @@ func (m *ManagerObj) applyConfig(cfg ConfigObj) {
 	m.tcpIdleTimeout = effectiveTCPIdleTimeout(cfg.TCPIdleTimeout)
 	m.maxTCPConnections = effectiveMaxConnections(cfg.MaxTCPConnections, DefaultMaxTCPConnections)
 	m.maxUDPSessions = effectiveMaxConnections(cfg.MaxUDPSessions, DefaultMaxUDPSessions)
-	m.maxUDPSessionsPerSource = effectiveSourceLimit(cfg.MaxUDPSessionsPerSource)
 	if cfg.UDPMaxPacketSize < 0 {
 		m.udpMaxPacketSize = maxUDPDatagramSize
 	} else if cfg.UDPMaxPacketSize > 0 {

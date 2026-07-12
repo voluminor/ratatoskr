@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"regexp"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -78,6 +79,14 @@ func New(cfg ConfigObj) (*Obj, error) {
 	if nodeCfg == nil {
 		nodeCfg = config.GenerateConfig()
 		nodeCfg.AdminListen = "none"
+	} else {
+		// Take ownership of a shallow copy so a post-New caller mutation cannot
+		// race the node. MulticastInterfaces is read lazily by EnableMulticast, so
+		// its backing array is cloned too; the nested NodeInfo map stays shared and
+		// is owned by the node from here on.
+		cloned := *nodeCfg
+		cloned.MulticastInterfaces = slices.Clone(nodeCfg.MulticastInterfaces)
+		nodeCfg = &cloned
 	}
 
 	rstQueueSize := cfg.RSTQueueSize
@@ -128,10 +137,11 @@ func New(cfg ConfigObj) (*Obj, error) {
 // Close stops the node; safe to call multiple times.
 // Owned components (multicast, admin) are released synchronously, before the
 // bounded region. The upstream core stop, the netstack teardown, and the tracked
-// listeners then run in that order, bounded by CoreStopTimeout (0 → no limit).
-// On timeout Close returns ErrCloseTimedOut while a single background goroutine
-// finishes; a genuinely hung core.Stop() keeps its transport sockets until it
-// completes — the inherent limit of bounding an uncancellable upstream call.
+// listeners then run in that order, all bounded by CoreStopTimeout (0 → no limit)
+// so a misbehaving closer cannot hang Close past the deadline. On timeout Close
+// returns ErrCloseTimedOut while a single background goroutine finishes; a
+// genuinely hung core.Stop() keeps its transport sockets until it completes — the
+// inherent limit of bounding an uncancellable upstream call.
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		c := o.corePtr.Swap(nil)
@@ -158,10 +168,9 @@ func (o *Obj) closeOwned() []error {
 
 // stopCoreAndStack stops the core, destroys the netstack, then closes tracked
 // listeners — in that order so ipv6rwc.Read unblocks and the reload-critical
-// sockets are freed first. Only this pair can block unpredictably, so it is the
-// sole part bounded by CoreStopTimeout: on timeout Close returns ErrCloseTimedOut
-// while a single teardown goroutine finishes once the core does. All stops are
-// idempotent.
+// sockets are freed first. This whole region can block unpredictably, so it is
+// bounded by CoreStopTimeout: on timeout Close returns ErrCloseTimedOut while a
+// single teardown goroutine finishes once the core does. All stops are idempotent.
 func (o *Obj) stopCoreAndStack(c *yggcore.Core, ns *netstackObj) []error {
 	if o.coreTimeout <= 0 {
 		return o.teardown(c, ns)
@@ -181,8 +190,9 @@ func (o *Obj) stopCoreAndStack(c *yggcore.Core, ns *netstackObj) []error {
 	}
 }
 
-// teardown performs the ordered, blocking part of shutdown; its listener errors
-// are dropped on the timeout path where ErrCloseTimedOut already dominates.
+// teardown performs the ordered, blocking part of shutdown: stop the core,
+// destroy the netstack, then close tracked listeners. Its listener errors are
+// dropped on the timeout path where ErrCloseTimedOut already dominates.
 func (o *Obj) teardown(c *yggcore.Core, ns *netstackObj) []error {
 	if c != nil {
 		c.Stop()

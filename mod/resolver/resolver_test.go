@@ -513,18 +513,14 @@ func TestResolve_dnsLeaderCancelDoesNotPoisonWaiterWithoutLookupTimeout(t *testi
 	}
 }
 
-func TestLookupContext_disabledTimeoutStillHasHardDeadline(t *testing.T) {
+func TestLookupContext_disabledTimeoutHasNoInternalDeadline(t *testing.T) {
 	r := newTestResolverObj(&countingFailDialerObj{}, "[200::1]:53", ConfigObj{
 		LookupTimeout: -1,
 	})
 	ctx, cancel := r.lookupContext(context.Background())
 	defer cancel()
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		t.Fatal("disabled lookup timeout should still have a hard deadline")
-	}
-	if remaining := time.Until(deadline); remaining <= 0 || remaining > maxLookupTimeout {
-		t.Fatalf("unexpected hard deadline remaining time: %s", remaining)
+	if _, ok := ctx.Deadline(); ok {
+		t.Fatal("disabled lookup timeout must not impose an internal deadline")
 	}
 }
 
@@ -532,7 +528,7 @@ func TestCache_getSetExpireAndCap(t *testing.T) {
 	r := newCacheTestResolverObj(time.Minute, 2)
 	now := time.Now()
 	r.cacheSet("a.example", net.ParseIP("200::1"), now)
-	_, ok := r.cacheGet("a.example", now)
+	_, _, ok := r.cacheGetDNS("a.example", now)
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
@@ -543,7 +539,7 @@ func TestCache_getSetExpireAndCap(t *testing.T) {
 		t.Fatalf("expected cache cap %d, got %d", r.cacheMaxEntries, got)
 	}
 
-	if _, ok = r.cacheGet("a.example", now.Add(2*time.Minute)); ok {
+	if _, _, ok = r.cacheGetDNS("a.example", now.Add(2*time.Minute)); ok {
 		t.Fatal("expected expired cache entry to miss")
 	}
 }
@@ -695,11 +691,11 @@ func TestCache_updateExistingDoesNotEvict(t *testing.T) {
 	r.cacheSet("b.example", net.ParseIP("200::2"), now)
 	r.cacheSet("a.example", net.ParseIP("200::3"), now)
 
-	ip, ok := r.cacheGet("a.example", now)
+	ip, _, ok := r.cacheGetDNS("a.example", now)
 	if !ok || ip.String() != "200::3" {
 		t.Fatalf("expected updated a.example, ok=%v ip=%v", ok, ip)
 	}
-	if _, ok := r.cacheGet("b.example", now); !ok {
+	if _, _, ok := r.cacheGetDNS("b.example", now); !ok {
 		t.Fatal("updating existing key should not evict b.example")
 	}
 }
@@ -715,7 +711,7 @@ func TestCache_concurrentAccess(t *testing.T) {
 			for j := 0; j < 512; j++ {
 				key := "host-" + string(rune('a'+(id+j)%16))
 				r.cacheSet(key, net.ParseIP("200::1"), now)
-				_, _ = r.cacheGet(key, now)
+				_, _, _ = r.cacheGetDNS(key, now)
 			}
 		}(i)
 	}

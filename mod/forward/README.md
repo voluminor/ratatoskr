@@ -203,7 +203,6 @@ is meaningful.
 | `TCPIdleTimeout`          | Established TCP idle timeout; `0` default, `<0` disabled   | 5 minutes  |
 | `MaxTCPConnections`       | Max TCP sessions per mapping; `0` default, `<0` unlimited  | 1024       |
 | `MaxUDPSessions`          | Max UDP sessions per mapping; `0` default, `<0` unlimited  | 1024       |
-| `MaxUDPSessionsPerSource` | Max UDP sessions per source IP; `0` default, `<0` disabled | 64         |
 | `UDPMaxPacketSize`        | Max UDP payload bytes; `0` node MTU, `<0` max datagram     | node MTU   |
 
 The TCP half-close idle timeout is fixed at 30 seconds. UDP writes go to the kernel send buffer and carry no
@@ -215,10 +214,3 @@ Mapping helpers remain available before `Start()`:
 |-----------------|---------------------------|
 | `ClearLocal()`  | Clear all local mappings  |
 | `ClearRemote()` | Clear all remote mappings |
-
-Read-only analytics reflect live counts at any time:
-
-| Method                       | Description                           |
-|------------------------------|---------------------------------------|
-| `ActiveTCPConnections() int` | Live TCP sessions across all mappings |
-| `ActiveUDPSessions() int`    | Live UDP sessions across all mappings |

@@ -73,19 +73,19 @@ func peerSnapshots(peers []yggcore.PeerInfo) []PeerSnapshotObj {
 // Snapshot collects the full node state in a single call
 func (o *Obj) Snapshot() SnapshotObj {
 	snap := SnapshotObj{}
-	snap.MTU = o.MTU()
-	snap.RSTDropped = o.RSTDropped()
-	if addr := o.Address(); addr != nil {
+	snap.MTU = o.core.MTU()
+	snap.RSTDropped = o.core.RSTDropped()
+	if addr := o.core.Address(); addr != nil {
 		snap.Address = addr.String()
 	}
-	if sn := o.Subnet(); len(sn.IP) > 0 {
+	if sn := o.core.Subnet(); len(sn.IP) > 0 {
 		snap.Subnet = sn.String()
 	}
-	if pk := o.PublicKey(); len(pk) == ed25519.PublicKeySize {
+	if pk := o.core.PublicKey(); len(pk) == ed25519.PublicKeySize {
 		snap.PublicKey = hex.EncodeToString(pk)
 	}
 
-	snap.Peers = peerSnapshots(o.GetPeers())
+	snap.Peers = peerSnapshots(o.core.GetPeers())
 
 	// Peer manager
 	if o.peerManager != nil {

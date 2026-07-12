@@ -23,17 +23,14 @@ const (
 // //
 
 type udpSessionObj struct {
-	ctx            context.Context
-	connMu         sync.RWMutex
-	conn           net.Conn
-	out            chan []byte
-	lastActivity   atomic.Int64
-	cancel         context.CancelFunc
-	closeOnce      sync.Once
-	counter        *atomic.Int64
-	managerCounter *atomic.Int64
-	sourceLimiter  *udpSourceLimiterObj
-	sourceKey      any
+	ctx          context.Context
+	connMu       sync.RWMutex
+	conn         net.Conn
+	out          chan []byte
+	lastActivity atomic.Int64
+	cancel       context.CancelFunc
+	closeOnce    sync.Once
+	counter      *atomic.Int64
 }
 
 type udpBufferPoolObj struct {
@@ -95,12 +92,6 @@ func (s *udpSessionObj) close() {
 		if s.counter != nil {
 			s.counter.Add(-1)
 		}
-		if s.managerCounter != nil {
-			s.managerCounter.Add(-1)
-		}
-		if s.sourceLimiter != nil {
-			s.sourceLimiter.release(s.sourceKey)
-		}
 	})
 }
 
@@ -120,12 +111,6 @@ func (s *udpSessionObj) getConn() net.Conn {
 	return s.conn
 }
 
-type udpSourceLimiterObj struct {
-	cfg    UDPLoopConfigObj
-	mu     sync.Mutex
-	counts map[any]int
-}
-
 type udpStartObj struct {
 	mapping     UDPMappingObj
 	conn        net.PacketConn
@@ -134,40 +119,61 @@ type udpStartObj struct {
 	dial        func(UDPMappingObj, context.Context, net.Addr) (net.Conn, error)
 }
 
-func newUDPSourceLimiter(cfg UDPLoopConfigObj) *udpSourceLimiterObj {
-	return &udpSourceLimiterObj{cfg: cfg, counts: make(map[any]int)}
+// udpSessionMapObj is the NAT table keyed by source addr:port. Keying a typed map
+// by the comparable netip.AddrPort keeps the read-loop hot path allocation-free,
+// unlike sync.Map, which would box the key into interface{} on every datagram.
+type udpSessionMapObj struct {
+	mu sync.RWMutex
+	m  map[netip.AddrPort]*udpSessionObj
 }
 
-func (l *udpSourceLimiterObj) acquire(key any) bool {
-	if l == nil {
-		return true
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	limit := l.cfg.sourceLimit()
-	if limit > 0 && l.counts[key] >= limit {
-		return false
-	}
-	l.counts[key]++
-	return true
+type udpSessionEntryObj struct {
+	key     netip.AddrPort
+	session *udpSessionObj
 }
 
-func (l *udpSourceLimiterObj) release(key any) {
-	if l == nil {
-		return
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	next := l.counts[key] - 1
-	if next <= 0 {
-		delete(l.counts, key)
-		return
-	}
-	l.counts[key] = next
+func newUDPSessionMap() *udpSessionMapObj {
+	return &udpSessionMapObj{m: make(map[netip.AddrPort]*udpSessionObj)}
 }
 
-func closeUDPSession(sessions *sync.Map, key any, session *udpSessionObj) {
-	sessions.CompareAndDelete(key, session)
+func (t *udpSessionMapObj) load(key netip.AddrPort) (*udpSessionObj, bool) {
+	t.mu.RLock()
+	session, ok := t.m[key]
+	t.mu.RUnlock()
+	return session, ok
+}
+
+func (t *udpSessionMapObj) store(key netip.AddrPort, session *udpSessionObj) {
+	t.mu.Lock()
+	t.m[key] = session
+	t.mu.Unlock()
+}
+
+// compareAndDelete removes key only while it still maps to session, mirroring
+// sync.Map.CompareAndDelete so a replacement session installed after a stale
+// close is never dropped.
+func (t *udpSessionMapObj) compareAndDelete(key netip.AddrPort, session *udpSessionObj) {
+	t.mu.Lock()
+	if t.m[key] == session {
+		delete(t.m, key)
+	}
+	t.mu.Unlock()
+}
+
+// snapshot copies the live entries so cleanup can close sessions without holding
+// the map lock (session.close() runs a conn Close syscall and must not block it).
+func (t *udpSessionMapObj) snapshot() []udpSessionEntryObj {
+	t.mu.RLock()
+	out := make([]udpSessionEntryObj, 0, len(t.m))
+	for key, session := range t.m {
+		out = append(out, udpSessionEntryObj{key: key, session: session})
+	}
+	t.mu.RUnlock()
+	return out
+}
+
+func closeUDPSession(sessions *udpSessionMapObj, key netip.AddrPort, session *udpSessionObj) {
+	sessions.compareAndDelete(key, session)
 	session.close()
 }
 
@@ -189,10 +195,6 @@ func (cfg UDPLoopConfigObj) sessionTimeout() time.Duration {
 
 func (cfg UDPLoopConfigObj) sessionLimit() int {
 	return cfg.MaxSessions
-}
-
-func (cfg UDPLoopConfigObj) sourceLimit() int {
-	return cfg.MaxSessionsPerSource
 }
 
 func (cfg UDPLoopConfigObj) dialTimeout() time.Duration {
@@ -225,32 +227,23 @@ func drainUDPPackets(ch <-chan []byte, pool *udpBufferPoolObj) {
 	}
 }
 
-func udpSessionKey(addr net.Addr) any {
-	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		if udpAddr.Port >= 0 && udpAddr.Port <= 65535 {
-			if ip, ok := netip.AddrFromSlice(udpAddr.IP); ok {
-				ip = ip.Unmap()
-				if udpAddr.Zone != "" {
-					ip = ip.WithZone(udpAddr.Zone)
-				}
-				return netip.AddrPortFrom(ip, uint16(udpAddr.Port))
-			}
-		}
+// udpSessionKey derives the comparable NAT-table key from a datagram source.
+// A UDP PacketConn always yields *net.UDPAddr, so ok is false only for an
+// impossible address shape, in which case the read loop drops the datagram.
+func udpSessionKey(addr net.Addr) (netip.AddrPort, bool) {
+	udpAddr, ok := addr.(*net.UDPAddr)
+	if !ok || udpAddr.Port < 0 || udpAddr.Port > 65535 {
+		return netip.AddrPort{}, false
 	}
-	return addr.String()
-}
-
-func udpSourceKey(addr net.Addr) any {
-	if udpAddr, ok := addr.(*net.UDPAddr); ok {
-		if ip, ok := netip.AddrFromSlice(udpAddr.IP); ok {
-			ip = ip.Unmap()
-			if udpAddr.Zone != "" {
-				ip = ip.WithZone(udpAddr.Zone)
-			}
-			return ip
-		}
+	ip, ok := netip.AddrFromSlice(udpAddr.IP)
+	if !ok {
+		return netip.AddrPort{}, false
 	}
-	return addr.String()
+	ip = ip.Unmap()
+	if udpAddr.Zone != "" {
+		ip = ip.WithZone(udpAddr.Zone)
+	}
+	return netip.AddrPortFrom(ip, uint16(udpAddr.Port)), true
 }
 
 func (m *ManagerObj) prepareUDP(
@@ -312,12 +305,10 @@ func (m *ManagerObj) runUDPStarts(ctx context.Context, starts []udpStartObj) {
 				Dial: func(ctx context.Context, addr net.Addr) (net.Conn, error) {
 					return st.dial(st.mapping, ctx, addr)
 				},
-				DialTimeout:          m.dialTimeout,
-				MaxPacketSize:        m.effectiveUDPMaxPacketSize(),
-				Timeout:              m.timeout,
-				MaxSessions:          m.maxUDPSessions,
-				MaxSessionsPerSource: m.maxUDPSessionsPerSource,
-				activeCounter:        &m.activeUDPSessions,
+				DialTimeout:   m.dialTimeout,
+				MaxPacketSize: m.effectiveUDPMaxPacketSize(),
+				Timeout:       m.timeout,
+				MaxSessions:   m.maxUDPSessions,
 			}, &m.wg)
 		}(start)
 	}
@@ -368,10 +359,6 @@ func RunUDPLoop(ctx context.Context, cfg UDPLoopConfigObj) {
 	wg.Wait()
 }
 
-func runUDPLoop(ctx context.Context, cfg UDPLoopConfigObj) {
-	runUDPLoopWithWait(ctx, cfg, nil)
-}
-
 func trackUDPWorker(wg *sync.WaitGroup, fn func()) {
 	if wg != nil {
 		wg.Add(1)
@@ -404,7 +391,7 @@ func runUDPWriter(ctx context.Context, session *udpSessionObj, pool *udpBufferPo
 	}
 }
 
-func startUDPSessionWorker(ctx context.Context, cfg UDPLoopConfigObj, sessions *sync.Map, key any, remoteAddr net.Addr, session *udpSessionObj, pool *udpBufferPoolObj, writer *packetWriterObj, maxPacketSize int, wg *sync.WaitGroup, log yggcore.Logger) {
+func startUDPSessionWorker(ctx context.Context, cfg UDPLoopConfigObj, sessions *udpSessionMapObj, key netip.AddrPort, remoteAddr net.Addr, session *udpSessionObj, pool *udpBufferPoolObj, writer *packetWriterObj, maxPacketSize int, wg *sync.WaitGroup, log yggcore.Logger) {
 	trackUDPWorker(wg, func() {
 		dialCtx, cancel := dialTimeoutContext(session.ctx, cfg.dialTimeout())
 		fwdConn, err := cfg.Dial(dialCtx, remoteAddr)
@@ -460,9 +447,12 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 		log.Errorf("[forward] UDP dial function is required")
 		return
 	}
+	// Apply safe defaults so the standalone entrypoint matches the manager: a zero
+	// limit means "safe default", not "unlimited". An explicit negative keeps its
+	// unlimited meaning — the caller's deliberate choice.
+	cfg.MaxSessions = effectiveMaxConnections(cfg.MaxSessions, DefaultMaxUDPSessions)
 	var sessionCount atomic.Int64
-	sessions := sync.Map{}
-	sourceLimiter := newUDPSourceLimiter(cfg)
+	sessions := newUDPSessionMap()
 	limitLog := intervalLogObj{}
 	readErrorLog := intervalLogObj{}
 	oversizeLog := intervalLogObj{}
@@ -492,22 +482,19 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 			select {
 			case <-ctx.Done():
 				timer.Stop()
-				sessions.Range(func(_, v any) bool {
-					v.(*udpSessionObj).close()
-					return true
-				})
+				for _, e := range sessions.snapshot() {
+					e.session.close()
+				}
 				return
 			case <-timer.C:
 				now := time.Now().UnixMilli()
 				timeout = cfg.sessionTimeout()
-				sessions.Range(func(k, v any) bool {
-					s := v.(*udpSessionObj)
-					if timeout > 0 && now-s.lastActivity.Load() > timeout.Milliseconds() {
-						log.Debugf("[forward] cleaning up inactive UDP session %v", k)
-						closeUDPSession(&sessions, k, s)
+				for _, e := range sessions.snapshot() {
+					if timeout > 0 && now-e.session.lastActivity.Load() > timeout.Milliseconds() {
+						log.Debugf("[forward] cleaning up inactive UDP session %v", e.key)
+						closeUDPSession(sessions, e.key, e.session)
 					}
-					return true
-				})
+				}
 			}
 		}
 	})
@@ -540,8 +527,11 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 			continue
 		}
 
-		key := udpSessionKey(remoteAddr)
-		val, ok := sessions.Load(key)
+		key, keyOK := udpSessionKey(remoteAddr)
+		if !keyOK {
+			continue
+		}
+		session, ok := sessions.load(key)
 		created := false
 		if !ok {
 			maxSessions := cfg.sessionLimit()
@@ -551,35 +541,20 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 				}
 				continue
 			}
-			sourceKey := udpSourceKey(remoteAddr)
-			if !sourceLimiter.acquire(sourceKey) {
-				if limitLog.allow(limitLogInterval) {
-					log.Warnf("[forward] UDP source session limit reached (%d), dropping packet from %s", cfg.sourceLimit(), remoteAddr)
-				}
-				continue
-			}
 			sessCtx, sessCancel := context.WithCancel(ctx)
-			session := &udpSessionObj{
-				ctx:            sessCtx,
-				cancel:         sessCancel,
-				out:            make(chan []byte, sessionQueueSize),
-				counter:        &sessionCount,
-				managerCounter: cfg.activeCounter,
-				sourceLimiter:  sourceLimiter,
-				sourceKey:      sourceKey,
+			session = &udpSessionObj{
+				ctx:     sessCtx,
+				cancel:  sessCancel,
+				out:     make(chan []byte, sessionQueueSize),
+				counter: &sessionCount,
 			}
 			session.lastActivity.Store(time.Now().UnixMilli())
 			sessionCount.Add(1)
-			if cfg.activeCounter != nil {
-				cfg.activeCounter.Add(1)
-			}
-			sessions.Store(key, session)
-			startUDPSessionWorker(ctx, cfg, &sessions, key, remoteAddr, session, packetPool, packetWriter, maxPacketSize, wg, log)
-			val = session
+			sessions.store(key, session)
+			startUDPSessionWorker(ctx, cfg, sessions, key, remoteAddr, session, packetPool, packetWriter, maxPacketSize, wg, log)
 			created = true
 		}
 
-		session := val.(*udpSessionObj)
 		session.lastActivity.Store(time.Now().UnixMilli())
 		if !enqueueUDPPacket(session, packetPool, buf[:n]) && queueLog.allow(limitLogInterval) {
 			if created {
@@ -589,7 +564,7 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 			}
 		}
 		if session.ctx.Err() != nil {
-			closeUDPSession(&sessions, key, session)
+			closeUDPSession(sessions, key, session)
 		}
 	}
 }

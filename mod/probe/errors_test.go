@@ -10,7 +10,7 @@ func TestErrors_distinct(t *testing.T) {
 	errs := []error{
 		ErrCoreRequired, ErrRemotePeersNotCaptured,
 		ErrMaxDepthRequired, ErrInvalidKeyLength,
-		ErrKeyNotInTree, ErrNoActivePath, ErrNodeUnreachable,
+		ErrKeyNotInTree, ErrNoActivePath,
 		ErrRemotePeersDisabled, ErrTreeEmpty, ErrNoRoot, ErrLookupTimedOut,
 	}
 	seen := make(map[string]bool, len(errs))

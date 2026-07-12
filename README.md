@@ -163,9 +163,10 @@ flowchart TB
   Netstack -->|" IPv6 packets "| YggCore
 ```
 
-`ratatoskr.Obj` embeds `core.Interface` — all network methods (`DialContext`, `Listen`,
-`ListenPacket`, `Address`, `Subnet`, `PublicKey`, etc.) are available directly. SOCKS5 proxy,
-peer manager, and ninfo are optional components controlled through `Obj` methods.
+`ratatoskr.Obj` promotes the primary networking and peer methods directly (`DialContext`, `Listen`,
+`ListenPacket`, `Address`, `Subnet`, `PublicKey`, `MTU`, `AddPeer`, `RemovePeer`, `GetPeers`). Advanced node
+controls (multicast, admin, retry, stats) are reached via `Core()`. SOCKS5 proxy, peer manager, and ninfo are
+optional components controlled through `Obj` methods.
 
 ---
 
@@ -199,7 +200,8 @@ flowchart LR
 - If `cfg.Peers != nil` — peer manager is started; `cfg.Config.Peers` must be empty
 - If `cfg.Ctx != nil` — node shuts down automatically on context cancellation
 
-After a successful `New` call, all `core.Interface` network methods are available through `Obj`:
+After a successful `New` call, the primary networking and peer methods are available directly on `Obj`; advanced node
+controls live behind `Core()`:
 
 | Method                        | Description                               |
 |-------------------------------|-------------------------------------------|
@@ -213,12 +215,16 @@ After a successful `New` call, all `core.Interface` network methods are availabl
 | `GetPeers()`                  | Peer list with metrics                    |
 | `AddPeer(uri)`                | Add a peer                                |
 | `RemovePeer(uri)`             | Remove a peer                             |
-| `EnableMulticast()`           | mDNS discovery on local network           |
-| `DisableMulticast()`          | Stop multicast                            |
-| `EnableAdmin(addr)`           | Admin socket (unix/tcp)                   |
-| `DisableAdmin()`              | Stop admin socket                         |
+| `Core()`                      | Access the full node contract (below)     |
+| `Core().EnableMulticast()`    | mDNS discovery on local network           |
+| `Core().DisableMulticast()`   | Stop multicast                            |
+| `Core().EnableAdmin(addr)`    | Admin socket (unix/tcp)                   |
+| `Core().DisableAdmin()`       | Stop admin socket                         |
+| `Core().RetryPeers()`         | Reconnect disconnected peers              |
+| `Core().RSTDropped()`         | Dropped RST packet counter                |
 
-Warning: `EnableAdmin` uses the upstream `yggdrasil-go` admin socket. That implementation calls `os.Exit(1)` on listen
+Warning: `Core().EnableAdmin` uses the upstream `yggdrasil-go` admin socket. That implementation calls `os.Exit(1)` on
+listen
 failures or Unix socket cleanup failures. Treat admin access as unsafe operational tooling: validate the bind address
 before enabling it and do not expose it to untrusted users.
 
@@ -260,21 +266,17 @@ return `nil` / `ErrPeerManagerNotEnabled`.
 | `PeerManagerActive()`   | Current active peers (copy); `nil` if manager is not used |
 | `PeerManagerOptimize()` | Force peer re-evaluation (blocks until completion)        |
 
-When `MinPeers > 0` (active mode only), a background watch detects peer loss: if the number of active
-peers stays at or below the threshold for several consecutive checks, an unscheduled re-evaluation
-is triggered automatically.
-
-For details on modes, batching, MinPeers watch, and peer validation —
+For details on selection, windowing, and peer validation —
 see [mod/peermgr/README.md](mod/peermgr/README.md).
 
 ### RetryPeers
 
 ```go
-func (o *Obj) RetryPeers()
+node.Core().RetryPeers()
 ```
 
-Triggers immediate reconnection of disconnected peers. Works independently of the peer manager —
-calls `core.RetryPeersNow()` directly.
+Triggers immediate reconnection of disconnected peers. `RetryPeers` lives on `core.Interface`, reached through
+`Core()`; it works independently of the peer manager.
 
 ### Ask / AskAddr
 
@@ -427,7 +429,7 @@ SOCKS5 proxy parameters.
 | `Subnet`      | `string`            | `/64` subnet                            |
 | `PublicKey`   | `string`            | ed25519 public key (hex)                |
 | `MTU`         | `uint64`            | Stack MTU                               |
-| `RSTDropped`  | `int64`             | Dropped RST packet counter              |
+| `RSTDropped`  | `uint64`            | Dropped RST packet counter              |
 | `Peers`       | `[]PeerSnapshotObj` | State of each peer                      |
 | `ActivePeers` | `[]string`          | Peers selected by manager (`omitempty`) |
 | `SOCKS`       | `SOCKSSnapshotObj`  | SOCKS5 proxy state                      |
@@ -473,17 +475,17 @@ Errors from `core.Interface` (`ErrNotAvailable`, etc.) are described in [mod/cor
 
 All public methods of `Obj` are safe for concurrent use.
 
-| Method / group                          | Guarantee                                                     |
-|-----------------------------------------|---------------------------------------------------------------|
-| `DialContext`, `Listen`, `ListenPacket` | Thread-safe; netstack via `atomic.Pointer`                    |
-| `EnableSOCKS` / `DisableSOCKS`          | Mutex-protected                                               |
-| `EnableMulticast` / `EnableAdmin`       | Mutex-protected                                               |
-| `AddPeer` / `RemovePeer`                | Delegate to `yggdrasil-go/core` (thread-safe)                 |
-| `PeerManagerActive`                     | Returns a copy; mutex-protected                               |
-| `PeerManagerOptimize`                   | Blocks; serialized internally                                 |
-| `Ask` / `AskAddr`                       | Thread-safe; network call in a goroutine, cancellable via ctx |
-| `Close`                                 | Idempotent (`sync.Once`)                                      |
-| `Snapshot`                              | Thread-safe; collects data from thread-safe methods           |
+| Method / group                           | Guarantee                                                     |
+|------------------------------------------|---------------------------------------------------------------|
+| `DialContext`, `Listen`, `ListenPacket`  | Thread-safe; netstack via `atomic.Pointer`                    |
+| `EnableSOCKS` / `DisableSOCKS`           | Mutex-protected                                               |
+| `Core().EnableMulticast` / `EnableAdmin` | Mutex-protected                                               |
+| `AddPeer` / `RemovePeer`                 | Delegate to `yggdrasil-go/core` (thread-safe)                 |
+| `PeerManagerActive`                      | Returns a copy; mutex-protected                               |
+| `PeerManagerOptimize`                    | Blocks; serialized internally                                 |
+| `Ask` / `AskAddr`                        | Thread-safe; network call in a goroutine, cancellable via ctx |
+| `Close`                                  | Idempotent (`sync.Once`)                                      |
+| `Snapshot`                               | Thread-safe; collects data from thread-safe methods           |
 
 ---
 
@@ -502,8 +504,8 @@ flowchart TD
   PM -->|No| READY
   PMSTART --> READY([Node ready])
   READY -->|optionally| SOCKS["EnableSOCKS()"]
-  READY -->|optionally| MC["EnableMulticast()"]
-  READY -->|optionally| ADM["EnableAdmin()"]
+  READY -->|optionally| MC["Core().EnableMulticast()"]
+  READY -->|optionally| ADM["Core().EnableAdmin()"]
   READY -->|optionally| PEERS["AddPeer() / RemovePeer()"]
   READY -->|optionally| ASK["Ask() / AskAddr()"]
   SOCKS --> READY
@@ -689,15 +691,6 @@ active := node.PeerManagerActive()
 node.PeerManagerOptimize() // force re-evaluation
 ```
 
-Passive mode (add all without selection):
-
-```go
-Peers: &peermgr.ConfigObj{
-Peers:       peers,
-MaxPerProto: -1,
-}
-```
-
 ### Snapshot → JSON
 
 ```go
@@ -710,20 +703,20 @@ fmt.Println(string(data))
 
 ```go
 // mDNS peer discovery on local network
-if err := node.EnableMulticast(); err != nil {
+if err := node.Core().EnableMulticast(); err != nil {
 log.Fatal(err)
 }
-defer node.DisableMulticast()
+defer node.Core().DisableMulticast()
 
 // Admin socket
-if err := node.EnableAdmin("unix:///tmp/ygg-admin.sock"); err != nil {
+if err := node.Core().EnableAdmin("unix:///tmp/ygg-admin.sock"); err != nil {
 log.Fatal(err)
 }
-defer node.DisableAdmin()
+defer node.Core().DisableAdmin()
 ```
 
-`EnableAdmin` delegates to the upstream `yggdrasil-go` admin socket. Upstream listen and Unix socket cleanup failures
-can terminate the process with `os.Exit(1)`.
+`Core().EnableAdmin` delegates to the upstream `yggdrasil-go` admin socket. Upstream listen and Unix socket cleanup
+failures can terminate the process with `os.Exit(1)`.
 
 ### slog logger adapter
 
@@ -751,16 +744,16 @@ Logger: slogAdapter{l: slog.Default()},
 
 ## Modules
 
-| Module                                   | Description                                                      |
-|------------------------------------------|------------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin            |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: probing, best selection, rotation, MinPeers watch  |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                        |
-| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil              |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil           |
-| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                        |
-| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)             |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management     |
+| Module                                   | Description                                                  |
+|------------------------------------------|--------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin        |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: windowed probing, best-per-protocol selection  |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                    |
+| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil          |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil       |
+| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                    |
+| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)         |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management |
 
 ---
 

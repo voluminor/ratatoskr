@@ -3,14 +3,10 @@ package peermgr
 import (
 	"fmt"
 	"net/url"
-	"slices"
 	"strings"
 )
 
 // // // // // // // // // //
-
-// Allowed Yggdrasil transport schemes
-var allowedSchemes = []string{"tcp", "tls", "quic", "ws", "wss"}
 
 // peerEntryObj — validated peer: original URI + transport scheme
 type peerEntryObj struct {
@@ -58,21 +54,13 @@ func ValidatePeers(peers []string) ([]peerEntryObj, []error) {
 		}
 		u.Scheme = strings.ToLower(u.Scheme)
 		u.Host = strings.ToLower(u.Host)
-		displayURI := normalizePeerURL(u)
 
-		if u.Host == "" {
-			errs = append(errs, fmt.Errorf("%w in %q", ErrMissingHost, displayURI))
-			continue
-		}
-
-		if !slices.Contains(allowedSchemes, u.Scheme) {
-			errs = append(errs, fmt.Errorf("%w %q in %q, allowed: %v", ErrUnsupportedScheme, u.Scheme, displayURI, allowedSchemes))
-			continue
-		}
-
+		// Scheme and host are not validated here: the scheme is only used to group
+		// peers per protocol, and node.AddPeer rejects and logs genuinely bad URIs
+		// at probe time. Only malformed URIs (url.Parse failure) and duplicates fail.
 		matchURI := normalizePeerURL(u)
 		if seen[matchURI] {
-			errs = append(errs, fmt.Errorf("%w %q", ErrDuplicatePeer, displayURI))
+			errs = append(errs, fmt.Errorf("%w %q", ErrDuplicatePeer, matchURI))
 			continue
 		}
 		seen[matchURI] = true

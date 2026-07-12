@@ -163,8 +163,9 @@ flowchart TB
   Netstack -->|" IPv6-пакеты "| YggCore
 ```
 
-`ratatoskr.Obj` встраивает `core.Interface` — все сетевые методы (`DialContext`, `Listen`,
-`ListenPacket`, `Address`, `Subnet`, `PublicKey` и т.д.) доступны напрямую. SOCKS5-прокси,
+`ratatoskr.Obj` продвигает основные сетевые и пировые методы напрямую (`DialContext`, `Listen`,
+`ListenPacket`, `Address`, `Subnet`, `PublicKey`, `MTU`, `AddPeer`, `RemovePeer`, `GetPeers`). Расширенное
+управление узлом (multicast, admin, retry, статистика) доступно через `Core()`. SOCKS5-прокси,
 менеджер пиров и ninfo — опциональные компоненты, управляемые через методы `Obj`.
 
 ---
@@ -199,7 +200,8 @@ flowchart LR
 - Если `cfg.Peers != nil` — запускается менеджер пиров; `cfg.Config.Peers` должен быть пустым
 - Если `cfg.Ctx != nil` — при отмене контекста узел автоматически завершится
 
-После успешного вызова `New` все сетевые методы `core.Interface` доступны через `Obj`:
+После успешного вызова `New` основные сетевые и пировые методы доступны напрямую через `Obj`; расширенное
+управление узлом — через `Core()`:
 
 | Метод                         | Описание                                     |
 |-------------------------------|----------------------------------------------|
@@ -213,12 +215,16 @@ flowchart LR
 | `GetPeers()`                  | Список пиров с метриками                     |
 | `AddPeer(uri)`                | Добавить пир                                 |
 | `RemovePeer(uri)`             | Удалить пир                                  |
-| `EnableMulticast()`           | mDNS-обнаружение в локальной сети            |
-| `DisableMulticast()`          | Остановить multicast                         |
-| `EnableAdmin(addr)`           | Admin-сокет (unix/tcp)                       |
-| `DisableAdmin()`              | Остановить admin-сокет                       |
+| `Core()`                      | Доступ к полному контракту узла (ниже)       |
+| `Core().EnableMulticast()`    | mDNS-обнаружение в локальной сети            |
+| `Core().DisableMulticast()`   | Остановить multicast                         |
+| `Core().EnableAdmin(addr)`    | Admin-сокет (unix/tcp)                       |
+| `Core().DisableAdmin()`       | Остановить admin-сокет                       |
+| `Core().RetryPeers()`         | Переподключить отключённых пиров             |
+| `Core().RSTDropped()`         | Счётчик отброшенных RST-пакетов              |
 
-Предупреждение: `EnableAdmin` использует upstream admin-сокет `yggdrasil-go`. Эта реализация вызывает `os.Exit(1)` при
+Предупреждение: `Core().EnableAdmin` использует upstream admin-сокет `yggdrasil-go`. Эта реализация вызывает
+`os.Exit(1)` при
 ошибке listen или очистки Unix-сокета. Считайте admin-доступ небезопасным операционным инструментом: проверяйте
 bind-адрес перед включением и не открывайте его недоверенным пользователям.
 
@@ -260,20 +266,16 @@ func (o *Obj) PeerManagerOptimize() error
 | `PeerManagerActive()`   | Текущие активные пиры (копия); `nil` если менеджер не используется |
 | `PeerManagerOptimize()` | Принудительная переоценка пиров (блокирует до завершения)          |
 
-При `MinPeers > 0` (только активный режим) фоновый мониторинг отслеживает потерю пиров: если число
-активных пиров опускается до порога на несколько проверок подряд, автоматически запускается
-внеочередная переоценка.
-
-Подробнее о режимах, батчинге, MinPeers watch и валидации пиров — в [mod/peermgr/README.md](mod/peermgr/README.md).
+Подробнее о выборе, оконном пробинге и валидации пиров — в [mod/peermgr/README.md](mod/peermgr/README.md).
 
 ### RetryPeers
 
 ```go
-func (o *Obj) RetryPeers()
+node.Core().RetryPeers()
 ```
 
-Инициирует немедленное переподключение отключённых пиров. Работает независимо от менеджера пиров —
-вызывает `core.RetryPeersNow()` напрямую.
+Инициирует немедленное переподключение отключённых пиров. `RetryPeers` находится на `core.Interface`, доступен
+через `Core()`; работает независимо от менеджера пиров.
 
 ### Ask / AskAddr
 
@@ -427,7 +429,7 @@ flowchart TD
 | `Subnet`      | `string`            | Подсеть `/64`                            |
 | `PublicKey`   | `string`            | Публичный ключ ed25519 (hex)             |
 | `MTU`         | `uint64`            | MTU стека                                |
-| `RSTDropped`  | `int64`             | Счётчик отброшенных RST-пакетов          |
+| `RSTDropped`  | `uint64`            | Счётчик отброшенных RST-пакетов          |
 | `Peers`       | `[]PeerSnapshotObj` | Состояние каждого пира                   |
 | `ActivePeers` | `[]string`          | Пиры, выбранные менеджером (`omitempty`) |
 | `SOCKS`       | `SOCKSSnapshotObj`  | Состояние SOCKS5-прокси                  |
@@ -473,17 +475,17 @@ flowchart TD
 
 Все публичные методы `Obj` безопасны для конкурентного использования.
 
-| Метод / группа                          | Гарантия                                                     |
-|-----------------------------------------|--------------------------------------------------------------|
-| `DialContext`, `Listen`, `ListenPacket` | Потокобезопасны; netstack через `atomic.Pointer`             |
-| `EnableSOCKS` / `DisableSOCKS`          | Защищены мьютексом                                           |
-| `EnableMulticast` / `EnableAdmin`       | Защищены мьютексом                                           |
-| `AddPeer` / `RemovePeer`                | Делегируют в `yggdrasil-go/core` (потокобезопасно)           |
-| `PeerManagerActive`                     | Возвращает копию; защищён мьютексом                          |
-| `PeerManagerOptimize`                   | Блокирует; сериализован внутри                               |
-| `Ask` / `AskAddr`                       | Потокобезопасны; сетевой вызов в горутине, отменяется по ctx |
-| `Close`                                 | Идемпотентный (`sync.Once`)                                  |
-| `Snapshot`                              | Потокобезопасен; собирает данные из потокобезопасных методов |
+| Метод / группа                           | Гарантия                                                     |
+|------------------------------------------|--------------------------------------------------------------|
+| `DialContext`, `Listen`, `ListenPacket`  | Потокобезопасны; netstack через `atomic.Pointer`             |
+| `EnableSOCKS` / `DisableSOCKS`           | Защищены мьютексом                                           |
+| `Core().EnableMulticast` / `EnableAdmin` | Защищены мьютексом                                           |
+| `AddPeer` / `RemovePeer`                 | Делегируют в `yggdrasil-go/core` (потокобезопасно)           |
+| `PeerManagerActive`                      | Возвращает копию; защищён мьютексом                          |
+| `PeerManagerOptimize`                    | Блокирует; сериализован внутри                               |
+| `Ask` / `AskAddr`                        | Потокобезопасны; сетевой вызов в горутине, отменяется по ctx |
+| `Close`                                  | Идемпотентный (`sync.Once`)                                  |
+| `Snapshot`                               | Потокобезопасен; собирает данные из потокобезопасных методов |
 
 ---
 
@@ -502,8 +504,8 @@ flowchart TD
   PM -->|Нет| READY
   PMSTART --> READY([Узел готов])
   READY -->|опционально| SOCKS["EnableSOCKS()"]
-  READY -->|опционально| MC["EnableMulticast()"]
-  READY -->|опционально| ADM["EnableAdmin()"]
+  READY -->|опционально| MC["Core().EnableMulticast()"]
+  READY -->|опционально| ADM["Core().EnableAdmin()"]
   READY -->|опционально| PEERS["AddPeer() / RemovePeer()"]
   READY -->|опционально| ASK["Ask() / AskAddr()"]
   SOCKS --> READY
@@ -689,15 +691,6 @@ active := node.PeerManagerActive()
 node.PeerManagerOptimize() // принудительная переоценка
 ```
 
-Пассивный режим (добавить всех без выбора):
-
-```go
-Peers: &peermgr.ConfigObj{
-Peers:       peers,
-MaxPerProto: -1,
-}
-```
-
 ### Snapshot → JSON
 
 ```go
@@ -710,20 +703,20 @@ fmt.Println(string(data))
 
 ```go
 // mDNS-обнаружение пиров в локальной сети
-if err := node.EnableMulticast(); err != nil {
+if err := node.Core().EnableMulticast(); err != nil {
 log.Fatal(err)
 }
-defer node.DisableMulticast()
+defer node.Core().DisableMulticast()
 
 // Admin-сокет
-if err := node.EnableAdmin("unix:///tmp/ygg-admin.sock"); err != nil {
+if err := node.Core().EnableAdmin("unix:///tmp/ygg-admin.sock"); err != nil {
 log.Fatal(err)
 }
-defer node.DisableAdmin()
+defer node.Core().DisableAdmin()
 ```
 
-`EnableAdmin` делегирует upstream admin-сокету `yggdrasil-go`. Ошибки listen и очистки Unix-сокета в upstream могут
-завершить процесс через `os.Exit(1)`.
+`Core().EnableAdmin` делегирует upstream admin-сокету `yggdrasil-go`. Ошибки listen и очистки Unix-сокета в upstream
+могут завершить процесс через `os.Exit(1)`.
 
 ### Адаптер логгера для slog
 
@@ -751,16 +744,16 @@ Logger: slogAdapter{l: slog.Default()},
 
 ## Модули
 
-| Модуль                                   | Описание                                                                    |
-|------------------------------------------|-----------------------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin                       |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: пробинг, выбор лучших, ротация, MinPeers watch              |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                                  |
-| [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                       |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                        |
-| [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов                         |
-| [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet)                |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Запрос и парсинг NodeInfo удалённых узлов, управление parse-сигилами        |
+| Модуль                                   | Описание                                                             |
+|------------------------------------------|----------------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Ядро: узел Yggdrasil, netstack, NIC, multicast, admin                |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Менеджер пиров: оконный пробинг, выбор лучшего по протоколу          |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5-прокси (TCP/Unix), лимит соединений                           |
+| [`mod/resolver`](mod/resolver/README.md) | Резолвер: `.pk.ygg`, IP-литералы, DNS через Yggdrasil                |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP-форвардинг между локальной сетью и Yggdrasil                 |
+| [`mod/probe`](mod/probe/README.md)       | Исследование топологии (BFS), трассировка маршрутов                  |
+| [`mod/sigils`](mod/sigils/README.md)     | Типизированные блоки NodeInfo (info, services, public, inet)         |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Запрос и парсинг NodeInfo удалённых узлов, управление parse-сигилами |
 
 ---
 

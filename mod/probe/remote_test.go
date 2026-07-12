@@ -30,7 +30,7 @@ func TestParseRemotePeersResponse_valid(t *testing.T) {
 	resp := yggcore.DebugGetPeersResponse{
 		"node1": json.RawMessage(inner),
 	}
-	peers, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
+	peers, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestParseRemotePeersResponse_valid(t *testing.T) {
 }
 
 func TestParseRemotePeersResponse_wrongType(t *testing.T) {
-	_, err := parseRemotePeersResponse("not a map", DefaultMaxPeersPerNode)
+	_, _, err := parseRemotePeersResponse("not a map", DefaultMaxPeersPerNode)
 	if err == nil {
 		t.Fatal("expected error for wrong type")
 	}
@@ -51,7 +51,7 @@ func TestParseRemotePeersResponse_invalidHex(t *testing.T) {
 		Keys []string `json:"keys"`
 	}{Keys: []string{"zzzz_not_hex"}})
 	resp := yggcore.DebugGetPeersResponse{"n": json.RawMessage(inner)}
-	peers, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
+	peers, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestParseRemotePeersResponse_wrongKeyLength(t *testing.T) {
 		Keys []string `json:"keys"`
 	}{Keys: []string{hex.EncodeToString(make([]byte, 10))}})
 	resp := yggcore.DebugGetPeersResponse{"n": json.RawMessage(inner)}
-	peers, _ := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
+	peers, _, _ := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
 	if len(peers) != 0 {
 		t.Fatalf("expected 0 peers for wrong key length, got %d", len(peers))
 	}
@@ -73,7 +73,7 @@ func TestParseRemotePeersResponse_wrongKeyLength(t *testing.T) {
 
 func TestParseRemotePeersResponse_empty(t *testing.T) {
 	resp := yggcore.DebugGetPeersResponse{}
-	peers, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
+	peers, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestParseRemotePeersResponse_empty(t *testing.T) {
 
 func TestParseRemotePeersResponse_nonRawMessage(t *testing.T) {
 	resp := yggcore.DebugGetPeersResponse{"n": "string value"}
-	peers, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
+	peers, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestParseRemotePeersResponse_nonRawMessage(t *testing.T) {
 	}
 }
 
-func TestParseRemotePeersResponse_peerLimitExceeded(t *testing.T) {
+func TestParseRemotePeersResponse_truncatesOverLimit(t *testing.T) {
 	keys := genKeyN(t, 3)
 	inner, _ := json.Marshal(struct {
 		Keys []string `json:"keys"`
@@ -107,9 +107,15 @@ func TestParseRemotePeersResponse_peerLimitExceeded(t *testing.T) {
 	resp := yggcore.DebugGetPeersResponse{
 		"node1": json.RawMessage(inner),
 	}
-	_, err := parseRemotePeersResponse(resp, 2)
-	if !errors.Is(err, ErrPeersPerNodeLimitExceeded) {
-		t.Fatalf("expected ErrPeersPerNodeLimitExceeded, got %v", err)
+	peers, truncated, err := parseRemotePeersResponse(resp, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !truncated {
+		t.Fatal("expected truncated flag for over-limit peer set")
+	}
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 peers after truncation, got %d", len(peers))
 	}
 }
 
@@ -117,42 +123,48 @@ func TestParseRemotePeersResponse_rejectsOversizedMessage(t *testing.T) {
 	resp := yggcore.DebugGetPeersResponse{
 		"node1": json.RawMessage(`{"keys":["` + string(make([]byte, maxRemotePeerMessageBytes)) + `"]}`),
 	}
-	_, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
+	_, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode)
 	if !errors.Is(err, ErrRemoteResponseTooLarge) {
 		t.Fatalf("expected ErrRemoteResponseTooLarge, got %v", err)
 	}
 }
 
-func TestParseRemotePeersResponse_countsInvalidKeysAgainstLimit(t *testing.T) {
+func TestParseRemotePeersResponse_invalidKeysDoNotConsumeLimit(t *testing.T) {
+	valid := genKeyN(t, 2)
 	inner, _ := json.Marshal(struct {
 		Keys []string `json:"keys"`
-	}{Keys: []string{"bad-1", "bad-2", "bad-3"}})
+	}{Keys: []string{"bad-1", hex.EncodeToString(valid[0]), "bad-2", hex.EncodeToString(valid[1])}})
 	resp := yggcore.DebugGetPeersResponse{"node1": json.RawMessage(inner)}
-	_, err := parseRemotePeersResponse(resp, 2)
-	if !errors.Is(err, ErrPeersPerNodeLimitExceeded) {
-		t.Fatalf("expected ErrPeersPerNodeLimitExceeded, got %v", err)
+	peers, truncated, err := parseRemotePeersResponse(resp, 2)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if truncated {
+		t.Fatal("valid keys within the cap must not truncate")
+	}
+	if len(peers) != 2 {
+		t.Fatalf("expected 2 valid peers, got %d", len(peers))
 	}
 }
 
-func TestCallRemotePeers_cachesResultAfterCallerCancel(t *testing.T) {
+func TestCallRemotePeers_detachedCallSurvivesCallerCancel(t *testing.T) {
 	key := genKey(t)
 	peer := genKey(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
+	finished := make(chan struct{})
 	inner, _ := json.Marshal(struct {
 		Keys []string `json:"keys"`
 	}{Keys: []string{hex.EncodeToString(peer)}})
 	obj := &Obj{
-		logger:          noopLoggerObj{},
-		cache:           newPeerCache(time.Minute, defaultCacheMaxEntries),
-		maxPeersPerNode: DefaultMaxPeersPerNode,
+		logger: noopLoggerObj{},
 		remotePeers: func(json.RawMessage) (interface{}, error) {
 			close(started)
 			<-release
+			defer close(finished)
 			return yggcore.DebugGetPeersResponse{"node": json.RawMessage(inner)}, nil
 		},
 	}
-	defer obj.cache.close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -169,24 +181,12 @@ func TestCallRemotePeers_cachesResultAfterCallerCancel(t *testing.T) {
 	if err := <-errCh; !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected caller cancellation, got %v", err)
 	}
+	// The detached call keeps running to completion after the caller left.
 	close(release)
-
-	deadline := time.After(time.Second)
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		peers, _, ok := obj.cache.get(toKeyArray(key))
-		if ok {
-			if len(peers) != 1 || !peers[0].Equal(peer) {
-				t.Fatalf("unexpected cached peers: %v", peers)
-			}
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("timed out waiting for remote result to enter cache")
-		case <-ticker.C:
-		}
+	select {
+	case <-finished:
+	case <-time.After(time.Second):
+		t.Fatal("detached remote call did not finish after caller cancel")
 	}
 }
 
@@ -195,10 +195,7 @@ func TestCallRemotePeers_closeWaitsForDetachedCall(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	obj := &Obj{
-		logger:          noopLoggerObj{},
-		cache:           newPeerCache(time.Minute, defaultCacheMaxEntries),
-		maxPeersPerNode: DefaultMaxPeersPerNode,
-		remoteLimit:     common.NewDynamicLimit(1),
+		logger: noopLoggerObj{},
 		remotePeers: func(json.RawMessage) (interface{}, error) {
 			close(started)
 			<-release
@@ -275,7 +272,7 @@ func BenchmarkParseRemotePeersResponse(b *testing.B) {
 		"node1": json.RawMessage(inner),
 	}
 	for b.Loop() {
-		if _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode); err != nil {
+		if _, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode); err != nil {
 			b.Fatalf("parseRemotePeersResponse: %v", err)
 		}
 	}

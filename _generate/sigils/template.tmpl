@@ -12,26 +12,8 @@ import (
 
 // // // // // // // // // //
 
-// Registries are unexported so importers cannot mutate the built-in sigil set
-// process-wide. Access is read-only through the lookup functions below.
-
-var globalSigilKeysMap = map[string]func() []string{
-{{- range .Sigils }}
-    {{ .Alias }}.Name(): {{ .Alias }}.Keys,
-{{- end }}
-}
-
-var globalSigilParseParamsMap = map[string]func(map[string]any) map[string]any{
-{{- range .Sigils }}
-    {{ .Alias }}.Name(): {{ .Alias }}.ParseParams,
-{{- end }}
-}
-
-var globalSigilMatchMap = map[string]func(map[string]any) bool{
-{{- range .Sigils }}
-    {{ .Alias }}.Name(): {{ .Alias }}.Match,
-{{- end }}
-}
+// The parse registry is unexported so importers cannot mutate the built-in sigil
+// set process-wide. Access is read-only through Parse below.
 
 var globalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, error){
 {{- range .Sigils }}
@@ -41,25 +23,7 @@ var globalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, err
 
 // // // // // // // // // //
 
-// Keys returns the key accessor for a built-in sigil, ok reports its presence.
-func Keys(name string) (func() []string, bool) {
-fn, ok := globalSigilKeysMap[name]
-return fn, ok
-}
-
-// ParseParams returns the param parser for a built-in sigil.
-func ParseParams(name string) (func(map[string]any) map[string]any, bool) {
-fn, ok := globalSigilParseParamsMap[name]
-return fn, ok
-}
-
-// Match returns the matcher for a built-in sigil.
-func Match(name string) (func(map[string]any) bool, bool) {
-fn, ok := globalSigilMatchMap[name]
-return fn, ok
-}
-
-// Parse returns the parser for a built-in sigil.
+// Parse returns the parser for a built-in sigil; ok reports its presence.
 func Parse(name string) (func(map[string]any) (sigils.Interface, error), bool) {
 fn, ok := globalSigilParseMap[name]
 return fn, ok

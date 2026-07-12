@@ -8,6 +8,7 @@ import (
 	"net"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/things-go/go-socks5"
@@ -20,7 +21,6 @@ import (
 
 const (
 	associatePacketBufferSize  = 64 * 1024
-	maxTargetsPerSession       = 256
 	associateTargetIdleTimeout = 30 * time.Second
 	associateWriteTimeout      = 10 * time.Second
 )
@@ -48,7 +48,6 @@ type associateSessionObj struct {
 	relay         *net.UDPConn
 	clientSpec    *statute.AddrSpec
 	controlIP     net.IP
-	targetLimit   int
 	globalLimiter *common.DynamicLimitObj
 
 	clientMu  sync.Mutex
@@ -58,8 +57,7 @@ type associateSessionObj struct {
 	targets  map[string]*associateTargetObj
 	closed   bool
 
-	deadlineMu        sync.Mutex
-	relayReadDeadline int64
+	relayReadDeadline atomic.Int64
 	closeOnce         sync.Once
 }
 
@@ -197,7 +195,6 @@ func newAssociateSession(owner *Obj, ctx context.Context, network proxy.ContextD
 		resolver:      resolver,
 		relay:         relay,
 		clientSpec:    request.DestAddr,
-		targetLimit:   maxTargetsPerSession,
 		globalLimiter: owner.associateLimiter,
 		targets:       make(map[string]*associateTargetObj),
 	}
@@ -282,10 +279,6 @@ func (s *associateSessionObj) target(packet statute.Datagram, client *net.UDPAdd
 		s.targetMu.Unlock()
 		return target, nil
 	}
-	if len(s.targets) >= s.targetLimit {
-		s.targetMu.Unlock()
-		return nil, errAssociateTargetLimit
-	}
 	s.targetMu.Unlock()
 
 	// Process-wide cap: one client must not exhaust UDP sockets across sessions.
@@ -329,21 +322,7 @@ func (s *associateSessionObj) target(packet statute.Datagram, client *net.UDPAdd
 }
 
 func (s *associateSessionObj) refreshIdleDeadline() {
-	s.deadlineMu.Lock()
-	defer s.deadlineMu.Unlock()
-
-	timeout := s.owner.TunnelIdleTimeout()
-	action, deadline := common.DeadlineRefresh(time.Now(), timeout, timeout, s.relayReadDeadline)
-	switch action {
-	case common.DeadlineClear:
-		if s.relayReadDeadline != 0 {
-			s.relayReadDeadline = 0
-			_ = s.relay.SetReadDeadline(time.Time{})
-		}
-	case common.DeadlineArm:
-		s.relayReadDeadline = deadline.UnixNano()
-		_ = s.relay.SetReadDeadline(deadline)
-	}
+	common.RefreshDeadline(time.Now(), s.owner.TunnelIdleTimeout(), &s.relayReadDeadline, s.relay, true)
 }
 
 func (s *associateSessionObj) close() {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
-	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -24,18 +23,14 @@ type Obj struct {
 	source           SourceInterface
 	logger           yggcore.Logger
 	remotePeers      yggcore.AddHandlerFunc
-	remoteLimit      *common.DynamicLimitObj
+	remoteSem        chan struct{}
 	remoteMu         sync.RWMutex
 	remoteWG         sync.WaitGroup
 	closeOnce        sync.Once
 	closed           bool
-	cache            *peerCacheObj
-	maxPeersPerNode  int
 	maxTotalNodes    int
-	maxConcurrency   int
 	pollInterval     time.Duration
 	lookupRetryEvery time.Duration
-	hopsWaitTimeout  time.Duration
 	maxDuration      time.Duration
 }
 
@@ -88,6 +83,17 @@ func sortNodes(nodes []*NodeObj) {
 	})
 }
 
+// clonePeerKeys copies the key slice so downstream sorting never reorders the
+// remote call result in place.
+func clonePeerKeys(keys []ed25519.PublicKey) []ed25519.PublicKey {
+	if len(keys) == 0 {
+		return nil
+	}
+	out := make([]ed25519.PublicKey, len(keys))
+	copy(out, keys)
+	return out
+}
+
 // peerResultObj is the outcome of a single remote peer query.
 type peerResultObj struct {
 	key   ed25519.PublicKey
@@ -101,12 +107,12 @@ type remoteCallFunc func(ctx context.Context, key ed25519.PublicKey) ([]ed25519.
 
 func (o *Obj) effectiveConcurrency(concurrency int) int {
 	if concurrency <= 0 {
-		concurrency = defaultPoolSize
+		return defaultPoolSize
 	}
-	// Clamp to the configured cap only when it is set; a zero cap must never
-	// collapse the fan-out to an unbuffered (deadlocking) semaphore.
-	if o.maxConcurrency > 0 && concurrency > o.maxConcurrency {
-		concurrency = o.maxConcurrency
+	// Bound the BFS worker fan-out; the global remoteSem is the hard cap on
+	// concurrent remote calls, this just keeps the goroutine count sane.
+	if concurrency > DefaultMaxConcurrency {
+		return DefaultMaxConcurrency
 	}
 	return concurrency
 }
@@ -123,15 +129,46 @@ func (o *Obj) boundedContext(ctx context.Context) (context.Context, context.Canc
 
 // // // // // // // // // //
 
-// New creates a probe module over the given core source.
-// Captures debug_remoteGetPeers via core.SetAdmin. All resource limits are fixed
-// internal defaults (see the const block); topology data comes from untrusted
-// remote nodes, so those bounds stay as package constants, not caller knobs.
-func New(source SourceInterface, logger yggcore.Logger) (*Obj, error) {
+// ConfigObj tunes a probe. Zero values fall back to internal defaults.
+type ConfigObj struct {
+	// Logger receives probe events; nil → logs are discarded.
+	Logger yggcore.Logger
+	// MaxTotalNodes caps how many nodes the tree crawl visits; 0 → default.
+	MaxTotalNodes int
+	// PollInterval is the Trace poll ticker interval; 0 → default.
+	PollInterval time.Duration
+	// LookupRetryEvery is how often Trace re-issues a path lookup; 0 → default.
+	LookupRetryEvery time.Duration
+	// MaxDuration bounds a probe when the caller sets no ctx deadline;
+	// 0 → default, <0 → unbounded.
+	MaxDuration time.Duration
+}
+
+func orDefaultInt(v, def int) int {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
+func orDefaultDuration(v, def time.Duration) time.Duration {
+	if v == 0 {
+		return def
+	}
+	return v
+}
+
+// //
+
+// New creates a probe module over the given core source. cfg tunes crawl timing,
+// the total-node cap, and the logger. Captures debug_remoteGetPeers via
+// core.SetAdmin. The per-node peer cap and hops wait are fixed package constants
+// (topology data comes from untrusted remote nodes), not caller knobs.
+func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
 	if source == nil {
 		return nil, ErrCoreRequired
 	}
-	logger = common.NormalizeLogger(logger)
+	logger := common.NormalizeLogger(cfg.Logger)
 
 	capture := common.NewAdminCapture()
 	if err := source.SetAdmin(capture); err != nil {
@@ -147,15 +184,11 @@ func New(source SourceInterface, logger yggcore.Logger) (*Obj, error) {
 		source:           source,
 		logger:           logger,
 		remotePeers:      remotePeers,
-		remoteLimit:      common.NewDynamicLimit(DefaultMaxConcurrency),
-		cache:            newPeerCache(defaultCacheTTL, defaultCacheMaxEntries),
-		maxPeersPerNode:  DefaultMaxPeersPerNode,
-		maxTotalNodes:    DefaultMaxTotalNodes,
-		maxConcurrency:   DefaultMaxConcurrency,
-		pollInterval:     defaultPollInterval,
-		lookupRetryEvery: defaultLookupRetryEvery,
-		hopsWaitTimeout:  defaultHopsWaitTimeout,
-		maxDuration:      defaultMaxDuration,
+		remoteSem:        make(chan struct{}, DefaultMaxConcurrency),
+		maxTotalNodes:    orDefaultInt(cfg.MaxTotalNodes, DefaultMaxTotalNodes),
+		pollInterval:     orDefaultDuration(cfg.PollInterval, defaultPollInterval),
+		lookupRetryEvery: orDefaultDuration(cfg.LookupRetryEvery, defaultLookupRetryEvery),
+		maxDuration:      orDefaultDuration(cfg.MaxDuration, defaultMaxDuration),
 	}, nil
 }
 
@@ -182,17 +215,7 @@ func (o *Obj) Close() {
 		case <-timer.C:
 			o.logger.Warnf("[probe] close timed out waiting for in-flight remote calls")
 		}
-		o.cache.close()
 	})
-}
-
-// FlushCache drops all cached peer query results.
-func (o *Obj) FlushCache() {
-	o.cache.flush()
-}
-
-func (o *Obj) CacheTTL() time.Duration {
-	return o.cache.ttlValue()
 }
 
 // // // // // // // // // //
@@ -330,7 +353,6 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 		nodeByKey[toKeyArray(n.Key)] = n
 	}
 
-	limit := o.maxPeersPerNode
 	// levelCtx is cancelled once the level truncates so in-flight remote calls
 	// return promptly instead of running to completion for discarded results.
 	levelCtx, cancel := context.WithCancel(ctx)
@@ -361,7 +383,7 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 	truncated := false
 	for range nodes {
 		r := <-results
-		children, childTruncated := o.applyPeerResult(r, nodeByKey, visited, nextDepth, remaining-len(nextLevel), limit)
+		children, childTruncated := o.applyPeerResult(r, nodeByKey, visited, nextDepth, remaining-len(nextLevel))
 		nextLevel = append(nextLevel, children...)
 		if childTruncated {
 			truncated = true
@@ -379,7 +401,7 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 	return nextLevel, truncated, nil
 }
 
-func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeySize]byte]*NodeObj, visited map[[ed25519.PublicKeySize]byte]struct{}, nextDepth int, remaining int, limit int) ([]*NodeObj, bool) {
+func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeySize]byte]*NodeObj, visited map[[ed25519.PublicKeySize]byte]struct{}, nextDepth int, remaining int) ([]*NodeObj, bool) {
 	if remaining <= 0 {
 		return nil, true
 	}
@@ -390,9 +412,6 @@ func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeyS
 	parent.RTT = r.rtt
 	if r.err != nil {
 		parent.Unreachable = true
-		if errors.Is(r.err, ErrPeersPerNodeLimitExceeded) {
-			o.logger.Warnf("[probe] node %x exceeded peer limit %d, marked unreachable", r.key[:8], limit)
-		}
 		return nil, false
 	}
 	peers := clonePeerKeys(r.peers)
@@ -421,19 +440,13 @@ func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeyS
 // // // // // // // // // //
 
 // Path returns [root, ..., target] from the local spanning tree.
+// It walks parent links from the target up to the root instead of materialising
+// the whole tree, so repeated Trace polling stays cheap on large networks.
 func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
-	root, err := buildTree(o.source.GetTree(), o.logger)
-	if err != nil {
-		return nil, err
-	}
-	path := root.PathTo(key)
-	if path == nil {
-		return nil, ErrKeyNotInTree
-	}
-	return path, nil
+	return spanningTreePath(o.source.GetTree(), key)
 }
 
 // Hops returns the port-level route to the key. Requires a prior Lookup().

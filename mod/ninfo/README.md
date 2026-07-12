@@ -154,8 +154,8 @@ Inspects arbitrary NodeInfo received from a remote node. Always returns a non-ni
 1. Copies all keys from `nodeInfo` into `Extra`.
 2. Looks for the `ratatoskr` metadata key. If missing or malformed — returns early with everything in `Extra`.
 3. Parses the metadata string via `sigil_core.ParseInfo` to get the version and sigil list.
-4. For each declared sigil, looks up a parser: built-in parsers from `target.GlobalSigilParseMap` merged with
-   user-provided `sg` (user sigils override built-in on name collision).
+4. For each declared sigil, looks up a parser: built-in parsers via `target.Parse` first, falling back to
+   user-provided `sg` (built-in names are reserved, so user sigils cannot override them).
 5. Matched sigils are stored in `Sigils`; their keys are removed from `Extra`.
 
 User-provided sigils are cloned via `Clone()` before parsing, so the caller's template objects remain untouched.

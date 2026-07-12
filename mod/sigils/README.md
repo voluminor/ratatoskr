@@ -93,13 +93,14 @@ Every sigil must have an `<name>_test.go` with:
 
 ### Registration
 
-Every sigil must be registered in global maps (`target/sigils.go`) so that `ninfo.Parse` can automatically recognize and
-parse it in foreign NodeInfo. Without registration, the sigil will work locally (you can call `New`, `SetParams`, etc.),
-but remote nodes' NodeInfo containing this sigil will be ignored during parsing.
+Every sigil must be registered in the parse registry (`target/sigils.go`) so that `ninfo.Parse` can automatically
+recognize and parse it in foreign NodeInfo. Without registration, the sigil will work locally (you can call `New`,
+`SetParams`, etc.), but remote nodes' NodeInfo containing this sigil will be ignored during parsing.
 
 The code generator (`_generate/sigils`) handles registration automatically — it discovers sigil packages under
-`mod/sigils/` and generates `target/sigils.go`. For the generator to pick up your package, it must export the standard
-functions: `Name`, `Keys`, `Match`, `ParseParams`, `Parse`. No manual editing of generated files required.
+`mod/sigils/` and generates `target/sigils.go`. The generator wires each sigil through its `Name` and `Parse`
+package-level functions; the other standard functions (`Keys`, `Match`, `ParseParams`) remain part of the sigil's own
+API. No manual editing of generated files required.
 
 ---
 

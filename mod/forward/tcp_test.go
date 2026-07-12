@@ -514,11 +514,6 @@ func TestStartLocalTCP_maxConnectionsLimitsDialFanout(t *testing.T) {
 		t.Fatal("connection limit allowed an extra backend dial")
 	case <-time.After(200 * time.Millisecond):
 	}
-
-	// The limiter registers one active session; analytics must reflect it.
-	if active := mgr.ActiveTCPConnections(); active != 1 {
-		t.Fatalf("ActiveTCPConnections = %d, want 1", active)
-	}
 }
 
 func TestStartLocalTCP_cancelClosesActiveProxy(t *testing.T) {

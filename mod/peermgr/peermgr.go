@@ -4,25 +4,20 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 	"github.com/voluminor/ratatoskr/internal/common"
-	"github.com/voluminor/ratatoskr/mod/core"
 )
 
 // // // // // // // // // //
 
 const (
-	defaultProbeTimeout          = 10 * time.Second
-	defaultWatchInterval         = 10 * time.Second
-	minRefreshInterval           = 100 * time.Millisecond
-	defaultMinPeersConfirmations = 3
-	defaultBatchSize             = 32
-	maxBatchSize                 = 256
-	maxProbeBackoff              = 10 * time.Minute
+	defaultProbeTimeout = 10 * time.Second
+	defaultBatchSize    = 64
+	maxBatchSize        = 256
+	maxProbeBackoff     = 10 * time.Minute
 )
 
 // //
@@ -32,70 +27,52 @@ type ConfigObj struct {
 	// List of candidate URIs ("tls://host:port", "tcp://...", "quic://...", etc.)
 	Peers []string
 
-	// Peer connection wait timeout during probing. 0 → 10s.
-	// Applied per batch separately. Ignored when MaxPerProto == -1.
+	// Peer connection wait timeout per probe window. 0 → 10s.
 	ProbeTimeout time.Duration
 
-	// Auto re-evaluation interval. 0 → only at startup.
-	// Positive values below the safety floor are clamped.
+	// Auto re-evaluation interval. 0 → only at startup; positive → used as-is.
 	RefreshInterval time.Duration
 
 	// Number of best peers per protocol:
-	//   0 or 1  — one best per protocol (default)
-	//   N > 1    — top-N per protocol
-	//  -1        — passive mode: add all without selection;
-	//              when RefreshInterval > 0 missing configured peers are re-added
+	//   0 or 1 — one best per protocol (default)
+	//   N > 1  — top-N per protocol
 	MaxPerProto int
 
-	// Batch size during probing:
-	//   0 or 1 — bounded default batch size
-	//   N >= 2  — sliding tournament: N new candidates per full probe window, capped internally
+	// Maximum peers probed simultaneously per window:
+	//   0 or 1 — default window size
+	//   N >= 2 — up to N concurrent probes, capped internally
+	// A peer list that fits one window is evaluated in a single ProbeTimeout.
 	BatchSize int
-
-	// Minimum active peer count before triggering unscheduled re-evaluation.
-	// When active Up peers drop to this value the manager re-optimizes off-schedule.
-	//   0     — disabled (default)
-	//   N > 0 — threshold
-	// Ignored in passive mode (MaxPerProto == -1).
-	MinPeers uint8
 
 	// Logger; required
 	Logger yggcore.Logger
+}
 
-	// OnNoReachablePeers is called after probing if no peer responded.
-	// Dispatched fire-and-forget with panic recovery; Stop does not wait for it.
-	// A single-flight guard prevents overlapping invocations.
-	OnNoReachablePeers func()
-
-	// OnActiveChange is fired when the managed active-peer set changes;
-	// called non-blocking, must return quickly; copy the slice if retained.
-	OnActiveChange func(active []string)
+// NodeInterface is the minimal node contract peermgr needs: it manages a curated
+// peer set and reads peer state, nothing more. Any node implementation can be
+// supplied without pulling in the whole core surface.
+type NodeInterface interface {
+	AddPeer(uri string) error
+	RemovePeer(uri string) error
+	GetPeers() []yggcore.PeerInfo
 }
 
 // // // // // // // // // //
 
 // Obj — peer manager
 type Obj struct {
-	cfg            ConfigObj
-	node           core.PeerInterface
-	peers          []peerEntryObj
-	probeState     map[string]probeStateObj
-	ctx            context.Context
-	cancel         context.CancelFunc
-	active         []string
-	runID          uint64
-	mu             sync.Mutex
-	activeChangeMu sync.Mutex
-	optimizeCh     chan struct{}
-	optimizing     atomic.Int64
-	callbackActive atomic.Bool
-	activeChangeOn bool
-	activePending  []string
-	stopMu         sync.Mutex
-	wg             sync.WaitGroup
-	watchInterval  time.Duration
-	watchNeed      int
-	stopping       bool
+	cfg        ConfigObj
+	node       NodeInterface
+	peers      []peerEntryObj
+	probeState map[string]probeStateObj
+	ctx        context.Context
+	cancel     context.CancelFunc
+	active     []string
+	mu         sync.Mutex
+	optimizeCh chan struct{}
+	stopMu     sync.Mutex
+	wg         sync.WaitGroup
+	stopping   bool
 }
 
 type probeStateObj struct {
@@ -114,19 +91,16 @@ func effectiveRefreshInterval(interval time.Duration) time.Duration {
 	if interval <= 0 {
 		return 0
 	}
-	if interval < minRefreshInterval {
-		return minRefreshInterval
-	}
 	return interval
 }
 
 // New creates the manager; peers are not added until Start()
-func New(node core.PeerInterface, cfg ConfigObj) (*Obj, error) {
+func New(node NodeInterface, cfg ConfigObj) (*Obj, error) {
 	if node == nil {
 		return nil, ErrNodeRequired
 	}
 	cfg.Logger = common.NormalizeLogger(cfg.Logger)
-	if cfg.MaxPerProto < -1 {
+	if cfg.MaxPerProto < 0 {
 		return nil, ErrInvalidMaxPerProto
 	}
 	if cfg.MaxPerProto == 0 {
@@ -143,21 +117,12 @@ func New(node core.PeerInterface, cfg ConfigObj) (*Obj, error) {
 		return nil, ErrNoPeers
 	}
 
-	// Passive mode adds all peers without selection, so a MinPeers threshold is
-	// meaningless there; a nonsensical threshold otherwise is the caller's problem.
-	if cfg.MinPeers > 0 && cfg.MaxPerProto == -1 {
-		cfg.Logger.Warnf("[peermgr] MinPeers ignored in passive mode (MaxPerProto == -1)")
-		cfg.MinPeers = 0
-	}
-
 	mgr := &Obj{
-		cfg:           cfg,
-		node:          node,
-		peers:         peers,
-		probeState:    make(map[string]probeStateObj, len(peers)),
-		optimizeCh:    make(chan struct{}, 1),
-		watchInterval: defaultWatchInterval,
-		watchNeed:     defaultMinPeersConfirmations,
+		cfg:        cfg,
+		node:       node,
+		peers:      peers,
+		probeState: make(map[string]probeStateObj, len(peers)),
+		optimizeCh: make(chan struct{}, 1),
 	}
 	return mgr, nil
 }
@@ -172,7 +137,6 @@ func (m *Obj) Start() error {
 		return ErrAlreadyRunning
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	m.runID++
 	m.ctx = ctx
 	m.cancel = cancel
 	m.wg.Add(1)
@@ -195,7 +159,6 @@ func (m *Obj) Stop() {
 
 	m.mu.Lock()
 	cancel := m.cancel
-	runID := m.runID
 	if cancel != nil {
 		m.stopping = true
 		m.cancel = nil
@@ -206,9 +169,6 @@ func (m *Obj) Stop() {
 	if cancel != nil {
 		cancel()
 	}
-	// Only the manager goroutine is awaited; user feedback callbacks are
-	// fire-and-forget so shutdown latency never depends on arbitrary user code
-	// and a callback that re-enters Stop/Optimize cannot deadlock.
 	m.wg.Wait()
 
 	m.mu.Lock()
@@ -219,10 +179,10 @@ func (m *Obj) Stop() {
 	for _, uri := range active {
 		_ = m.node.RemovePeer(uri)
 	}
+	// stopping stays set through teardown so a concurrent Start waits for a clean
+	// stop; clear it only once every managed peer has been removed.
 	m.mu.Lock()
-	if m.runID == runID {
-		m.stopping = false
-	}
+	m.stopping = false
 	m.mu.Unlock()
 	m.cfg.Logger.Infof("[peermgr] stopped, removed %d peers", len(active))
 }

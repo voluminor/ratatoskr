@@ -21,8 +21,12 @@ const (
 	defaultCacheTTL         = 30 * time.Second
 	defaultNegativeCacheTTL = 3 * time.Second
 	defaultCacheMaxEntries  = 4096
-	maxLookupTimeout        = 30 * time.Second
 	maxDNSNameLength        = 253
+	// maxConcurrentLookups bounds distinct in-flight DNS names. The resolver serves
+	// untrusted SOCKS clients that can request unlimited unique hostnames, each
+	// detaching a leader lookup (context.WithoutCancel) that outlives the caller;
+	// without this cap a name flood exhausts goroutines and nameserver dials.
+	maxConcurrentLookups = 256
 )
 
 // //
@@ -47,7 +51,8 @@ type ConfigObj struct {
 	Dialer proxy.ContextDialer
 	// DNS server address. Empty string disables DNS and keeps only .pk.ygg/literals.
 	Nameserver string
-	// DNS lookup timeout; 0 -> safe default, <0 -> hard safety cap.
+	// DNS lookup timeout applied per lookup: 0 -> default (10s), N>0 -> N used
+	// as-is, N<0 -> disabled (bounded only by the caller's context).
 	LookupTimeout time.Duration
 	// Positive DNS cache TTL; 0 -> safe default, <0 -> disabled.
 	CacheTTL time.Duration
@@ -140,7 +145,9 @@ func (r *Obj) lookupContext(ctx context.Context) (context.Context, context.Cance
 	if r.lookupTimeout > 0 {
 		return context.WithTimeout(baseCtx, r.lookupTimeout)
 	}
-	return context.WithTimeout(baseCtx, maxLookupTimeout)
+	// Disabled (lookupTimeout <= 0): no internal deadline; the lookup is bounded
+	// only by whatever the caller propagates through its own context.
+	return context.WithCancel(baseCtx)
 }
 
 func (r *Obj) waitLookupFlight(ctx context.Context, flight *lookupFlightObj) (net.IP, error) {
@@ -187,14 +194,6 @@ func resolvePublicKeyDomain(name string) (net.IP, bool, error) {
 		return nil, false, nil
 	}
 	return address.AddrForKey(key)[:], true, nil
-}
-
-func (r *Obj) cacheGet(key string, now time.Time) (net.IP, bool) {
-	entry, ok := r.cacheGetEntry(key, now)
-	if !ok || entry.err != nil {
-		return nil, false
-	}
-	return entry.ip, true
 }
 
 func (r *Obj) cacheGetDNS(key string, now time.Time) (net.IP, error, bool) {
@@ -307,6 +306,12 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 	if flight := r.lookupFlights[key]; flight != nil {
 		r.lookupMu.Unlock()
 		return r.waitLookupFlight(waitCtx, flight)
+	}
+	// Admission cap on distinct in-flight names: joining an existing flight is
+	// always allowed (dedup), only a genuinely new name counts against the bound.
+	if len(r.lookupFlights) >= maxConcurrentLookups {
+		r.lookupMu.Unlock()
+		return nil, ErrLookupBusy
 	}
 	flight := &lookupFlightObj{done: make(chan struct{})}
 	r.lookupFlights[key] = flight

@@ -60,13 +60,6 @@ func (l *tcpLimitObj) release() {
 	}
 }
 
-func (l *tcpLimitObj) activeCount() int {
-	if l == nil {
-		return 0
-	}
-	return int(l.active.Load())
-}
-
 // ProxyTCPContext proxies TCP and unblocks both directions when ctx is cancelled.
 func ProxyTCPContext(ctx context.Context, c1, c2 net.Conn, closeTimeout time.Duration) {
 	proxyTCPContext(ctx, c1, c2, closeTimeout, -1)
@@ -115,7 +108,6 @@ func copyTCPBuffer(dst, src net.Conn, buf []byte, activity func()) (int64, error
 			activity()
 			nw, ew := dst.Write(buf[:nr])
 			if nw > 0 {
-				activity()
 				written += int64(nw)
 			}
 			if ew != nil {
@@ -191,17 +183,11 @@ func proxyTCP(c1, c2 net.Conn, closeTimeout, idleTimeout time.Duration) {
 	// Per-conn last-armed deadline; the shared gate re-arms only past the
 	// half-interval, cutting SetDeadline syscalls on the hot copy path.
 	var c1Deadline, c2Deadline atomic.Int64
-	refresh := func(conn net.Conn, state *atomic.Int64) {
-		action, deadline := common.DeadlineRefresh(time.Now(), idleTimeout, idleTimeout, state.Load())
-		if action == common.DeadlineArm {
-			state.Store(deadline.UnixNano())
-			_ = conn.SetDeadline(deadline)
-		}
-	}
 	activity := func() {
 		if idleTimeout > 0 {
-			refresh(c1, &c1Deadline)
-			refresh(c2, &c2Deadline)
+			now := time.Now()
+			common.RefreshDeadline(now, idleTimeout, &c1Deadline, c1, false)
+			common.RefreshDeadline(now, idleTimeout, &c2Deadline, c2, false)
 		}
 		if halfCloseArmed.Load() {
 			select {
@@ -301,9 +287,7 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 			defer func() { _ = st.listener.Close() }()
 			st.logMapping(st.mapping)
 
-			tcpLimit := m.newTCPLimit()
-			defer m.tcpLimiters.Delete(tcpLimit)
-			limiter := tcpLimit
+			limiter := m.newTCPLimit()
 			limitLog := intervalLogObj{}
 			backoff := time.Duration(0)
 

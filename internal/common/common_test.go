@@ -4,7 +4,9 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // // // // // // // // // //
@@ -98,6 +100,65 @@ func TestDynamicLimitAcquireOrReadyWakesOnLimitIncrease(t *testing.T) {
 	}
 	limit.Release()
 	limit.Release()
+}
+
+// //
+
+type deadlineRecorderObj struct {
+	setDeadline     int
+	setReadDeadline int
+	lastDeadline    time.Time
+}
+
+func (r *deadlineRecorderObj) SetDeadline(t time.Time) error {
+	r.setDeadline++
+	r.lastDeadline = t
+	return nil
+}
+
+func (r *deadlineRecorderObj) SetReadDeadline(t time.Time) error {
+	r.setReadDeadline++
+	r.lastDeadline = t
+	return nil
+}
+
+func TestRefreshDeadlineArmSkipClear(t *testing.T) {
+	rec := &deadlineRecorderObj{}
+	var state atomic.Int64
+	now := time.Now()
+
+	// First refresh arms the deadline.
+	RefreshDeadline(now, time.Minute, &state, rec, false)
+	if rec.setDeadline != 1 {
+		t.Fatalf("first refresh should arm once, got %d", rec.setDeadline)
+	}
+	// Immediate second refresh is within the half-budget window: no syscall.
+	RefreshDeadline(now, time.Minute, &state, rec, false)
+	if rec.setDeadline != 1 {
+		t.Fatalf("second refresh should skip, got %d", rec.setDeadline)
+	}
+	// Disabling the timeout clears the armed deadline exactly once, to zero.
+	RefreshDeadline(now, 0, &state, rec, false)
+	if rec.setDeadline != 2 || !rec.lastDeadline.IsZero() {
+		t.Fatalf("clear should fire once with zero deadline, got %d last=%s", rec.setDeadline, rec.lastDeadline)
+	}
+	if state.Load() != 0 {
+		t.Fatalf("state should reset after clear, got %d", state.Load())
+	}
+	// A redundant clear touches nothing (no deadline armed).
+	RefreshDeadline(now, 0, &state, rec, false)
+	if rec.setDeadline != 2 {
+		t.Fatalf("redundant clear should not touch the conn, got %d", rec.setDeadline)
+	}
+}
+
+func TestRefreshDeadlineReadOnlyUsesReadDeadline(t *testing.T) {
+	rec := &deadlineRecorderObj{}
+	var state atomic.Int64
+	RefreshDeadline(time.Now(), time.Minute, &state, rec, true)
+	if rec.setReadDeadline != 1 || rec.setDeadline != 0 {
+		t.Fatalf("readOnly should use SetReadDeadline only, got read=%d write=%d", rec.setReadDeadline, rec.setDeadline)
+	}
 }
 
 func TestDynamicLimitUnlimitedAndLazyReady(t *testing.T) {

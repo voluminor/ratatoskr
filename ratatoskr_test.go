@@ -121,19 +121,6 @@ func (b *blockingCoreObj) Close() error {
 	return nil
 }
 
-type noopSocksObj struct{}
-
-func (noopSocksObj) Close() error      { return nil }
-func (noopSocksObj) Addr() string      { return "" }
-func (noopSocksObj) IsUnix() bool      { return false }
-func (noopSocksObj) IsEnabled() bool   { return false }
-func (noopSocksObj) ServeError() error { return nil }
-func (noopSocksObj) MaxConnections() int {
-	return 0
-}
-func (noopSocksObj) SetMaxConnections(int)  {}
-func (noopSocksObj) ActiveConnections() int { return 0 }
-
 // //
 
 func TestNew_nilConfig(t *testing.T) {
@@ -235,10 +222,10 @@ func TestClose_idempotent(t *testing.T) {
 func TestClose_idempotentPreservesError(t *testing.T) {
 	want := errors.New("close failed")
 	node := &Obj{
-		Interface: errCoreObj{err: want},
-		socks:     noopSocksObj{},
-		nodeInfo:  &ninfo.Obj{},
-		done:      make(chan struct{}),
+		core:     errCoreObj{err: want},
+		socks:    socks.NewDisabled(),
+		nodeInfo: &ninfo.Obj{},
+		done:     make(chan struct{}),
 	}
 
 	if err := node.Close(); !errors.Is(err, want) {
@@ -276,7 +263,7 @@ func TestRetryPeers_afterCloseReturnsError(t *testing.T) {
 	if err := node.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if err := node.RetryPeers(); err == nil {
+	if err := node.Core().RetryPeers(); err == nil {
 		t.Fatal("expected error after close")
 	}
 }
@@ -391,10 +378,10 @@ func TestSnapshot_doesNotBlockDuringClose(t *testing.T) {
 		release: make(chan struct{}),
 	}
 	node := &Obj{
-		Interface: coreObj,
-		socks:     noopSocksObj{},
-		nodeInfo:  &ninfo.Obj{},
-		done:      make(chan struct{}),
+		core:     coreObj,
+		socks:    socks.NewDisabled(),
+		nodeInfo: &ninfo.Obj{},
+		done:     make(chan struct{}),
 	}
 
 	closeDone := make(chan struct{})
@@ -516,19 +503,19 @@ func TestPeerManagerOptimize_errorWhenNoManager(t *testing.T) {
 
 func TestRetryPeers_onRunningNode(t *testing.T) {
 	node := newTestNode(t)
-	if err := node.RetryPeers(); err != nil {
+	if err := node.Core().RetryPeers(); err != nil {
 		t.Fatalf("RetryPeers: %v", err)
 	}
 }
 
 // //
 
-func TestNew_withPeerManager_passiveMode(t *testing.T) {
+func TestNew_withPeerManager(t *testing.T) {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
 	pmCfg := &peermgr.ConfigObj{
 		Peers:        []string{"tls://nonexistent.example.invalid:4443"},
-		MaxPerProto:  -1,
+		MaxPerProto:  1,
 		ProbeTimeout: 10 * time.Millisecond,
 		Logger:       common.DiscardLoggerObj{},
 	}

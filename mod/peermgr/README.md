@@ -1,16 +1,14 @@
 # mod/peermgr
 
 Peer manager for Yggdrasil. Automatically selects the strongest responsive peers by protocol and observed latency,
-supports active (with selection) and passive (all peers) modes.
+probing candidates in bounded windows and keeping the best per protocol.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Initialization](#initialization)
-- [Operating Modes](#operating-modes)
-  - [Active Mode](#active-mode)
-  - [Passive Mode](#passive-mode)
-- [Batching](#batching)
+- [Selection](#selection)
+- [Windowing](#windowing)
 - [Control](#control)
 - [Peer Validation](#peer-validation)
 - [Errors](#errors)
@@ -19,6 +17,10 @@ supports active (with selection) and passive (all peers) modes.
 
 ## Overview
 
+peermgr depends only on a minimal node contract — `NodeInterface` (`AddPeer` / `RemovePeer` / `GetPeers`) — not on the
+full core surface. Any node implementation satisfying that contract can be supplied, which is convenient for tests or
+substituting your own node.
+
 ```mermaid
 flowchart TB
     subgraph Config["ConfigObj"]
@@ -26,7 +28,6 @@ flowchart TB
         MaxPP["MaxPerProto"]
         Batch["BatchSize"]
         Refresh["RefreshInterval"]
-      MinP["MinPeers"]
     end
 
     subgraph Obj["Obj — manager"]
@@ -35,7 +36,7 @@ flowchart TB
         Active["Active() → []string"]
     end
 
-    subgraph Node["core.Interface"]
+    subgraph Node["NodeInterface"]
         Add["AddPeer"]
         Remove["RemovePeer"]
         Get["GetPeers"]
@@ -47,7 +48,6 @@ flowchart TB
     Optimize -->|" GetPeers → selection "| Node
     Optimize -->|" RemovePeer losers "| Node
     Optimize --> Active
-  MinP -.->|" watchPeers "| Optimize
 ```
 
 ---
@@ -61,87 +61,79 @@ Logger:          logger,
 MaxPerProto:     1, // best peer per protocol
 ProbeTimeout:    10 * time.Second,
 RefreshInterval: 5 * time.Minute,
-BatchSize:       0, // bounded default batch size
-OnNoReachablePeers: func () {
-log.Warn("no reachable peers")
-},
+BatchSize:       0, // default window size (64)
 })
 ```
 
-`New` validates peers and configuration. Invalid URIs are skipped with a warning; an error is returned only if there are
-no valid peers at all.
+`node` is any value implementing `NodeInterface` (`AddPeer` / `RemovePeer` / `GetPeers`); a `*core.Obj` satisfies it,
+but
+so can your own node implementation. `New` validates peers and configuration. Invalid URIs are skipped with a warning;
+an
+error is returned only if there are no valid peers at all. A negative `MaxPerProto` is rejected with
+`ErrInvalidMaxPerProto`.
 
-| Field                 | Description                                                             | Default  |
-|-----------------------|-------------------------------------------------------------------------|----------|
-| `Peers`               | List of candidate URIs                                                  | required |
-| `Logger`              | Logger                                                                  | required |
-| `MaxPerProto`         | Best peers per protocol; `-1` — passive mode                            | `1`      |
-| `ProbeTimeout`        | Connection timeout per batch                                            | `10s`    |
-| `RefreshInterval`     | Re-evaluation interval; `0` — only at start; tiny positives are clamped | `0`      |
-| `BatchSize`           | Batch size; `0`/`1` — bounded default, large values are capped          | `32`     |
-| `MinPeers`            | Active peer threshold for watch (active mode only)                      | `0`      |
-| `OnNoReachablePeers`  | Fire-and-forget callback if no peers responded after probing            | `nil`    |
-| `OnActiveChange`      | Fire-and-forget callback when the active peer set changes               | `nil`    |
+| Field             | Description                                                              | Default  |
+|-------------------|--------------------------------------------------------------------------|----------|
+| `Peers`           | List of candidate URIs                                                   | required |
+| `Logger`          | Logger                                                                   | required |
+| `MaxPerProto`     | Best peers per protocol; `0`/`1` — one best, `N>1` — top-N, `<0` → error | `1`      |
+| `ProbeTimeout`    | Connection wait timeout per probe window                                 | `10s`    |
+| `RefreshInterval` | Re-evaluation interval; `0` — only at start; tiny positives are clamped  | `0`      |
+| `BatchSize`       | Max peers probed simultaneously per window; `0`/`1` — default, capped    | `64`     |
 
 ---
 
-## Operating Modes
+## Selection
 
-### Active Mode
-
-`MaxPerProto >= 0`. The manager gives each batch a full `ProbeTimeout` window, measures latency among peers that are
-up at the end of that window, and keeps the selected peers per protocol.
+The manager gives each window a single `ProbeTimeout`, measures latency among peers that are up at the end of that
+window, and keeps the best per protocol. `MaxPerProto` controls how many winners survive per protocol: `0` or `1` keep
+one best, `N > 1` keeps the top N.
 
 ```mermaid
 flowchart LR
-    Batch["batch of candidates"] --> AddPeer["AddPeer each"]
-    AddPeer --> Wait["wait ProbeTimeout"]
+    Window["window of candidates + prior winners"] --> AddPeer["AddPeer new ones"]
+    AddPeer --> Wait["wait one ProbeTimeout"]
     Wait --> GetPeers["GetPeers → results"]
     GetPeers --> Select["selectBest: top-N per protocol"]
     Select --> Remove["RemovePeer losers"]
-    Remove --> Next["next batch with winners"]
+    Remove --> Next["next window carries the winners"]
 ```
 
 Selection algorithm:
 
-1. Candidates are split into batches
-2. Each batch is added via `AddPeer`
-3. Wait the full `ProbeTimeout` window for that batch
-4. `selectBest` groups by protocol, sorts by latency, picks top-N
-5. Losers are removed via `RemovePeer`
-6. The next batch operates only with previous winners
+1. Candidates are the currently active peers plus any peer whose backoff window has elapsed.
+2. They are processed in windows of at most `BatchSize` peers.
+3. Each window adds its new candidates via `AddPeer`, alongside the winners carried from earlier windows.
+4. After a single `ProbeTimeout`, `selectBest` groups the up peers by protocol, sorts by latency, and picks the top N.
+5. Losers are removed via `RemovePeer`; winners carry into the next window, so the final selection is global.
 
-### Passive Mode
-
-`MaxPerProto == -1`. The manager adds all candidates without selection.
-
-On each `RefreshInterval` — a full cycle: remove all, then re-add all. `ProbeTimeout` and `BatchSize`
-are ignored.
+A peer list that fits in one window is evaluated in a single `ProbeTimeout` — there is no per-batch timeout stacking.
+Peers that stay down accumulate an exponential, capped backoff, so dead URIs are re-probed less often.
 
 ---
 
-## Batching
+## Windowing
 
-`BatchSize` controls probing concurrency:
+`BatchSize` bounds how many peers are connected at once during probing:
 
-| Value    | Behavior                                                                      |
-|----------|-------------------------------------------------------------------------------|
-| `0`/`1`  | Safe default batch size                                                       |
-| `N >= 2` | Sliding tournament: N new candidates per full probe window, capped internally |
+| Value    | Behavior                                       |
+|----------|------------------------------------------------|
+| `0`/`1`  | Default window size (64)                       |
+| `N >= 2` | Up to N peers probed per window, capped at 256 |
 
-When `BatchSize >= 2`, each subsequent batch includes winners from previous batches plus N new candidates. This keeps
-large candidate lists bounded while still comparing new candidates against already selected ones. Very large values are
-clamped to avoid dial floods.
+Each window connects at most `BatchSize` new candidates plus the winners already selected, waits one `ProbeTimeout`,
+then prunes. This keeps large candidate lists from flooding the node with simultaneous dials while still comparing every
+candidate against the current winners. Values above 256 are clamped.
 
 ---
 
 ## Control
 
 ```go
-mgr.Start() // start the background goroutine
-mgr.Active()         // current active peers (copy)
-mgr.Optimize()       // force re-evaluation (blocking call)
-mgr.Stop() // stop and remove all peers
+mgr.Start()    // start the background goroutine
+mgr.Active()   // current active peers (copy)
+mgr.Optimize() // force re-evaluation (blocking call)
+mgr.Stop()     // stop and remove all peers
 ```
 
 `Start` launches a goroutine that immediately performs optimization and then schedules repeats via `RefreshInterval`.
@@ -150,38 +142,11 @@ new manager. `Optimize()` remains available at runtime to force an immediate re-
 values below the safety floor are clamped.
 
 `Optimize` can be called manually — it blocks until completion. It is serialized: no more than one optimization runs at
-a time. A cycle is bounded only by `Stop` (which cancels the context) — a cycle interrupted mid-tournament rolls its
-partial state back into the active set so `Stop` tears every managed peer down cleanly.
+a time. A cycle is bounded only by `Stop` (which cancels the context). A cancelled cycle is not rolled back: it leaves
+every peer it added in the active set, so `Stop` tears them all down cleanly.
 
-`Stop` cancels the context, waits for the manager goroutine, then removes all managed peers via `RemovePeer`. User
-feedback callbacks (`OnNoReachablePeers`, `OnActiveChange`) are fire-and-forget: `Stop` never waits for them, so
-shutdown latency does not depend on arbitrary user code and a callback may safely re-enter `Stop`/`Optimize`. Both
-callbacks are dispatched on their own goroutine with panic recovery; a panic is logged and never crashes the manager.
-`OnActiveChange` receives a private copy of the active URIs and fires only when the set actually changes
-(order-insensitive); copy the slice if you retain it beyond the call.
-
----
-
-## MinPeers Watch
-
-When `MinPeers > 0` (active mode only), a background goroutine polls `GetPeers` every 10s and counts active (Up) peers.
-If the count stays at or below the threshold for 3 consecutive ticks, an unscheduled optimize is triggered. This gives
-self-healing on peer loss without the churn of a short `RefreshInterval`. The poll interval (10s) and confirmation count
-(3) are fixed internal defaults — only the `MinPeers` threshold is caller-tunable.
-
-```mermaid
-flowchart LR
-  Tick["poll tick (10s)"] --> Count["countUpActive"]
-  Count -->|" up > MinPeers "| Reset["reset counter"]
-  Count -->|" up ≤ MinPeers "| Inc["confirmCount++"]
-  Inc -->|" < 3 "| Tick
-  Inc -->|" ≥ 3 "| Trigger["optimize + reset counter"]
-```
-
-- A nonsensical `MinPeers` (e.g. above the reachable peer count) just re-optimizes often — that is the caller's choice.
-- Ignored in passive mode (`MaxPerProto == -1`); reset to 0 with a warning.
-- `RefreshInterval` of `0` disables periodic refresh, so scheduled optimization runs only at start (the watch still
-  reacts to peer loss).
+`Stop` cancels the context, waits for the manager goroutine, then removes all managed peers via `RemovePeer`. It is safe
+to call multiple times; shutdown does not depend on any user callback.
 
 ---
 
@@ -203,12 +168,12 @@ and checks each URI:
 
 ## Errors
 
-| Variable               | Description                            |
-|------------------------|----------------------------------------|
-| `ErrNoPeers`           | No valid peers                         |
-| `ErrAlreadyRunning`    | `Start` called more than once          |
-| `ErrNotRunning`        | `Optimize` called without `Start`      |
-| `ErrDuplicatePeer`     | Duplicate URI                          |
-| `ErrInvalidURI`        | Invalid URI                            |
-| `ErrMissingHost`       | Host missing in URI                    |
-| `ErrUnsupportedScheme` | Unsupported scheme (not tcp/tls/...)   |
+| Variable                | Description                          |
+|-------------------------|--------------------------------------|
+| `ErrNodeRequired`       | `New` called with a nil node         |
+| `ErrNoPeers`            | No valid peers                       |
+| `ErrInvalidMaxPerProto` | `MaxPerProto` is negative            |
+| `ErrAlreadyRunning`     | `Start` called more than once        |
+| `ErrNotRunning`         | `Optimize` called without `Start`    |
+| `ErrDuplicatePeer`      | Duplicate URI                        |
+| `ErrInvalidURI`         | Invalid URI                          |

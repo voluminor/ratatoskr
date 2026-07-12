@@ -100,10 +100,11 @@ flowchart LR
 ```
 
 - `maxDepth` — maximum BFS depth (required, > 0)
-- `concurrency` — worker pool size (0 → 16 by default)
-- `ConfigObj.MaxConcurrency` caps the requested worker pool size
-- Nodes that did not respond or exceeded `ConfigObj.MaxPeersPerNode` are marked as `Unreachable`
-- Traversal stops at `ConfigObj.MaxTotalNodes`; `TreeResultObj.Truncated` reports this condition
+- `concurrency` — worker pool size (0 → 16 by default), clamped to `DefaultMaxConcurrency`
+- Nodes that did not respond are marked as `Unreachable`; a node reporting more than `DefaultMaxPeersPerNode` peers
+  stays reachable with its peer set truncated to the cap
+- Traversal stops at `ConfigObj.MaxTotalNodes` (0 → `DefaultMaxTotalNodes`); `TreeResultObj.Truncated` reports this
+  condition
 - Duplicates are filtered by public key
 
 ### TreeChan
@@ -195,19 +196,6 @@ flowchart TB
 | `SpanningTree()` | `[]yggcore.TreeEntryInfo` | Spanning tree entries    |
 | `Paths()`        | `[]yggcore.PathEntryInfo` | Pathfinder routes        |
 | `Lookup(key)`    | —                         | Initiates route lookup   |
-| `FlushCache()`   | —                         | Flushes peer query cache |
-| `CacheTTL()`     | `time.Duration`           | Current peer cache TTL   |
-
----
-
-## Caching
-
-Results of `debug_remoteGetPeers` are cached by the node's public key. The cache is automatically cleaned every
-configured `CacheTTL/2`.
-Unreachable nodes (those that did not respond) are cached as `nil` — a repeated request within the TTL will immediately
-return `ErrNodeUnreachable`.
-
-The cleanup goroutine is owned by `Obj` and stops on `Close`.
 
 ---
 
@@ -218,10 +206,9 @@ untrusted remote nodes, so the bounds are not caller-tunable):
 
 | Constant                 | Description                                             | Default |
 |--------------------------|---------------------------------------------------------|---------|
-| `DefaultMaxPeersPerNode` | Per-node peer limit; exceeding it → `Unreachable`       | `1024`  |
+| `DefaultMaxPeersPerNode` | Per-node peer cap; excess peers are truncated           | `1024`  |
 | `DefaultMaxTotalNodes`   | Maximum discovered nodes in `Tree`, excluding root      | `4096`  |
-| `DefaultMaxConcurrency`  | Maximum concurrent remote peer queries during `Tree`    | `256`   |
-| cache TTL                | Peer query cache entry time-to-live                     | `60s`   |
+| `DefaultMaxConcurrency`  | Maximum concurrent remote peer queries                  | `256`   |
 | poll interval            | Core polling interval in `Trace`                        | `200ms` |
 | lookup retry             | `SendLookup` retry interval in `Trace`                  | `1s`    |
 | hops wait timeout        | Hops wait timeout when tree path is already found       | `2s`    |
@@ -277,7 +264,6 @@ Hops     []HopObj  // route via pathfinder
 | `ErrInvalidConfig`             | Per-node peer limit is not positive            |
 | `ErrRemotePeersNotCaptured`    | `debug_remoteGetPeers` handler not intercepted |
 | `ErrMaxDepthRequired`          | `maxDepth` must be > 0                         |
-| `ErrPeersPerNodeLimitExceeded` | Remote node reported too many valid peers      |
 | `ErrInvalidKeyLength`          | Public key is not 32 bytes                     |
 | `ErrKeyNotInTree`              | Key not found in spanning tree                 |
 | `ErrNoActivePath`              | No active route in pathfinder                  |

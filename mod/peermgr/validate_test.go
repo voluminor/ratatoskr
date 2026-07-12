@@ -23,7 +23,7 @@ func TestValidatePeers_allWhitespace(t *testing.T) {
 }
 
 func TestValidatePeers_allSchemes(t *testing.T) {
-	for _, scheme := range allowedSchemes {
+	for _, scheme := range []string{"tcp", "tls", "quic", "ws", "wss"} {
 		uri := scheme + "://host.example.com:1234"
 		res, errs := ValidatePeers([]string{uri})
 		if len(errs) != 0 {
@@ -92,37 +92,43 @@ func TestValidatePeers_duplicateBareQueryMarker(t *testing.T) {
 	}
 }
 
-func TestValidatePeers_missingHost(t *testing.T) {
-	// "tcp://" has no host or port
-	_, errs := ValidatePeers([]string{"tcp://"})
-	if len(errs) == 0 {
-		t.Fatal("expected missing-host error")
+func TestValidatePeers_missingHostAccepted(t *testing.T) {
+	// Host is no longer validated here; a hostless URI is accepted and left for
+	// node.AddPeer to reject at probe time.
+	res, errs := ValidatePeers([]string{"tcp://"})
+	if len(errs) != 0 {
+		t.Fatalf("expected no validation error, got: %v", errs)
+	}
+	if len(res) != 1 {
+		t.Fatalf("expected the peer to be accepted, got %d", len(res))
 	}
 }
 
-func TestValidatePeers_unsupportedScheme(t *testing.T) {
-	_, errs := ValidatePeers([]string{"ftp://host:21"})
-	if len(errs) == 0 {
-		t.Fatal("expected unsupported-scheme error")
+func TestValidatePeers_unusualSchemeAccepted(t *testing.T) {
+	// Schemes are no longer allow-listed; an unusual scheme is accepted and grouped
+	// by its scheme, with node.AddPeer rejecting it at probe time.
+	res, errs := ValidatePeers([]string{"ftp://host:21"})
+	if len(errs) != 0 {
+		t.Fatalf("expected no validation error, got: %v", errs)
 	}
-	if !errors.Is(errs[0], ErrUnsupportedScheme) {
-		t.Errorf("expected ErrUnsupportedScheme, got: %v", errs[0])
+	if len(res) != 1 || res[0].Scheme != "ftp" {
+		t.Fatalf("expected ftp peer accepted, got %v", res)
 	}
 }
 
 func TestValidatePeers_mixedErrors(t *testing.T) {
 	peers := []string{
 		"tls://good:1",
-		"ftp://bad:21",
+		"ftp://bad:21", // unusual scheme, now accepted
 		"tls://good:1", // duplicate
 		"tls://good2:2",
 	}
 	res, errs := ValidatePeers(peers)
-	if len(res) != 2 {
-		t.Errorf("expected 2 valid, got %d", len(res))
+	if len(res) != 3 {
+		t.Errorf("expected 3 valid, got %d", len(res))
 	}
-	if len(errs) != 2 {
-		t.Errorf("expected 2 errors, got %d: %v", len(errs), errs)
+	if len(errs) != 1 {
+		t.Errorf("expected 1 error (duplicate), got %d: %v", len(errs), errs)
 	}
 }
 
@@ -155,8 +161,8 @@ func TestValidatePeers_errorsRedactQuery(t *testing.T) {
 		"tls://h:1?password=secret2",
 		"ftp://bad:21?password=secret3",
 	})
-	if len(errs) != 2 {
-		t.Fatalf("expected duplicate and unsupported-scheme errors, got %d: %v", len(errs), errs)
+	if len(errs) != 1 {
+		t.Fatalf("expected one duplicate error, got %d: %v", len(errs), errs)
 	}
 	for _, err := range errs {
 		msg := err.Error()

@@ -2,6 +2,7 @@ package ninfo
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,17 +13,18 @@ import (
 
 // // // // // // // // // //
 
+// emptyParseSigilObj always matches and claims its declared keys, but stores
+// nothing on parse: it models a user sigil whose keys are all optional.
 type emptyParseSigilObj struct {
 	name string
 	keys []string
 }
 
+var _ sigils.Interface = &emptyParseSigilObj{}
+
 func (e *emptyParseSigilObj) GetName() string { return e.name }
 func (e *emptyParseSigilObj) GetParams() []string {
 	return append([]string(nil), e.keys...)
-}
-func (e *emptyParseSigilObj) SetParams(mp map[string]any) (map[string]any, error) {
-	return mp, nil
 }
 func (e *emptyParseSigilObj) ParseParams(map[string]any) map[string]any {
 	return nil
@@ -37,6 +39,7 @@ func (e *emptyParseSigilObj) Clone() sigils.Interface {
 	return &emptyParseSigilObj{name: e.name, keys: append([]string(nil), e.keys...)}
 }
 
+// nilCloneParseSigilObj is a user sigil that refuses to clone itself.
 type nilCloneParseSigilObj struct {
 	emptyParseSigilObj
 }
@@ -86,6 +89,8 @@ func TestParse_builtinSigilNameIsReserved(t *testing.T) {
 		"shadow_key": "keep",
 	}
 
+	// A user sigil registered under a built-in name must never override the
+	// built-in parser, which wins by resolution order.
 	p := Parse(m, newMockSigil(inet.Name(), "shadow_key"))
 	if p.Sigils == nil || p.Sigils[inet.Name()] == nil {
 		t.Fatal("built-in sigil parser should handle reserved names")
@@ -148,17 +153,36 @@ func TestParse_doesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestParse_userSigilWithoutParsedKeysStaysInExtra(t *testing.T) {
+func TestParse_userSigilWithOptionalKeysIsAccepted(t *testing.T) {
 	m := map[string]any{
 		target.Name: "[custom] " + target.Version,
 		"custom":    "value",
 	}
+	// A matched user sigil is accepted even when ParseParams stores nothing:
+	// optional keys may be absent. Its declared keys are claimed from Extra.
 	p := Parse(m, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
+	if p.Sigils == nil || p.Sigils["custom"] == nil {
+		t.Fatal("matched user sigil should be accepted")
+	}
+	if _, ok := p.Extra["custom"]; ok {
+		t.Fatal("declared sigil key should be claimed from Extra")
+	}
+}
+
+func TestParse_absentUserSigilIsSkipped(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	// A user sigil whose Match reports absence must be skipped and must leave its
+	// data untouched in Extra. newMockSigil only matches when its keys are present,
+	// and "absent" declares a key the map does not carry.
+	p := Parse(m, newMockSigil("custom", "absent"))
 	if p.Sigils != nil {
-		t.Fatal("sigil without parsed keys should not be accepted")
+		t.Fatal("absent sigil should not be accepted")
 	}
 	if p.Extra["custom"] != "value" {
-		t.Fatal("unparsed custom key should stay in Extra")
+		t.Fatal("absent sigil must leave custom data in Extra")
 	}
 }
 
@@ -167,10 +191,11 @@ func TestParse_nilUserSigilIsSkipped(t *testing.T) {
 		target.Name: "[custom] " + target.Version,
 		"custom":    "value",
 	}
-	// A nil element in the variadic must be skipped, not dereferenced.
+	// A nil element in the variadic must be skipped, not dereferenced, and must
+	// not disrupt parsing of the valid sigil that follows it.
 	p := Parse(m, nil, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
-	if p.Extra["custom"] != "value" {
-		t.Fatal("nil sigil must not disrupt parsing")
+	if p.Sigils == nil || p.Sigils["custom"] == nil {
+		t.Fatal("nil sigil must not disrupt parsing of valid sigils")
 	}
 }
 
@@ -204,7 +229,7 @@ func TestParsedObj_NodeInfo_plain(t *testing.T) {
 
 func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("aaa", "key1"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa", "key1"))))
 	m := map[string]any{
 		target.Name: "[aaa] " + target.Version,
 		"key1":      "test",
@@ -225,7 +250,7 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 
 func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("aaa", "key1"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa", "key1"))))
 	m := map[string]any{
 		target.Name: "[aaa] v9.9.9",
 		"key1":      "test",
@@ -239,7 +264,7 @@ func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
 
 func TestParsedObj_NodeInfo_preservesUnknownSigilNames(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("aaa", "key1"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa", "key1"))))
 	m := map[string]any{
 		target.Name: "[aaa,zzz] v9.9.9",
 		"key1":      "test",

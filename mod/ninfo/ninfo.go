@@ -3,9 +3,8 @@ package ninfo
 import (
 	"context"
 	"crypto/ed25519"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"iter"
 	"sync"
 	"time"
 
@@ -19,40 +18,34 @@ import (
 
 // Obj holds a reference to the running core.
 type Obj struct {
-	source            SourceInterface
-	nodeInfo          yggcore.AddHandlerFunc
-	ctxMu             sync.RWMutex
-	ctx               context.Context
-	cancel            context.CancelFunc
-	closeOnce         sync.Once
-	closedFlag        bool
-	maxAskTime        time.Duration
-	askRetryPause     time.Duration
-	lookupInterval    time.Duration
-	maxLookupTime     time.Duration
-	closeWaitTime     time.Duration
-	maxConcurrentAsks int
-	askWG             sync.WaitGroup
-	askMu             sync.Mutex
-	askFlights        map[[ed25519.PublicKeySize]byte]*askFlightObj
-	closeErr          error
-	lookupMu          sync.Mutex
-	lookupFlights     map[string]*addrLookupFlightObj
-	unresolvedAddrs   map[string]time.Time
-	sigilsMu          sync.RWMutex
-	sigils            map[string]sigils.Interface
-}
-
-type addrLookupFlightObj struct {
-	done chan struct{}
-	key  ed25519.PublicKey
-	err  error
+	source         SourceInterface
+	nodeInfo       yggcore.AddHandlerFunc
+	ctxMu          sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	closeOnce      sync.Once
+	closedFlag     bool
+	maxAskTime     time.Duration
+	askRetryPause  time.Duration
+	lookupInterval time.Duration
+	maxLookupTime  time.Duration
+	sigilsMu       sync.RWMutex
+	sigils         map[string]sigils.Interface
 }
 
 type ConfigObj struct {
-	// Source is the running core. NodeInfo timing and limits are fixed internal
-	// defaults (see the const block below), so no tuning knobs are exposed.
+	// Source is the running core.
 	Source SourceInterface
+
+	// Timing for remote NodeInfo queries; 0 → the internal default for each field.
+	// MaxAskTime bounds a full Ask when the caller sets no deadline; AskRetryPause
+	// is the wait between Ask attempts (<0 disables retries); LookupInterval is the
+	// initial address-lookup poll interval; MaxLookupTime bounds an address lookup
+	// when the caller sets no deadline.
+	MaxAskTime     time.Duration
+	AskRetryPause  time.Duration
+	LookupInterval time.Duration
+	MaxLookupTime  time.Duration
 }
 
 // SourceInterface is the core access needed by remote NodeInfo lookups.
@@ -65,13 +58,20 @@ type SourceInterface interface {
 }
 
 const (
-	defaultMaxAskTime        = 30 * time.Second
-	defaultAskRetryPause     = 500 * time.Millisecond
-	defaultLookupInterval    = 100 * time.Millisecond
-	defaultMaxLookupTime     = 30 * time.Second
-	defaultCloseWaitTime     = 100 * time.Millisecond
-	defaultMaxConcurrentAsks = 256
+	defaultMaxAskTime     = 30 * time.Second
+	defaultAskRetryPause  = 500 * time.Millisecond
+	defaultLookupInterval = 100 * time.Millisecond
+	defaultMaxLookupTime  = 30 * time.Second
 )
+
+// //
+
+func orDefaultDuration(v, def time.Duration) time.Duration {
+	if v == 0 {
+		return def
+	}
+	return v
+}
 
 // // // // // // // // // //
 
@@ -94,33 +94,29 @@ func New(cfg ConfigObj) (*Obj, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	obj := &Obj{
-		source:            cfg.Source,
-		nodeInfo:          nodeInfo,
-		ctx:               ctx,
-		cancel:            cancel,
-		maxAskTime:        defaultMaxAskTime,
-		askRetryPause:     defaultAskRetryPause,
-		lookupInterval:    defaultLookupInterval,
-		maxLookupTime:     defaultMaxLookupTime,
-		closeWaitTime:     defaultCloseWaitTime,
-		maxConcurrentAsks: defaultMaxConcurrentAsks,
-		askFlights:        make(map[[ed25519.PublicKeySize]byte]*askFlightObj),
-		lookupFlights:     make(map[string]*addrLookupFlightObj),
-		sigils:            make(map[string]sigils.Interface),
+		source:         cfg.Source,
+		nodeInfo:       nodeInfo,
+		ctx:            ctx,
+		cancel:         cancel,
+		maxAskTime:     orDefaultDuration(cfg.MaxAskTime, defaultMaxAskTime),
+		askRetryPause:  orDefaultDuration(cfg.AskRetryPause, defaultAskRetryPause),
+		lookupInterval: orDefaultDuration(cfg.LookupInterval, defaultLookupInterval),
+		maxLookupTime:  orDefaultDuration(cfg.MaxLookupTime, defaultMaxLookupTime),
+		sigils:         make(map[string]sigils.Interface),
 	}
 	return obj, nil
 }
 
 // Close releases resources held by the module.
+// Asks run in the caller's goroutine, so Close only cancels the shared context;
+// any in-flight Ask observes the cancellation and returns ErrClosed.
 func (obj *Obj) Close() error {
 	obj.closeOnce.Do(func() {
-		cancel := obj.closeContext()
-		if cancel != nil {
+		if cancel := obj.closeContext(); cancel != nil {
 			cancel()
 		}
-		obj.closeErr = obj.waitAskDone(obj.closeWaitTime)
 	})
-	return obj.closeErr
+	return nil
 }
 
 // // // // // // // // // //
@@ -157,126 +153,12 @@ func (obj *Obj) isClosed(ctx context.Context) bool {
 	}
 }
 
-func (obj *Obj) startAskCall() error {
-	obj.ctxMu.RLock()
-	defer obj.ctxMu.RUnlock()
-	if obj.closedFlag || obj.ctx == nil {
-		return ErrClosed
-	}
-	select {
-	case <-obj.ctx.Done():
-		return ErrClosed
-	default:
-		obj.askWG.Add(1)
-		return nil
-	}
-}
-
-func (obj *Obj) finishAskCall() {
-	obj.askWG.Done()
-}
-
-func (obj *Obj) waitAskDone(timeout time.Duration) error {
-	if timeout < 0 {
-		obj.askWG.Wait()
-		return nil
-	}
-	done := make(chan struct{})
-	go func() {
-		obj.askWG.Wait()
-		close(done)
-	}()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-done:
-		return nil
-	case <-timer.C:
-		return fmt.Errorf("%w after %s", ErrCloseTimedOut, timeout)
-	}
-}
-
-// askFlightObj is one shared getNodeInfo attempt; its result is published once
-// done is closed. Fields are written by the flight goroutine before the close
-// and read by waiters after it, so the channel provides the happens-before.
-type askFlightObj struct {
-	done chan struct{}
-	raw  json.RawMessage
-	rtt  time.Duration
-	err  error
-}
-
-// askShared collapses concurrent attempts for the same key into a single
-// underlying getNodeInfo call. Only the first caller (leader) launches the call;
-// every caller — leader and followers — waits on the shared result under its own
-// context, so one caller's cancellation never aborts work the others still need.
-// At most maxConcurrentAsks distinct keys can be in flight at once, which stops
-// a flood of abandoned unique-key asks from piling up detached goroutines.
-// retriable reports whether a failed attempt is worth retrying.
-func (obj *Obj) askShared(baseCtx, callCtx context.Context, key [ed25519.PublicKeySize]byte) (json.RawMessage, time.Duration, bool, error) {
-	obj.askMu.Lock()
-	fl, joined := obj.askFlights[key]
-	if !joined {
-		// Admission cap: bound the number of distinct in-flight keys so a flood
-		// of unique keys with short caller contexts cannot pile up detached
-		// goroutines and map entries. Retriable, so a caller with time left
-		// waits out a transient burst.
-		if obj.maxConcurrentAsks > 0 && len(obj.askFlights) >= obj.maxConcurrentAsks {
-			obj.askMu.Unlock()
-			return nil, 0, true, ErrAskLimit
-		}
-		fl = &askFlightObj{done: make(chan struct{})}
-		obj.askFlights[key] = fl
-	}
-	obj.askMu.Unlock()
-
-	if !joined {
-		obj.runAskFlight(fl, key)
-	}
-
-	select {
-	case <-baseCtx.Done():
-		return nil, 0, false, ErrClosed
-	case <-callCtx.Done():
-		return nil, 0, false, callCtx.Err()
-	case <-fl.done:
-		if fl.err != nil {
-			return nil, 0, !errors.Is(fl.err, ErrClosed), fl.err
-		}
-		return fl.raw, fl.rtt, false, nil
-	}
-}
-
-// runAskFlight executes one shared getNodeInfo call bounded by the node
-// lifetime, so it survives every caller leaving. It holds one askWG count for
-// the handler's lifetime, publishes the result, and clears the flight before
-// closing done so any retry re-collapses into a fresh flight rather than reusing
-// this completed one.
-func (obj *Obj) runAskFlight(fl *askFlightObj, key [ed25519.PublicKeySize]byte) {
-	go func() {
-		defer func() {
-			obj.askMu.Lock()
-			delete(obj.askFlights, key)
-			obj.askMu.Unlock()
-			close(fl.done)
-		}()
-		if err := obj.startAskCall(); err != nil {
-			fl.err = err
-			return
-		}
-		defer obj.finishAskCall()
-		start := time.Now()
-		raw, err := obj.callNodeInfo(key)
-		fl.raw, fl.rtt, fl.err = raw, time.Since(start), err
-	}()
-}
-
 // Ask queries a remote node's NodeInfo by its public key.
-// Retries automatically until the context expires, because the underlying
-// Yggdrasil handler has a hard 6 s timeout that often fires before
-// routing converges on a freshly started node.
-// Concurrent asks for the same key share one in-flight call (see askShared),
-// so repeated or abandoned asks for a node do not each consume an ask slot.
+// The captured getNodeInfo handler is called synchronously in the caller's
+// goroutine and retried after askRetryPause until the caller context expires or
+// the module is closed. The underlying Yggdrasil handler has its own hard 6 s
+// timeout per attempt, which often fires before routing converges on a freshly
+// started node, so retrying is what lets the address eventually resolve.
 func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
@@ -299,24 +181,19 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, 
 	var ka [ed25519.PublicKeySize]byte
 	copy(ka[:], key)
 
-	// retryPause is fixed for the call: <0 disables retries; the setter never
-	// stores 0, so no zero-default branch is needed.
+	// retryPause is fixed for the call: <0 disables retries. The default is
+	// non-zero, so a zero pause is only reachable from tests and simply spins.
 	retryPause := obj.askRetryPause
 	var timer *time.Timer
 	var lastErr error
 	for {
-		raw, rtt, retriable, err := obj.askShared(obj.ctx, ctx, ka)
-		if err == nil {
-			return obj.parseAskResponse(raw, rtt)
+		if obj.isClosed(obj.ctx) {
+			return nil, ErrClosed
 		}
-		if !retriable {
-			if errors.Is(err, ErrClosed) {
-				return nil, ErrClosed
-			}
-			if lastErr != nil {
-				return nil, lastErr
-			}
-			return nil, err
+		start := time.Now()
+		raw, err := obj.callNodeInfo(ka)
+		if err == nil {
+			return obj.parseAskResponse(raw, time.Since(start))
 		}
 		lastErr = err
 		if retryPause < 0 {
@@ -353,15 +230,17 @@ func (obj *Obj) AskAddr(ctx context.Context, addr string) (*AskResultObj, error)
 
 // // // // // // // // // //
 
-// AddSigil registers parse sigils used by Ask/AskAddr.
-// Invalid or duplicate names are skipped and collected as errors.
-func (obj *Obj) AddSigil(sg ...sigils.Interface) []error {
+// AddSigil registers third-party sigils used by Ask/AskAddr to decode remote
+// NodeInfo. The sequence may yield one sigil or many; each self-names via
+// GetName(). Nil, invalid-name, reserved, duplicate, or non-cloneable sigils are
+// rejected and reported per-sigil.
+func (obj *Obj) AddSigil(seq iter.Seq[sigils.Interface]) []error {
 	var errs []error
 	obj.sigilsMu.Lock()
 	defer obj.sigilsMu.Unlock()
-	for i, si := range sg {
+	for si := range seq {
 		if si == nil {
-			errs = append(errs, fmt.Errorf("sigil[%d] is nil", i))
+			errs = append(errs, fmt.Errorf("sigil is nil"))
 			continue
 		}
 		name := si.GetName()
@@ -377,9 +256,8 @@ func (obj *Obj) AddSigil(sg ...sigils.Interface) []error {
 			errs = append(errs, fmt.Errorf("duplicated sigil[%s]", name))
 			continue
 		}
-		// Store a clone so a caller mutating its own sigil after registration
-		// cannot alter parse state; a sigil that cannot clone itself is rejected
-		// rather than shared (matches sigil_core.Add).
+		// Store a clone so a caller mutating its own sigil after registration cannot
+		// alter parse state; a sigil that cannot clone itself is rejected.
 		clone := si.Clone()
 		if clone == nil {
 			errs = append(errs, fmt.Errorf("sigil[%s] Clone returned nil", name))
@@ -390,7 +268,7 @@ func (obj *Obj) AddSigil(sg ...sigils.Interface) []error {
 	return errs
 }
 
-// GetSigil returns a registered parse sigil by name, or nil if not found.
+// GetSigil returns a clone of the registered sigil, or nil if none is registered.
 func (obj *Obj) GetSigil(name string) sigils.Interface {
 	obj.sigilsMu.RLock()
 	defer obj.sigilsMu.RUnlock()
@@ -400,7 +278,7 @@ func (obj *Obj) GetSigil(name string) sigils.Interface {
 	return nil
 }
 
-// DelSigil removes a parse sigil by name.
+// DelSigil removes a registered sigil by name.
 func (obj *Obj) DelSigil(name string) error {
 	obj.sigilsMu.Lock()
 	defer obj.sigilsMu.Unlock()
@@ -411,10 +289,7 @@ func (obj *Obj) DelSigil(name string) error {
 	return nil
 }
 
-// //
-
-// ImportSigils appends sigils from a *sigil_core.Obj into parse sigils.
-// Existing names are preserved and returned as conflicts.
+// ImportSigils registers all non-reserved sigils assembled in a sigil_core.Obj.
 func (obj *Obj) ImportSigils(src *sigil_core.Obj) []error {
 	obj.sigilsMu.Lock()
 	defer obj.sigilsMu.Unlock()

@@ -22,8 +22,6 @@ import (
 
 // // // // // // // // // //
 
-var _ Interface = (*Obj)(nil)
-
 const (
 	defaultMaxConnections   = 256
 	defaultHandshakeTimeout = 10 * time.Second
@@ -47,36 +45,17 @@ func effectiveMaxConnections(n int) int {
 	}
 }
 
-func effectiveHandshakeTimeout(d time.Duration) time.Duration {
+// effectiveDuration resolves a caller timeout: 0 → def (safe default),
+// <0 → 0 (disabled), else the value as given.
+func effectiveDuration(d, def time.Duration) time.Duration {
 	switch {
 	case d == 0:
-		return defaultHandshakeTimeout
+		return def
 	case d < 0:
 		return 0
 	default:
 		return d
 	}
-}
-
-func effectiveDialTimeout(d time.Duration) time.Duration {
-	switch {
-	case d == 0:
-		return defaultDialTimeout
-	case d < 0:
-		return 0
-	default:
-		return d
-	}
-}
-
-func effectiveTunnelIdleTimeout(d time.Duration) time.Duration {
-	if d < 0 {
-		return 0
-	}
-	if d == 0 {
-		return defaultTunnelIdleTime
-	}
-	return d
 }
 
 func finishHandshake(_ context.Context, writer io.Writer, request *socks5.Request) error {
@@ -215,8 +194,8 @@ func (s *Obj) Start(cfg ConfigObj) error {
 
 	log := common.NormalizeLogger(cfg.Logger)
 	s.maxConnections.Store(int64(effectiveMaxConnections(cfg.MaxConnections)))
-	s.dialTimeout = effectiveDialTimeout(cfg.DialTimeout)
-	s.tunnelIdleTimeout = effectiveTunnelIdleTimeout(cfg.TunnelIdleTimeout)
+	s.dialTimeout = effectiveDuration(cfg.DialTimeout, defaultDialTimeout)
+	s.tunnelIdleTimeout = effectiveDuration(cfg.TunnelIdleTimeout, defaultTunnelIdleTime)
 	s.associateLimiter = common.NewDynamicLimit(defaultMaxAssociateTargets)
 	associateResolver := cfg.Resolver
 	if associateResolver == nil {
@@ -276,7 +255,7 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	s.listener = newLimitedListener(
 		s.listener,
 		s.newConnectionLimit(),
-		effectiveHandshakeTimeout(cfg.HandshakeTimeout),
+		effectiveDuration(cfg.HandshakeTimeout, defaultHandshakeTimeout),
 		s.tunnelIdleTimeout,
 	)
 
@@ -526,7 +505,6 @@ type limitedConnObj struct {
 	owner             *limitedListenerObj
 	tunnelIdleTimeout time.Duration
 	tunnelDeadline    atomic.Int64
-	deadlineMu        sync.Mutex
 	tunnelStarted     atomic.Bool
 }
 
@@ -566,21 +544,7 @@ func (c *limitedConnObj) finishHandshakeState(trackTunnel bool) {
 }
 
 func (c *limitedConnObj) refreshActivityDeadline() {
-	c.deadlineMu.Lock()
-	defer c.deadlineMu.Unlock()
-
-	// Immutable timeout: previous and current are always equal.
-	timeout := c.tunnelIdleTimeout
-	action, deadline := common.DeadlineRefresh(time.Now(), timeout, timeout, c.tunnelDeadline.Load())
-	switch action {
-	case common.DeadlineClear:
-		if c.tunnelDeadline.Swap(0) != 0 {
-			_ = c.SetDeadline(time.Time{})
-		}
-	case common.DeadlineArm:
-		c.tunnelDeadline.Store(deadline.UnixNano())
-		_ = c.SetDeadline(deadline)
-	}
+	common.RefreshDeadline(time.Now(), c.tunnelIdleTimeout, &c.tunnelDeadline, c, false)
 }
 
 func (c *limitedConnObj) Close() error {

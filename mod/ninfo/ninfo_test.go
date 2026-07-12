@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,26 +23,26 @@ import (
 func newTestObj() *Obj {
 	ctx, cancel := context.WithCancel(context.Background())
 	obj := &Obj{
-		ctx:               ctx,
-		cancel:            cancel,
-		maxAskTime:        defaultMaxAskTime,
-		askRetryPause:     defaultAskRetryPause,
-		lookupInterval:    defaultLookupInterval,
-		maxLookupTime:     defaultMaxLookupTime,
-		closeWaitTime:     defaultCloseWaitTime,
-		maxConcurrentAsks: defaultMaxConcurrentAsks,
-		askFlights:        make(map[[ed25519.PublicKeySize]byte]*askFlightObj),
-		sigils:            make(map[string]sigils.Interface),
+		ctx:            ctx,
+		cancel:         cancel,
+		maxAskTime:     defaultMaxAskTime,
+		askRetryPause:  defaultAskRetryPause,
+		lookupInterval: defaultLookupInterval,
+		maxLookupTime:  defaultMaxLookupTime,
+		sigils:         make(map[string]sigils.Interface),
 	}
 	return obj
 }
+
+// seqOf yields the given sigils as an iter.Seq for AddSigil.
+func seqOf(sg ...sigils.Interface) []sigils.Interface { return sg }
 
 // // // // // // // // // //
 // AddSigil / GetSigil / DelSigil
 
 func TestAddSigil_valid(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(newMockSigil("test-sigil", "key1"))
+	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil", "key1"))))
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -52,8 +53,8 @@ func TestAddSigil_valid(t *testing.T) {
 
 func TestAddSigil_duplicate(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("test-sigil"))
-	errs := obj.AddSigil(newMockSigil("test-sigil"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil"))))
+	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil"))))
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -61,7 +62,7 @@ func TestAddSigil_duplicate(t *testing.T) {
 
 func TestAddSigil_invalidName(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(newMockSigil("AB"))
+	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil("AB"))))
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -72,7 +73,7 @@ func TestAddSigil_invalidName(t *testing.T) {
 
 func TestAddSigil_reservedBuiltinName(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(newMockSigil(inet.Name(), inet.Name()))
+	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil(inet.Name(), inet.Name()))))
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 reserved-name error, got %d", len(errs))
 	}
@@ -83,11 +84,11 @@ func TestAddSigil_reservedBuiltinName(t *testing.T) {
 
 func TestAddSigil_multiple(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(
+	errs := obj.AddSigil(slices.Values(seqOf(
 		newMockSigil("aaa"),
 		newMockSigil("bbb"),
 		newMockSigil("ccc"),
-	)
+	)))
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errors: %v", errs)
 	}
@@ -98,7 +99,7 @@ func TestAddSigil_multiple(t *testing.T) {
 
 func TestAddSigil_nil(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(nil)
+	errs := obj.AddSigil(slices.Values(seqOf(nil)))
 	if len(errs) != 1 {
 		t.Fatalf("expected 1 error, got %d", len(errs))
 	}
@@ -117,7 +118,7 @@ func TestGetSigil_notFound(t *testing.T) {
 
 func TestDelSigil_valid(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("test-sigil"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil"))))
 	if err := obj.DelSigil("test-sigil"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -138,7 +139,7 @@ func TestDelSigil_notFound(t *testing.T) {
 
 func TestImportSigils_append(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("existing"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("existing"))))
 
 	src, _ := sigil_core.New(nil, newMockSigil("new-one"))
 	errs := obj.ImportSigils(src)
@@ -177,7 +178,7 @@ func TestImportSigils_doesNotCloneAlreadyClonedSourceSigils(t *testing.T) {
 
 func TestImportSigils_append_conflict(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("shared"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("shared"))))
 
 	src, _ := sigil_core.New(nil, newMockSigil("shared"))
 	errs := obj.ImportSigils(src)
@@ -202,7 +203,7 @@ func TestImportSigils_skipsReservedBuiltinNames(t *testing.T) {
 func TestImportSigils_conflictKeepsExisting(t *testing.T) {
 	obj := newTestObj()
 	old := newMockSigil("shared", "old-key")
-	obj.AddSigil(old)
+	obj.AddSigil(slices.Values(seqOf(old)))
 
 	replacement := newMockSigil("shared", "new-key")
 	src, _ := sigil_core.New(nil, replacement)
@@ -244,7 +245,7 @@ func TestSigilSlice_empty(t *testing.T) {
 
 func TestSigilSlice_populated(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(newMockSigil("aaa"), newMockSigil("bbb"))
+	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa"), newMockSigil("bbb"))))
 	sl := obj.sigilSlice()
 	if len(sl) != 2 {
 		t.Fatalf("expected 2, got %d", len(sl))
@@ -275,7 +276,7 @@ func TestSigils_concurrentAccess(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			name := fmt.Sprintf("user-%d", i)
-			obj.AddSigil(newMockSigil(name))
+			obj.AddSigil(slices.Values(seqOf(newMockSigil(name))))
 			_ = obj.DelSigil(name)
 			_ = obj.ImportSigils(src)
 		}
@@ -298,236 +299,6 @@ func TestAsk_afterCloseReturnsErrClosed(t *testing.T) {
 	_, err := obj.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("expected ErrClosed, got %v", err)
-	}
-}
-
-func TestAsk_inFlightCloseReturnsErrClosed(t *testing.T) {
-	obj := newTestObj()
-	release := make(chan struct{})
-	handlerDone := make(chan struct{})
-	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
-		defer close(handlerDone)
-		<-release
-		return yggcore.GetNodeInfoResponse{}, errors.New("late response")
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := obj.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
-		errCh <- err
-	}()
-	time.Sleep(10 * time.Millisecond)
-	closeDone := make(chan error, 1)
-	go func() {
-		closeDone <- obj.Close()
-	}()
-	select {
-	case err := <-errCh:
-		if !errors.Is(err, ErrClosed) {
-			t.Fatalf("expected ErrClosed, got %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Ask did not return after Close")
-	}
-	select {
-	case err := <-closeDone:
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-		t.Fatal("Close returned before handler finished")
-	case <-time.After(20 * time.Millisecond):
-	}
-	close(release)
-	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("handler goroutine did not finish after release")
-	}
-	select {
-	case err := <-closeDone:
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Close did not return after handler finished")
-	}
-}
-
-func TestAsk_canceledCallerKeepsSlotUntilHandlerDone(t *testing.T) {
-	obj := newTestObj()
-	obj.maxConcurrentAsks = 1
-	started := make(chan struct{})
-	release := make(chan struct{})
-	handlerDone := make(chan struct{})
-	var calls atomic.Int32
-	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
-		if calls.Add(1) == 1 {
-			close(started)
-		}
-		defer close(handlerDone)
-		<-release
-		return yggcore.GetNodeInfoResponse{}, errors.New("late response")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	firstErr := make(chan error, 1)
-	go func() {
-		_, err := obj.Ask(ctx, make(ed25519.PublicKey, ed25519.PublicKeySize))
-		firstErr <- err
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("first handler did not start")
-	}
-	cancel()
-	select {
-	case err := <-firstErr:
-		if !errors.Is(err, context.Canceled) {
-			t.Fatalf("expected context.Canceled, got %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first Ask did not return after caller cancel")
-	}
-
-	secondCtx, secondCancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer secondCancel()
-	_, err := obj.Ask(secondCtx, make(ed25519.PublicKey, ed25519.PublicKeySize))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected second Ask to wait for occupied slot, got %v", err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("second handler should not start while abandoned handler holds slot, calls=%d", got)
-	}
-	close(release)
-	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("handler did not finish after release")
-	}
-	if err = obj.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
-
-func TestAsk_concurrentSameKeyCollapsesToOneCall(t *testing.T) {
-	obj := newTestObj()
-	obj.askRetryPause = -1 // one attempt per caller, no retries
-	boom := errors.New("boom")
-	var calls atomic.Int32
-	proceed := make(chan struct{})
-	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
-		calls.Add(1)
-		<-proceed // hold the flight open so concurrent asks join it
-		return yggcore.GetNodeInfoResponse{}, boom
-	}
-
-	const n = 8
-	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
-		go func() {
-			_, err := obj.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
-			errs <- err
-		}()
-	}
-	time.Sleep(50 * time.Millisecond) // let every caller join the single flight
-	close(proceed)
-
-	for i := 0; i < n; i++ {
-		select {
-		case err := <-errs:
-			if !errors.Is(err, boom) {
-				t.Fatalf("caller %d: expected shared boom error, got %v", i, err)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("not all callers returned")
-		}
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("expected exactly one shared handler call, got %d", got)
-	}
-	if err := obj.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
-
-func TestAsk_flightCapRejectsExcessDistinctKeys(t *testing.T) {
-	obj := newTestObj()
-	obj.maxConcurrentAsks = 1 // cap distinct in-flight keys at 1
-	release := make(chan struct{})
-	started := make(chan struct{})
-	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
-		close(started)
-		<-release
-		return yggcore.GetNodeInfoResponse{}, errors.New("late response")
-	}
-
-	keyA := make(ed25519.PublicKey, ed25519.PublicKeySize)
-	keyA[0] = 1
-	go func() { _, _ = obj.Ask(context.Background(), keyA) }()
-	<-started // flight A registered and holding the only slot
-
-	keyB := make(ed25519.PublicKey, ed25519.PublicKeySize)
-	keyB[0] = 2
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
-	defer cancel()
-	_, err := obj.Ask(ctx, keyB)
-	if !errors.Is(err, ErrAskLimit) {
-		t.Fatalf("expected ErrAskLimit for excess distinct key, got %v", err)
-	}
-
-	close(release)
-	if err := obj.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
-	}
-}
-
-func TestClose_timesOutWithoutWaitingForBlockedHandler(t *testing.T) {
-	obj := newTestObj()
-	obj.closeWaitTime = 10 * time.Millisecond
-	started := make(chan struct{})
-	release := make(chan struct{})
-	handlerDone := make(chan struct{})
-	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
-		close(started)
-		defer close(handlerDone)
-		<-release
-		return yggcore.GetNodeInfoResponse{}, errors.New("late response")
-	}
-
-	errCh := make(chan error, 1)
-	go func() {
-		_, err := obj.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
-		errCh <- err
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("handler did not start")
-	}
-
-	err := obj.Close()
-	if !errors.Is(err, ErrCloseTimedOut) {
-		t.Fatalf("expected ErrCloseTimedOut, got %v", err)
-	}
-	select {
-	case <-handlerDone:
-		t.Fatal("handler finished before release")
-	default:
-	}
-	select {
-	case err = <-errCh:
-		if !errors.Is(err, ErrClosed) {
-			t.Fatalf("expected Ask to return ErrClosed, got %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Ask did not return after Close")
-	}
-	close(release)
-	select {
-	case <-handlerDone:
-	case <-time.After(time.Second):
-		t.Fatal("handler did not finish after release")
 	}
 }
 
@@ -565,67 +336,6 @@ func TestZeroValueObjIsClosed(t *testing.T) {
 	}
 	if obj.ctx != nil {
 		t.Fatal("closed check should not initialize context")
-	}
-	if obj.maxConcurrentAsks != 0 {
-		t.Fatal("closed check should not initialize ask limit")
-	}
-}
-
-func TestAsk_maxConcurrentAsksLimitsBlockedHandlers(t *testing.T) {
-	obj := newTestObj()
-	obj.maxConcurrentAsks = 1
-	started := make(chan struct{})
-	release := make(chan struct{})
-	var calls atomic.Int32
-	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
-		if calls.Add(1) == 1 {
-			close(started)
-		}
-		<-release
-		return yggcore.GetNodeInfoResponse{}, errors.New("late response")
-	}
-
-	firstErr := make(chan error, 1)
-	go func() {
-		_, err := obj.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
-		firstErr <- err
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("first handler did not start")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, err := obj.Ask(ctx, make(ed25519.PublicKey, ed25519.PublicKeySize))
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("expected context deadline while waiting for ask slot, got %v", err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("second handler should not start while slot is occupied, calls=%d", got)
-	}
-
-	closeDone := make(chan error, 1)
-	go func() {
-		closeDone <- obj.Close()
-	}()
-	close(release)
-	select {
-	case err := <-firstErr:
-		if !errors.Is(err, ErrClosed) {
-			t.Fatalf("expected first Ask to close, got %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first Ask did not return after Close")
-	}
-	select {
-	case err := <-closeDone:
-		if err != nil {
-			t.Fatalf("Close: %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("Close did not return after handler finished")
 	}
 }
 

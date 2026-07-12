@@ -11,4 +11,5 @@ var (
 	ErrInvalidPublicKeyDomain = errors.New("resolver: invalid public key domain")
 	ErrInvalidKeyLength       = errors.New("resolver: invalid public key length")
 	ErrNonYggdrasilAddress    = errors.New("resolver: DNS response is not a yggdrasil address")
+	ErrLookupBusy             = errors.New("resolver: too many concurrent lookups")
 )

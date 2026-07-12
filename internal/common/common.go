@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
@@ -165,35 +166,68 @@ func (l *DynamicLimitObj) signalLocked() {
 
 // //
 
-// DeadlineAction is the outcome of the shared idle/write deadline half-refresh gate.
-type DeadlineAction uint8
+// deadlineAction is the outcome of the idle/write deadline half-refresh gate.
+type deadlineAction uint8
 
 const (
-	// DeadlineSkip — current deadline still has more than half its budget; no syscall.
-	DeadlineSkip DeadlineAction = iota
-	// DeadlineArm — re-arm the deadline to the returned time.
-	DeadlineArm
-	// DeadlineClear — timeout disabled; clear any existing deadline.
-	DeadlineClear
+	// deadlineSkip — current deadline still has more than half its budget; no syscall.
+	deadlineSkip deadlineAction = iota
+	// deadlineArm — re-arm the deadline to the returned time.
+	deadlineArm
+	// deadlineClear — timeout disabled; clear any existing deadline.
+	deadlineClear
 )
 
-// DeadlineRefresh implements the half-refresh gate shared by SOCKS tunnels and
-// UDP/TCP forwarders: it avoids the SetDeadline syscall while the current
-// deadline still has more than half its budget left. timeout must already be
-// normalized; timeout <= 0 disables the deadline. currentNanos is the last armed
-// deadline (UnixNano, 0 when none). The caller applies the returned action to its
-// own conn and deadline field, keeping ownership of atomic/mutex synchronization.
-func DeadlineRefresh(now time.Time, timeout, previousTimeout time.Duration, currentNanos int64) (DeadlineAction, time.Time) {
+// deadlineRefresh is the half-refresh gate: it avoids the SetDeadline syscall
+// while the current deadline still has more than half its budget left. timeout
+// must already be normalized; timeout <= 0 disables the deadline. currentNanos is
+// the last armed deadline (UnixNano, 0 when none).
+func deadlineRefresh(now time.Time, timeout time.Duration, currentNanos int64) (deadlineAction, time.Time) {
 	if timeout <= 0 {
-		return DeadlineClear, time.Time{}
+		return deadlineClear, time.Time{}
 	}
 	refreshAfter := timeout / 2
 	if refreshAfter <= 0 {
 		refreshAfter = timeout
 	}
 	refreshAt := now.Add(refreshAfter).UnixNano()
-	if previousTimeout == timeout && currentNanos > refreshAt {
-		return DeadlineSkip, time.Time{}
+	if currentNanos > refreshAt {
+		return deadlineSkip, time.Time{}
 	}
-	return DeadlineArm, now.Add(timeout)
+	return deadlineArm, now.Add(timeout)
+}
+
+// //
+
+// DeadlineConnInterface is the deadline surface RefreshDeadline drives.
+type DeadlineConnInterface interface {
+	SetDeadline(time.Time) error
+	SetReadDeadline(time.Time) error
+}
+
+// RefreshDeadline applies the half-refresh gate against the caller-owned atomic
+// deadline state, arming or clearing the connection's idle deadline only when the
+// gate says so. readOnly selects SetReadDeadline (one-way UDP relay) over
+// SetDeadline (bidirectional tunnel). It is lock-free: concurrent callers may cost
+// one redundant SetDeadline syscall but never corrupt state, which is acceptable
+// for an advisory idle deadline. timeout must already be normalized.
+func RefreshDeadline(now time.Time, timeout time.Duration, state *atomic.Int64, conn DeadlineConnInterface, readOnly bool) {
+	action, deadline := deadlineRefresh(now, timeout, state.Load())
+	switch action {
+	case deadlineArm:
+		state.Store(deadline.UnixNano())
+		if readOnly {
+			_ = conn.SetReadDeadline(deadline)
+		} else {
+			_ = conn.SetDeadline(deadline)
+		}
+	case deadlineClear:
+		if state.Swap(0) != 0 {
+			if readOnly {
+				_ = conn.SetReadDeadline(time.Time{})
+			} else {
+				_ = conn.SetDeadline(time.Time{})
+			}
+		}
+	}
 }

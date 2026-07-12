@@ -41,30 +41,21 @@ var _ sigils.Interface = &mockSigilObj{}
 func (m *mockSigilObj) GetName() string        { return m.name }
 func (m *mockSigilObj) GetParams() []string    { return m.params }
 func (m *mockSigilObj) Params() map[string]any { return m.data }
-func (m *mockSigilObj) Match(mp map[string]any) bool {
+
+func (m *mockSigilObj) Match(nodeInfo map[string]any) bool {
 	for _, k := range m.params {
-		if _, ok := mp[k]; !ok {
+		if _, ok := nodeInfo[k]; !ok {
 			return false
 		}
 	}
 	return true
 }
 
-func (m *mockSigilObj) SetParams(mp map[string]any) (map[string]any, error) {
-	out := make(map[string]any, len(mp)+len(m.data))
-	for k, v := range mp {
-		out[k] = v
-	}
-	for k, v := range m.data {
-		out[k] = v
-	}
-	return out, nil
-}
-
-func (m *mockSigilObj) ParseParams(mp map[string]any) map[string]any {
-	out := make(map[string]any)
+// ParseParams extracts this mock's claimed keys from foreign NodeInfo.
+func (m *mockSigilObj) ParseParams(nodeInfo map[string]any) map[string]any {
+	out := make(map[string]any, len(m.params))
 	for _, k := range m.params {
-		if v, ok := mp[k]; ok {
+		if v, ok := nodeInfo[k]; ok {
 			out[k] = v
 		}
 	}
@@ -89,6 +80,8 @@ func newMockSigil(name string, keys ...string) *mockSigilObj {
 	return &mockSigilObj{name: name, params: keys, data: data}
 }
 
+// cloneCountingSigilObj counts Clone calls so tests can assert that ImportSigils
+// relies solely on the single clone performed by sigil_core.Sigils.
 type cloneCountingSigilObj struct {
 	*mockSigilObj
 	clones *atomic.Int64

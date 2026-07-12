@@ -82,26 +82,21 @@ func parseHexKey(s string) (ed25519.PublicKey, error) {
 
 // //
 
-const (
-	maxLookupInterval = time.Second
-	// maxConcurrentAddrLookups bounds distinct in-flight address lookups; each
-	// detached flight polls SendLookup for up to MaxLookupTime, so a flood of
-	// unique addresses must not accumulate goroutines unbounded.
-	maxConcurrentAddrLookups = 256
-	// Negative cache: repeated lookups of a recently-unresolvable address return
-	// fast instead of respawning a polling flight.
-	negativeAddrTTL        = 2 * time.Second
-	maxNegativeAddrEntries = 1024
-)
+const maxLookupInterval = time.Second
 
 // //
 
+// resolveIPv6 maps a yggdrasil IPv6 to a public key. It first scans known peers,
+// sessions and paths; on a miss it triggers a network lookup and polls in the
+// caller's goroutine until a match appears, the caller context ends, or the
+// module closes. When the caller sets no deadline the poll is bounded by
+// MaxLookupTime so a lookup for an offline node cannot run forever.
 func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey, error) {
 	if obj.isClosed(obj.ctx) {
 		return nil, ErrClosed
 	}
-	ctx = ensureCallerContext(ctx)
-	if err := ctx.Err(); err != nil {
+	callerCtx := ensureCallerContext(ctx)
+	if err := callerCtx.Err(); err != nil {
 		return nil, err
 	}
 	ip := extractIPv6(addr)
@@ -113,36 +108,20 @@ func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey
 		return key, nil
 	}
 
-	// Derive partial key from IPv6 and trigger network lookup
+	// Derive partial key from IPv6 and trigger network lookup.
 	var yggIP yggaddr.Address
 	copy(yggIP[:], ip.To16())
 	if !yggIP.IsValid() {
 		return nil, fmt.Errorf("%w: not a yggdrasil address", ErrInvalidAddr)
 	}
-
 	partial := yggIP.GetKey()
-	flightKey := string(yggIP[:])
-	flight, lead, err := obj.joinAddrLookup(flightKey)
-	if err != nil {
-		return nil, err
-	}
-	if lead {
-		// The shared lookup runs detached under the node lifetime, so a leader
-		// with a short deadline cannot abort work the other waiters still need;
-		// each caller observes its own ctx in waitAddrLookup.
-		go func() {
-			key, err := obj.runAddrLookup(ip, partial)
-			obj.finishAddrLookup(flightKey, flight, key, err)
-		}()
-	}
-	return obj.waitAddrLookup(ctx, flight)
-}
 
-func (obj *Obj) runAddrLookup(ip net.IP, partial ed25519.PublicKey) (ed25519.PublicKey, error) {
-	// Bounded by the node lifetime plus MaxLookupTime (always > 0 after New),
-	// not by any single caller.
-	lookupCtx, cancel := context.WithTimeout(obj.ctx, obj.maxLookupTime)
-	defer cancel()
+	pollCtx := callerCtx
+	if _, ok := callerCtx.Deadline(); !ok && obj.maxLookupTime > 0 {
+		var cancel context.CancelFunc
+		pollCtx, cancel = context.WithTimeout(callerCtx, obj.maxLookupTime)
+		defer cancel()
+	}
 
 	lookupInterval := obj.lookupInterval
 	if lookupInterval <= 0 {
@@ -154,9 +133,13 @@ func (obj *Obj) runAddrLookup(ip net.IP, partial ed25519.PublicKey) (ed25519.Pub
 	obj.source.SendLookup(partial)
 	for {
 		select {
-		case <-lookupCtx.Done():
-			if obj.ctx.Err() != nil {
-				return nil, ErrClosed
+		case <-obj.ctx.Done():
+			return nil, ErrClosed
+		case <-pollCtx.Done():
+			// A caller-supplied deadline surfaces as its own error; the internal
+			// MaxLookupTime bound surfaces as an unresolvable address.
+			if err := callerCtx.Err(); err != nil {
+				return nil, err
 			}
 			return nil, ErrUnresolvableAddr
 		case <-timer.C:
@@ -172,69 +155,6 @@ func (obj *Obj) runAddrLookup(ip net.IP, partial ed25519.PublicKey) (ed25519.Pub
 			}
 			timer.Reset(lookupInterval)
 		}
-	}
-}
-
-func (obj *Obj) joinAddrLookup(key string) (*addrLookupFlightObj, bool, error) {
-	obj.lookupMu.Lock()
-	defer obj.lookupMu.Unlock()
-	if obj.lookupFlights == nil {
-		obj.lookupFlights = make(map[string]*addrLookupFlightObj)
-	}
-	if flight := obj.lookupFlights[key]; flight != nil {
-		return flight, false, nil
-	}
-	if exp, ok := obj.unresolvedAddrs[key]; ok {
-		if time.Now().Before(exp) {
-			return nil, false, ErrUnresolvableAddr
-		}
-		delete(obj.unresolvedAddrs, key)
-	}
-	if len(obj.lookupFlights) >= maxConcurrentAddrLookups {
-		return nil, false, ErrLookupBusy
-	}
-	flight := &addrLookupFlightObj{done: make(chan struct{})}
-	obj.lookupFlights[key] = flight
-	return flight, true, nil
-}
-
-func (obj *Obj) finishAddrLookup(key string, flight *addrLookupFlightObj, result ed25519.PublicKey, err error) {
-	obj.lookupMu.Lock()
-	if obj.lookupFlights[key] == flight {
-		delete(obj.lookupFlights, key)
-	}
-	if err != nil && errors.Is(err, ErrUnresolvableAddr) {
-		obj.rememberUnresolvedLocked(key)
-	}
-	flight.key = result
-	flight.err = err
-	close(flight.done)
-	obj.lookupMu.Unlock()
-}
-
-// rememberUnresolvedLocked records a recently-unresolvable address for the
-// negative cache; caller holds lookupMu. Best-effort bounded eviction.
-func (obj *Obj) rememberUnresolvedLocked(key string) {
-	if obj.unresolvedAddrs == nil {
-		obj.unresolvedAddrs = make(map[string]time.Time)
-	}
-	if len(obj.unresolvedAddrs) >= maxNegativeAddrEntries {
-		for k := range obj.unresolvedAddrs {
-			delete(obj.unresolvedAddrs, k)
-			break
-		}
-	}
-	obj.unresolvedAddrs[key] = time.Now().Add(negativeAddrTTL)
-}
-
-func (obj *Obj) waitAddrLookup(ctx context.Context, flight *addrLookupFlightObj) (ed25519.PublicKey, error) {
-	select {
-	case <-obj.ctx.Done():
-		return nil, ErrClosed
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-flight.done:
-		return flight.key, flight.err
 	}
 }
 
