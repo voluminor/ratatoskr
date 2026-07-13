@@ -73,8 +73,8 @@ UDPTimeout: 30 * time.Second,
 })
 ```
 
-`New` creates a manager. `UDPTimeout` is the inactivity timeout for UDP sessions (required, > 0;
-a non-positive value is reported as an error by `Start()`).
+`New` creates a manager. `UDPTimeout` is the inactivity timeout for UDP sessions. It must be positive whenever UDP
+mappings are configured; otherwise `Start()` returns `ErrInvalidSessionTimeout`.
 Optional limits can be supplied in the same `ConfigObj`:
 
 ```go
@@ -196,14 +196,14 @@ All tunables are immutable and set once through `ConfigObj` at `New()`. Except f
 optional fields use the same convention: `0` means default, and negative values mean disabled or unlimited where that
 is meaningful.
 
-| `ConfigObj` field         | Description                                                | Default    |
-|---------------------------|------------------------------------------------------------|------------|
-| `UDPTimeout`              | UDP session inactivity timeout; must be `> 0`              | required   |
-| `DialTimeout`             | Backend dial timeout; `0` default, `<0` disabled           | 10 seconds |
-| `TCPIdleTimeout`          | Established TCP idle timeout; `0` default, `<0` disabled   | 5 minutes  |
-| `MaxTCPConnections`       | Max TCP sessions per mapping; `0` default, `<0` unlimited  | 1024       |
-| `MaxUDPSessions`          | Max UDP sessions per mapping; `0` default, `<0` unlimited  | 1024       |
-| `UDPMaxPacketSize`        | Max UDP payload bytes; `0` node MTU, `<0` max datagram     | node MTU   |
+| `ConfigObj` field   | Description                                               | Default    |
+|---------------------|-----------------------------------------------------------|------------|
+| `UDPTimeout`        | UDP session inactivity timeout; `> 0` with UDP mappings   | required   |
+| `DialTimeout`       | Backend dial timeout; `0` default, `<0` disabled          | 10 seconds |
+| `TCPIdleTimeout`    | Established TCP idle timeout; `0` default, `<0` disabled  | 5 minutes  |
+| `MaxTCPConnections` | Max TCP sessions per mapping; `0` default, `<0` unlimited | 1024       |
+| `MaxUDPSessions`    | Max UDP sessions per mapping; `0` default, `<0` unlimited | 1024       |
+| `UDPMaxPacketSize`  | Max UDP payload bytes; `0` node MTU, `<0` max datagram    | node MTU   |
 
 The TCP half-close idle timeout is fixed at 30 seconds. UDP writes go to the kernel send buffer and carry no
 per-write deadline, so a single lock-free `net.PacketConn` is shared across all reverse sessions.

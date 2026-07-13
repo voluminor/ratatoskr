@@ -3,6 +3,7 @@ package peermgr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -14,10 +15,12 @@ import (
 // // // // // // // // // //
 
 const (
-	defaultProbeTimeout = 10 * time.Second
-	defaultBatchSize    = 64
-	maxBatchSize        = 256
-	maxProbeBackoff     = 10 * time.Minute
+	defaultProbeTimeout          = 10 * time.Second
+	defaultBatchSize             = 64
+	maxBatchSize                 = 256
+	maxProbeBackoff              = 10 * time.Minute
+	defaultWatchInterval         = 10 * time.Second
+	defaultMinPeersConfirmations = 3
 )
 
 // //
@@ -43,6 +46,23 @@ type ConfigObj struct {
 	//   N >= 2 — up to N concurrent probes, capped internally
 	// A peer list that fits one window is evaluated in a single ProbeTimeout.
 	BatchSize int
+
+	// Passive keeps every configured peer managed and skips latency selection.
+	Passive bool
+
+	// MinPeers triggers an early optimize after the active Up count stays at or
+	// below this threshold for MinPeersConfirmations checks. Zero disables it.
+	MinPeers int
+
+	// WatchInterval controls MinPeers checks; 0 uses 10 seconds.
+	WatchInterval time.Duration
+
+	// MinPeersConfirmations controls consecutive low-count checks; 0 uses 3.
+	MinPeersConfirmations int
+
+	// OnNoReachablePeers is called after an active optimize finds no reachable peer.
+	// It runs on the manager goroutine and therefore must return promptly.
+	OnNoReachablePeers func()
 
 	// Logger; required
 	Logger yggcore.Logger
@@ -87,13 +107,6 @@ func effectiveProbeTimeout(timeout time.Duration) time.Duration {
 	return timeout
 }
 
-func effectiveRefreshInterval(interval time.Duration) time.Duration {
-	if interval <= 0 {
-		return 0
-	}
-	return interval
-}
-
 // New creates the manager; peers are not added until Start()
 func New(node NodeInterface, cfg ConfigObj) (*Obj, error) {
 	if node == nil {
@@ -103,11 +116,19 @@ func New(node NodeInterface, cfg ConfigObj) (*Obj, error) {
 	if cfg.MaxPerProto < 0 {
 		return nil, ErrInvalidMaxPerProto
 	}
+	if cfg.MinPeers < 0 {
+		return nil, ErrInvalidMinPeers
+	}
 	if cfg.MaxPerProto == 0 {
 		cfg.MaxPerProto = 1
 	}
 	cfg.ProbeTimeout = effectiveProbeTimeout(cfg.ProbeTimeout)
-	cfg.RefreshInterval = effectiveRefreshInterval(cfg.RefreshInterval)
+	if cfg.WatchInterval <= 0 {
+		cfg.WatchInterval = defaultWatchInterval
+	}
+	if cfg.MinPeersConfirmations <= 0 {
+		cfg.MinPeersConfirmations = defaultMinPeersConfirmations
+	}
 
 	peers, errs := ValidatePeers(cfg.Peers)
 	for _, err := range errs {
@@ -115,6 +136,13 @@ func New(node NodeInterface, cfg ConfigObj) (*Obj, error) {
 	}
 	if len(peers) == 0 {
 		return nil, ErrNoPeers
+	}
+	if cfg.Passive && cfg.MinPeers > 0 {
+		cfg.Logger.Warnf("[peermgr] MinPeers ignored in passive mode")
+		cfg.MinPeers = 0
+	}
+	if cfg.MinPeers >= len(peers) {
+		return nil, ErrMinPeersTooHigh
 	}
 
 	mgr := &Obj{
@@ -153,7 +181,7 @@ func (m *Obj) Start() error {
 }
 
 // Stop cancels the context, removes managed peers; safe to call multiple times
-func (m *Obj) Stop() {
+func (m *Obj) Stop() error {
 	m.stopMu.Lock()
 	defer m.stopMu.Unlock()
 
@@ -173,18 +201,24 @@ func (m *Obj) Stop() {
 
 	m.mu.Lock()
 	active := append([]string(nil), m.active...)
-	m.active = nil
 	m.mu.Unlock()
 
+	remaining := make([]string, 0, len(active))
+	var errs []error
 	for _, uri := range active {
-		_ = m.node.RemovePeer(uri)
+		if err := m.node.RemovePeer(uri); err != nil {
+			remaining = append(remaining, uri)
+			errs = append(errs, fmt.Errorf("remove peer %s: %w", normalizePeerURI(uri), err))
+		}
 	}
 	// stopping stays set through teardown so a concurrent Start waits for a clean
 	// stop; clear it only once every managed peer has been removed.
 	m.mu.Lock()
+	m.active = remaining
 	m.stopping = false
 	m.mu.Unlock()
-	m.cfg.Logger.Infof("[peermgr] stopped, removed %d peers", len(active))
+	m.cfg.Logger.Infof("[peermgr] stopped, removed %d peers, %d pending", len(active)-len(remaining), len(remaining))
+	return errors.Join(errs...)
 }
 
 // Active — copy of the current active peer list

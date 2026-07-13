@@ -3,8 +3,9 @@ package ninfo
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"iter"
 	"sync"
 	"time"
 
@@ -20,17 +21,26 @@ import (
 type Obj struct {
 	source         SourceInterface
 	nodeInfo       yggcore.AddHandlerFunc
-	ctxMu          sync.RWMutex
 	ctx            context.Context
 	cancel         context.CancelFunc
 	closeOnce      sync.Once
-	closedFlag     bool
 	maxAskTime     time.Duration
 	askRetryPause  time.Duration
 	lookupInterval time.Duration
 	maxLookupTime  time.Duration
 	sigilsMu       sync.RWMutex
 	sigils         map[string]sigils.Interface
+	askMu          sync.Mutex
+	askFlights     map[[ed25519.PublicKeySize]byte]*askFlightObj
+	askWG          sync.WaitGroup
+	closed         bool
+}
+
+type askFlightObj struct {
+	done chan struct{}
+	raw  json.RawMessage
+	rtt  time.Duration
+	err  error
 }
 
 type ConfigObj struct {
@@ -62,6 +72,7 @@ const (
 	defaultAskRetryPause  = 500 * time.Millisecond
 	defaultLookupInterval = 100 * time.Millisecond
 	defaultMaxLookupTime  = 30 * time.Second
+	maxConcurrentAsks     = 64
 )
 
 // //
@@ -103,18 +114,24 @@ func New(cfg ConfigObj) (*Obj, error) {
 		lookupInterval: orDefaultDuration(cfg.LookupInterval, defaultLookupInterval),
 		maxLookupTime:  orDefaultDuration(cfg.MaxLookupTime, defaultMaxLookupTime),
 		sigils:         make(map[string]sigils.Interface),
+		askFlights:     make(map[[ed25519.PublicKeySize]byte]*askFlightObj),
 	}
 	return obj, nil
 }
 
 // Close releases resources held by the module.
-// Asks run in the caller's goroutine, so Close only cancels the shared context;
-// any in-flight Ask observes the cancellation and returns ErrClosed.
+// Close cancels shared work and waits for accepted Ask flights to leave the
+// captured handler. Standalone Close intentionally waits for accepted work; the
+// root ratatoskr object bounds its aggregate shutdown with ConfigObj.CloseTimeout.
 func (obj *Obj) Close() error {
 	obj.closeOnce.Do(func() {
-		if cancel := obj.closeContext(); cancel != nil {
-			cancel()
+		obj.askMu.Lock()
+		obj.closed = true
+		if obj.cancel != nil {
+			obj.cancel()
 		}
+		obj.askMu.Unlock()
+		obj.askWG.Wait()
 	})
 	return nil
 }
@@ -128,29 +145,16 @@ func ensureCallerContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-func (obj *Obj) closeContext() context.CancelFunc {
-	obj.ctxMu.Lock()
-	defer obj.ctxMu.Unlock()
-	obj.closedFlag = true
-	return obj.cancel
+func (obj *Obj) isClosed() bool {
+	obj.askMu.Lock()
+	closed := obj.closedLocked()
+	obj.askMu.Unlock()
+	return closed
 }
 
-func (obj *Obj) isClosed(ctx context.Context) bool {
-	obj.ctxMu.RLock()
-	closed := obj.closedFlag
-	obj.ctxMu.RUnlock()
-	if closed {
-		return true
-	}
-	if ctx == nil {
-		return true
-	}
-	select {
-	case <-ctx.Done():
-		return true
-	default:
-		return false
-	}
+func (obj *Obj) closedLocked() bool {
+	// A zero-value Obj (never went through New) has no context; treat as closed.
+	return obj.closed || obj.ctx == nil
 }
 
 // Ask queries a remote node's NodeInfo by its public key.
@@ -163,17 +167,10 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, 
 	if len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
 	}
-	if obj.isClosed(obj.ctx) {
+	if obj.isClosed() {
 		return nil, ErrClosed
 	}
 	ctx = ensureCallerContext(ctx)
-	if _, ok := ctx.Deadline(); !ok {
-		if maxAskTime := obj.maxAskTime; maxAskTime > 0 {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, maxAskTime)
-			defer cancel()
-		}
-	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -181,35 +178,84 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, 
 	var ka [ed25519.PublicKeySize]byte
 	copy(ka[:], key)
 
-	// retryPause is fixed for the call: <0 disables retries. The default is
-	// non-zero, so a zero pause is only reachable from tests and simply spins.
+	obj.askMu.Lock()
+	if obj.closedLocked() {
+		obj.askMu.Unlock()
+		return nil, ErrClosed
+	}
+	if obj.askFlights == nil {
+		obj.askFlights = make(map[[ed25519.PublicKeySize]byte]*askFlightObj)
+	}
+	if flight := obj.askFlights[ka]; flight != nil {
+		obj.askMu.Unlock()
+		return obj.waitAskFlight(ctx, flight)
+	}
+	if len(obj.askFlights) >= maxConcurrentAsks {
+		obj.askMu.Unlock()
+		return nil, ErrAskBusy
+	}
+	flight := &askFlightObj{done: make(chan struct{})}
+	obj.askFlights[ka] = flight
+	obj.askWG.Add(1)
+	obj.askMu.Unlock()
+	go obj.runAskFlight(ka, flight)
+	return obj.waitAskFlight(ctx, flight)
+}
+
+func (obj *Obj) waitAskFlight(ctx context.Context, flight *askFlightObj) (*AskResultObj, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-flight.done:
+		if flight.err != nil {
+			return nil, flight.err
+		}
+		return obj.parseAskResponse(flight.raw, flight.rtt)
+	}
+}
+
+func (obj *Obj) runAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightObj) {
+	defer obj.askWG.Done()
+	defer func() {
+		obj.askMu.Lock()
+		if obj.askFlights[key] == flight {
+			delete(obj.askFlights, key)
+		}
+		obj.askMu.Unlock()
+		close(flight.done)
+	}()
+
+	workCtx := obj.ctx
+	cancel := func() {}
+	if obj.maxAskTime > 0 {
+		workCtx, cancel = context.WithTimeout(workCtx, obj.maxAskTime)
+	}
+	defer cancel()
 	retryPause := obj.askRetryPause
-	var timer *time.Timer
 	var lastErr error
 	for {
-		if obj.isClosed(obj.ctx) {
-			return nil, ErrClosed
-		}
 		start := time.Now()
-		raw, err := obj.callNodeInfo(ka)
+		raw, err := obj.callNodeInfo(key)
 		if err == nil {
-			return obj.parseAskResponse(raw, time.Since(start))
+			flight.raw = append(json.RawMessage(nil), raw...)
+			flight.rtt = time.Since(start)
+			return
 		}
 		lastErr = err
 		if retryPause < 0 {
-			return nil, lastErr
+			flight.err = lastErr
+			return
 		}
-		if timer == nil {
-			timer = time.NewTimer(retryPause)
-			defer timer.Stop()
-		} else {
-			timer.Reset(retryPause)
-		}
+		timer := time.NewTimer(retryPause)
 		select {
-		case <-obj.ctx.Done():
-			return nil, ErrClosed
-		case <-ctx.Done():
-			return nil, lastErr
+		case <-workCtx.Done():
+			timer.Stop()
+			if errors.Is(workCtx.Err(), context.Canceled) && obj.isClosed() {
+				flight.err = ErrClosed
+			} else {
+				flight.err = lastErr
+			}
+			return
 		case <-timer.C:
 		}
 	}
@@ -231,14 +277,14 @@ func (obj *Obj) AskAddr(ctx context.Context, addr string) (*AskResultObj, error)
 // // // // // // // // // //
 
 // AddSigil registers third-party sigils used by Ask/AskAddr to decode remote
-// NodeInfo. The sequence may yield one sigil or many; each self-names via
-// GetName(). Nil, invalid-name, reserved, duplicate, or non-cloneable sigils are
-// rejected and reported per-sigil.
-func (obj *Obj) AddSigil(seq iter.Seq[sigils.Interface]) []error {
+// NodeInfo. Accepts one or many sigils; each self-names via GetName(). Nil,
+// invalid-name, reserved, duplicate, or non-cloneable sigils are rejected; the
+// collected failures are returned joined (nil if all succeed).
+func (obj *Obj) AddSigil(sigs ...sigils.Interface) error {
 	var errs []error
 	obj.sigilsMu.Lock()
 	defer obj.sigilsMu.Unlock()
-	for si := range seq {
+	for _, si := range sigs {
 		if si == nil {
 			errs = append(errs, fmt.Errorf("sigil is nil"))
 			continue
@@ -265,7 +311,7 @@ func (obj *Obj) AddSigil(seq iter.Seq[sigils.Interface]) []error {
 		}
 		obj.sigils[name] = clone
 	}
-	return errs
+	return errors.Join(errs...)
 }
 
 // GetSigil returns a clone of the registered sigil, or nil if none is registered.
@@ -290,12 +336,12 @@ func (obj *Obj) DelSigil(name string) error {
 }
 
 // ImportSigils registers all non-reserved sigils assembled in a sigil_core.Obj.
-func (obj *Obj) ImportSigils(src *sigil_core.Obj) []error {
+func (obj *Obj) ImportSigils(src *sigil_core.Obj) error {
 	obj.sigilsMu.Lock()
 	defer obj.sigilsMu.Unlock()
 	var errs []error
 	if src == nil {
-		return []error{fmt.Errorf("sigil source is nil")}
+		return fmt.Errorf("sigil source is nil")
 	}
 	for name, si := range src.Sigils() {
 		if si == nil {
@@ -311,7 +357,7 @@ func (obj *Obj) ImportSigils(src *sigil_core.Obj) []error {
 		}
 		obj.sigils[name] = si
 	}
-	return errs
+	return errors.Join(errs...)
 }
 
 // //

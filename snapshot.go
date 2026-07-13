@@ -27,22 +27,26 @@ type PeerSnapshotObj struct {
 
 // SOCKSSnapshotObj — SOCKS5 proxy state
 type SOCKSSnapshotObj struct {
-	Enabled           bool   `json:"enabled"`
-	Addr              string `json:"addr,omitempty"`
-	IsUnix            bool   `json:"is_unix,omitempty"`
-	ActiveConnections int    `json:"active_connections"`
+	Enabled                  bool   `json:"enabled"`
+	Addr                     string `json:"addr,omitempty"`
+	IsUnix                   bool   `json:"is_unix,omitempty"`
+	ActiveConnections        int    `json:"active_connections"`
+	ActiveAssociateTargets   int    `json:"active_associate_targets"`
+	PendingAssociateTargets  int64  `json:"pending_associate_targets"`
+	RejectedAssociateTargets int64  `json:"rejected_associate_targets"`
 }
 
 // SnapshotObj — full node state at the time of the call
 type SnapshotObj struct {
-	Address     string            `json:"address"`
-	Subnet      string            `json:"subnet"`
-	PublicKey   string            `json:"public_key"`
-	MTU         uint64            `json:"mtu"`
-	RSTDropped  uint64            `json:"rst_dropped"`
-	Peers       []PeerSnapshotObj `json:"peers"`
-	ActivePeers []string          `json:"active_peers,omitempty"`
-	SOCKS       SOCKSSnapshotObj  `json:"socks"`
+	Address       string            `json:"address"`
+	Subnet        string            `json:"subnet"`
+	PublicKey     string            `json:"public_key"`
+	MTU           uint64            `json:"mtu"`
+	RSTDropped    uint64            `json:"rst_dropped"`
+	Peers         []PeerSnapshotObj `json:"peers"`
+	ActivePeers   []string          `json:"active_peers,omitempty"`
+	SOCKS         SOCKSSnapshotObj  `json:"socks"`
+	CloseTimedOut bool              `json:"close_timed_out"`
 }
 
 // //
@@ -75,6 +79,7 @@ func (o *Obj) Snapshot() SnapshotObj {
 	snap := SnapshotObj{}
 	snap.MTU = o.core.MTU()
 	snap.RSTDropped = o.core.RSTDropped()
+	snap.CloseTimedOut = o.closeTimedOut.Load()
 	if addr := o.core.Address(); addr != nil {
 		snap.Address = addr.String()
 	}
@@ -93,14 +98,15 @@ func (o *Obj) Snapshot() SnapshotObj {
 	}
 
 	// SOCKS
-	socksServer := o.socks
-	if socksServer != nil {
-		snap.SOCKS = SOCKSSnapshotObj{
-			Enabled:           socksServer.IsEnabled(),
-			Addr:              socksServer.Addr(),
-			IsUnix:            socksServer.IsUnix(),
-			ActiveConnections: socksServer.ActiveConnections(),
-		}
+	socksStats := o.socks.Snapshot()
+	snap.SOCKS = SOCKSSnapshotObj{
+		Enabled:                  o.socks.IsEnabled(),
+		Addr:                     o.socks.Addr(),
+		IsUnix:                   o.socks.IsUnix(),
+		ActiveConnections:        socksStats.ActiveConnections,
+		ActiveAssociateTargets:   socksStats.ActiveAssociateTargets,
+		PendingAssociateTargets:  socksStats.PendingAssociateTargets,
+		RejectedAssociateTargets: socksStats.RejectedAssociateTargets,
 	}
 
 	return snap

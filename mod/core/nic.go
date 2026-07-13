@@ -33,7 +33,6 @@ type nicObj struct {
 	ipv6rwc    *ipv6rwc.ReadWriteCloser
 	dispatcher atomic.Pointer[stack.NetworkDispatcher]
 	mtu        atomic.Uint32
-	readBuf    []byte
 	rstPackets chan *stack.PacketBuffer
 	rstDropped atomic.Uint64
 	done       chan struct{}
@@ -52,7 +51,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int, ifMTU uint64) 
 	nic := &nicObj{
 		ns:         s,
 		ipv6rwc:    rwc,
-		readBuf:    make([]byte, rwc.MaxMTU()),
 		rstPackets: make(chan *stack.PacketBuffer, rstQueueSize),
 		done:       make(chan struct{}),
 		readDone:   make(chan struct{}),
@@ -67,8 +65,9 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int, ifMTU uint64) 
 	// Read packets from Yggdrasil → deliver to netstack
 	go func() {
 		defer close(nic.readDone)
+		readBuf := make([]byte, nic.ipv6rwc.MaxMTU())
 		for {
-			rx, err := nic.ipv6rwc.Read(nic.readBuf)
+			rx, err := nic.ipv6rwc.Read(readBuf)
 			if err != nil {
 				select {
 				case <-nic.done:
@@ -78,7 +77,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int, ifMTU uint64) 
 				return
 			}
 			pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-				Payload: buffer.MakeWithData(nic.readBuf[:rx]),
+				Payload: buffer.MakeWithData(readBuf[:rx]),
 			})
 			// DeliverNetworkPacket can synchronously emit a zero-payload TCP RST
 			// (e.g. for a closed port) via WritePackets on this same goroutine;
@@ -227,7 +226,12 @@ func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
 	return list.Len(), nil
 }
 
-// enqueueRST accepts ownership of pkt and drops it when the deferred queue is full.
+// enqueueRST accepts ownership of pkt and drops it when the deferred queue is
+// full. Drop-newest (not evict-oldest) is deliberate: an RST is a payload-free,
+// one-shot notification with no freshness gradient, so dropping the newest under
+// overflow loses nothing an initiator's retransmit or the peer's idle timeout will
+// not recover, and it keeps enqueue a single non-blocking send under rstMu with a
+// clean rstClosed check (no receive-then-send race with the drain on Close).
 func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 	e.rstMu.Lock()
 	defer e.rstMu.Unlock()
@@ -242,10 +246,6 @@ func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
 		pkt.DecRef()
 		e.rstDropped.Add(1)
 	}
-}
-
-func (e *nicObj) WriteRawPacket(*stack.PacketBuffer) tcpip.Error {
-	return &tcpip.ErrNotSupported{}
 }
 
 // //

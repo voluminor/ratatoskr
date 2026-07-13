@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,17 +33,13 @@ func newTestObj() *Obj {
 	return obj
 }
 
-// seqOf yields the given sigils as an iter.Seq for AddSigil.
-func seqOf(sg ...sigils.Interface) []sigils.Interface { return sg }
-
 // // // // // // // // // //
 // AddSigil / GetSigil / DelSigil
 
 func TestAddSigil_valid(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil", "key1"))))
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors: %v", errs)
+	if err := obj.AddSigil(newMockSigil("test-sigil", "key1")); err != nil {
+		t.Fatalf("unexpected errors: %v", err)
 	}
 	if obj.GetSigil("test-sigil") == nil {
 		t.Fatal("sigil not found after add")
@@ -53,18 +48,16 @@ func TestAddSigil_valid(t *testing.T) {
 
 func TestAddSigil_duplicate(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil"))))
-	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil"))))
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	_ = obj.AddSigil(newMockSigil("test-sigil"))
+	if err := obj.AddSigil(newMockSigil("test-sigil")); err == nil {
+		t.Fatal("expected duplicate error")
 	}
 }
 
 func TestAddSigil_invalidName(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil("AB"))))
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	if err := obj.AddSigil(newMockSigil("AB")); err == nil {
+		t.Fatal("expected invalid-name error")
 	}
 	if obj.GetSigil("AB") != nil {
 		t.Fatal("invalid sigil should not be stored")
@@ -73,9 +66,8 @@ func TestAddSigil_invalidName(t *testing.T) {
 
 func TestAddSigil_reservedBuiltinName(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(slices.Values(seqOf(newMockSigil(inet.Name(), inet.Name()))))
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 reserved-name error, got %d", len(errs))
+	if err := obj.AddSigil(newMockSigil(inet.Name(), inet.Name())); err == nil {
+		t.Fatal("expected reserved-name error")
 	}
 	if obj.GetSigil(inet.Name()) != nil {
 		t.Fatal("reserved built-in sigil should not be stored")
@@ -84,13 +76,12 @@ func TestAddSigil_reservedBuiltinName(t *testing.T) {
 
 func TestAddSigil_multiple(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(slices.Values(seqOf(
+	if err := obj.AddSigil(
 		newMockSigil("aaa"),
 		newMockSigil("bbb"),
 		newMockSigil("ccc"),
-	)))
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors: %v", errs)
+	); err != nil {
+		t.Fatalf("unexpected errors: %v", err)
 	}
 	if len(obj.sigils) != 3 {
 		t.Fatalf("expected 3 sigils, got %d", len(obj.sigils))
@@ -99,9 +90,8 @@ func TestAddSigil_multiple(t *testing.T) {
 
 func TestAddSigil_nil(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.AddSigil(slices.Values(seqOf(nil)))
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	if err := obj.AddSigil(nil); err == nil {
+		t.Fatal("expected nil-sigil error")
 	}
 }
 
@@ -118,7 +108,7 @@ func TestGetSigil_notFound(t *testing.T) {
 
 func TestDelSigil_valid(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("test-sigil"))))
+	_ = obj.AddSigil(newMockSigil("test-sigil"))
 	if err := obj.DelSigil("test-sigil"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,12 +129,11 @@ func TestDelSigil_notFound(t *testing.T) {
 
 func TestImportSigils_append(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("existing"))))
+	_ = obj.AddSigil(newMockSigil("existing"))
 
 	src, _ := sigil_core.New(nil, newMockSigil("new-one"))
-	errs := obj.ImportSigils(src)
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors: %v", errs)
+	if err := obj.ImportSigils(src); err != nil {
+		t.Fatalf("unexpected errors: %v", err)
 	}
 	if obj.GetSigil("new-one") == nil {
 		t.Fatal("imported sigil not found")
@@ -167,9 +156,8 @@ func TestImportSigils_doesNotCloneAlreadyClonedSourceSigils(t *testing.T) {
 	}
 	clones.Store(0)
 
-	errs = obj.ImportSigils(src)
-	if len(errs) != 0 {
-		t.Fatalf("ImportSigils errors: %v", errs)
+	if err := obj.ImportSigils(src); err != nil {
+		t.Fatalf("ImportSigils errors: %v", err)
 	}
 	if got := clones.Load(); got != 1 {
 		t.Fatalf("ImportSigils should rely on sigil_core.Sigils clone only, got %d Clone calls", got)
@@ -178,12 +166,11 @@ func TestImportSigils_doesNotCloneAlreadyClonedSourceSigils(t *testing.T) {
 
 func TestImportSigils_append_conflict(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("shared"))))
+	_ = obj.AddSigil(newMockSigil("shared"))
 
 	src, _ := sigil_core.New(nil, newMockSigil("shared"))
-	errs := obj.ImportSigils(src)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 conflict error, got %d", len(errs))
+	if err := obj.ImportSigils(src); err == nil {
+		t.Fatal("expected conflict error")
 	}
 }
 
@@ -191,9 +178,8 @@ func TestImportSigils_skipsReservedBuiltinNames(t *testing.T) {
 	obj := newTestObj()
 
 	src, _ := sigil_core.New(nil, newMockSigil(inet.Name(), inet.Name()))
-	errs := obj.ImportSigils(src)
-	if len(errs) != 0 {
-		t.Fatalf("unexpected errors: %v", errs)
+	if err := obj.ImportSigils(src); err != nil {
+		t.Fatalf("unexpected errors: %v", err)
 	}
 	if obj.GetSigil(inet.Name()) != nil {
 		t.Fatal("reserved built-in sigil should not be imported")
@@ -203,13 +189,12 @@ func TestImportSigils_skipsReservedBuiltinNames(t *testing.T) {
 func TestImportSigils_conflictKeepsExisting(t *testing.T) {
 	obj := newTestObj()
 	old := newMockSigil("shared", "old-key")
-	obj.AddSigil(slices.Values(seqOf(old)))
+	_ = obj.AddSigil(old)
 
 	replacement := newMockSigil("shared", "new-key")
 	src, _ := sigil_core.New(nil, replacement)
-	errs := obj.ImportSigils(src)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 conflict error, got %d", len(errs))
+	if err := obj.ImportSigils(src); err == nil {
+		t.Fatal("expected conflict error")
 	}
 	got := obj.GetSigil("shared")
 	if got == nil {
@@ -227,9 +212,8 @@ func TestImportSigils_conflictKeepsExisting(t *testing.T) {
 
 func TestImportSigils_nilSource(t *testing.T) {
 	obj := newTestObj()
-	errs := obj.ImportSigils(nil)
-	if len(errs) != 1 {
-		t.Fatalf("expected 1 error, got %d", len(errs))
+	if err := obj.ImportSigils(nil); err == nil {
+		t.Fatal("expected nil-source error")
 	}
 }
 
@@ -245,7 +229,7 @@ func TestSigilSlice_empty(t *testing.T) {
 
 func TestSigilSlice_populated(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa"), newMockSigil("bbb"))))
+	_ = obj.AddSigil(newMockSigil("aaa"), newMockSigil("bbb"))
 	sl := obj.sigilSlice()
 	if len(sl) != 2 {
 		t.Fatalf("expected 2, got %d", len(sl))
@@ -276,7 +260,7 @@ func TestSigils_concurrentAccess(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
 			name := fmt.Sprintf("user-%d", i)
-			obj.AddSigil(slices.Values(seqOf(newMockSigil(name))))
+			_ = obj.AddSigil(newMockSigil(name))
 			_ = obj.DelSigil(name)
 			_ = obj.ImportSigils(src)
 		}
@@ -302,6 +286,30 @@ func TestAsk_afterCloseReturnsErrClosed(t *testing.T) {
 	}
 }
 
+func TestCloseSynchronizesWithAskAdmission(t *testing.T) {
+	obj := newTestObj()
+	obj.askMu.Lock()
+	closed := make(chan struct{})
+	go func() {
+		_ = obj.Close()
+		close(closed)
+	}()
+
+	select {
+	case <-closed:
+		obj.askMu.Unlock()
+		t.Fatal("Close returned while Ask admission mutex was held")
+	case <-time.After(20 * time.Millisecond):
+	}
+	obj.askMu.Unlock()
+
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after Ask admission mutex was released")
+	}
+}
+
 func TestAsk_backgroundContextIsBounded(t *testing.T) {
 	want := errors.New("remote unavailable")
 	obj := newTestObj()
@@ -320,6 +328,47 @@ func TestAsk_backgroundContextIsBounded(t *testing.T) {
 	}
 }
 
+func TestAsk_sameKeySingleFlightAndCallerCancellation(t *testing.T) {
+	obj := newTestObj()
+	obj.askRetryPause = -1
+	obj.askFlights = make(map[[ed25519.PublicKeySize]byte]*askFlightObj)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+		}
+		<-release
+		return yggcore.GetNodeInfoResponse{"node": json.RawMessage(`{"name":"test"}`)}, nil
+	}
+	key := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := obj.Ask(ctx, key)
+		firstDone <- err
+	}()
+	<-started
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := obj.Ask(context.Background(), key)
+		secondDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context.Canceled", err)
+	}
+	close(release)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second caller: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying calls = %d, want 1", got)
+	}
+}
+
 func TestParseAskResponse_rejectsOversizedNodeInfo(t *testing.T) {
 	obj := newTestObj()
 	raw := json.RawMessage(`{"data":"` + string(make([]byte, maxNodeInfoBytes)) + `"}`)
@@ -331,7 +380,7 @@ func TestParseAskResponse_rejectsOversizedNodeInfo(t *testing.T) {
 
 func TestZeroValueObjIsClosed(t *testing.T) {
 	obj := &Obj{}
-	if !obj.isClosed(obj.ctx) {
+	if !obj.isClosed() {
 		t.Fatal("zero-value object should be treated as closed")
 	}
 	if obj.ctx != nil {

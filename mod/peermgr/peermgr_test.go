@@ -154,15 +154,6 @@ func TestEffectiveWindow_usesBoundedDefault(t *testing.T) {
 	}
 }
 
-func TestEffectiveRefreshInterval_passesThroughPositiveAndDisablesZero(t *testing.T) {
-	if got := effectiveRefreshInterval(time.Nanosecond); got != time.Nanosecond {
-		t.Fatalf("positive refresh interval = %s, want %s", got, time.Nanosecond)
-	}
-	if got := effectiveRefreshInterval(0); got != 0 {
-		t.Fatalf("disabled refresh interval = %s, want 0", got)
-	}
-}
-
 func TestNew_partiallyInvalidPeers(t *testing.T) {
 	// Some valid, some not — should succeed with valid only
 	mgr, err := New(&mockNodeObj{}, fastCfg([]string{"tcp://%zz", "tls://good:1"}))
@@ -184,7 +175,7 @@ func TestStartStop(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	mgr.Stop()
+	_ = mgr.Stop()
 }
 
 func TestDoubleStart(t *testing.T) {
@@ -192,7 +183,7 @@ func TestDoubleStart(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer mgr.Stop()
+	defer func() { _ = mgr.Stop() }()
 	if err := mgr.Start(); err == nil {
 		t.Fatal("expected error on double Start")
 	}
@@ -203,13 +194,13 @@ func TestStop_idempotent(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	mgr.Stop()
-	mgr.Stop() // must not panic or block
+	_ = mgr.Stop()
+	_ = mgr.Stop() // must not panic or block
 }
 
 func TestStop_beforeStart(t *testing.T) {
 	mgr, _ := New(&mockNodeObj{}, fastCfg([]string{"tls://h:1"}))
-	mgr.Stop() // must not panic
+	_ = mgr.Stop() // must not panic
 }
 
 func TestStartDuringStopReturnsAlreadyRunning(t *testing.T) {
@@ -233,7 +224,7 @@ func TestStartDuringStopReturnsAlreadyRunning(t *testing.T) {
 
 	stopDone := make(chan struct{})
 	go func() {
-		mgr.Stop()
+		_ = mgr.Stop()
 		close(stopDone)
 	}()
 
@@ -278,7 +269,7 @@ func TestOptimizeDuringStopReturnsNotRunning(t *testing.T) {
 
 	stopDone := make(chan struct{})
 	go func() {
-		mgr.Stop()
+		_ = mgr.Stop()
 		close(stopDone)
 	}()
 
@@ -315,7 +306,7 @@ func TestRefreshInterval_reoptimizesWhileRunning(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer mgr.Stop()
+	defer func() { _ = mgr.Stop() }()
 
 	waitAddedPeers(t, &node.mockNodeObj, 1)
 	waitAddedPeers(t, &node.mockNodeObj, 2)
@@ -348,7 +339,7 @@ func TestActive_returnsCopy(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer mgr.Stop()
+	defer func() { _ = mgr.Stop() }()
 	if err := mgr.Optimize(); err != nil {
 		t.Fatalf("Optimize: %v", err)
 	}
@@ -375,7 +366,7 @@ func TestActiveMode_noReachable_activeEmpty(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer mgr.Stop()
+	defer func() { _ = mgr.Stop() }()
 	if err := mgr.Optimize(); err != nil {
 		t.Fatalf("Optimize: %v", err)
 	}
@@ -402,7 +393,7 @@ func TestActiveMode_removesLosers(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer mgr.Stop()
+	defer func() { _ = mgr.Stop() }()
 	if err := mgr.Optimize(); err != nil {
 		t.Fatalf("Optimize: %v", err)
 	}
@@ -438,7 +429,7 @@ func TestActiveMode_batchSize(t *testing.T) {
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	defer mgr.Stop()
+	defer func() { _ = mgr.Stop() }()
 	if err := mgr.Optimize(); err != nil {
 		t.Fatalf("Optimize: %v", err)
 	}
@@ -527,6 +518,40 @@ func TestActiveMode_respectsBackoffWhenNoPeersActive(t *testing.T) {
 	}
 }
 
+func TestActiveMode_backsOffPeerWhenAddPeerFails(t *testing.T) {
+	node := &mockNodeObj{addPeerFail: map[string]bool{"tls://bad:1": true}}
+	mgr, err := New(node, ConfigObj{
+		Peers:        []string{"tls://bad:1"},
+		ProbeTimeout: 10 * time.Millisecond,
+		MaxPerProto:  1,
+		Logger:       noopLogObj{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.optimizeLocked(context.Background()); err != nil {
+		t.Fatalf("optimizeLocked: %v", err)
+	}
+
+	node.mu.Lock()
+	attempts := node.addAttempts
+	node.mu.Unlock()
+	if attempts != 1 {
+		t.Fatalf("expected 1 AddPeer attempt, got %d", attempts)
+	}
+
+	// A synchronous AddPeer failure must still record backoff state, so the bad
+	// URI is not a due candidate again until its backoff window elapses.
+	key := normalizePeerURI("tls://bad:1")
+	state, ok := mgr.probeState[key]
+	if !ok || state.failures == 0 || !state.nextTry.After(time.Now()) {
+		t.Fatalf("failing AddPeer did not create backoff: state=%+v ok=%v", state, ok)
+	}
+	if due := mgr.probeCandidates(time.Now()); len(due) != 0 {
+		t.Fatalf("backed-off failing peer still due for probing: %v", due)
+	}
+}
+
 // //
 
 func TestStop_removesActivePeers(t *testing.T) {
@@ -564,7 +589,7 @@ func TestStop_removesActivePeers(t *testing.T) {
 	beforeStop := len(node.removed)
 	node.mu.Unlock()
 
-	mgr.Stop()
+	_ = mgr.Stop()
 
 	node.mu.Lock()
 	afterStop := len(node.removed)
@@ -786,6 +811,85 @@ func TestOptimizeActive_cancelRetainsAlreadyActivePeers(t *testing.T) {
 	}
 	if len(node.removed) != 0 {
 		t.Fatalf("cancelled cycle must not remove peers itself, removed %v", node.removed)
+	}
+}
+
+func TestStopRetainsFailedRemovalForRetry(t *testing.T) {
+	const uri = "tls://a.example:1"
+	node := &mockNodeObj{removePeerFail: map[string]bool{uri: true}}
+	mgr, err := New(node, ConfigObj{Peers: []string{uri}, Logger: noopLogObj{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mgr.setActive([]string{uri})
+	if err := mgr.Stop(); err == nil {
+		t.Fatal("Stop must report RemovePeer failure")
+	}
+	if got := mgr.Active(); len(got) != 1 || got[0] != uri {
+		t.Fatalf("failed removal lost teardown ownership: %v", got)
+	}
+	node.mu.Lock()
+	delete(node.removePeerFail, uri)
+	node.mu.Unlock()
+	if err := mgr.Stop(); err != nil {
+		t.Fatalf("retry Stop: %v", err)
+	}
+	if got := mgr.Active(); len(got) != 0 {
+		t.Fatalf("active after successful retry: %v", got)
+	}
+}
+
+func TestSelectAndPruneRetainsFailedRemoval(t *testing.T) {
+	const winnerURI = "tls://winner.example:1"
+	const loserURI = "tls://loser.example:1"
+	node := &mockNodeObj{
+		peers: []yggcore.PeerInfo{
+			makePeerInfo(winnerURI, true, time.Millisecond),
+			makePeerInfo(loserURI, true, 2*time.Millisecond),
+		},
+		removePeerFail: map[string]bool{loserURI: true},
+	}
+	mgr, err := New(node, ConfigObj{Peers: []string{winnerURI, loserURI}, MaxPerProto: 1, Logger: noopLogObj{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	managed := map[string]string{normalizePeerURI(winnerURI): winnerURI, normalizePeerURI(loserURI): loserURI}
+	kept := mgr.selectAndPrune(mgr.peers, time.Millisecond, managed)
+	if len(kept) != 2 {
+		t.Fatalf("kept = %d, want selected plus failed removal", len(kept))
+	}
+	if _, ok := managed[normalizePeerURI(loserURI)]; !ok {
+		t.Fatal("failed removal was deleted from managed set")
+	}
+}
+
+func TestPassiveAndNoReachableCallback(t *testing.T) {
+	const uri = "future+transport://peer.example:1"
+	node := &mockNodeObj{}
+	called := 0
+	mgr, err := New(node, ConfigObj{
+		Peers:              []string{uri},
+		Passive:            true,
+		MinPeers:           1,
+		OnNoReachablePeers: func() { called++ },
+		Logger:             noopLogObj{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mgr.cfg.MinPeers != 0 {
+		t.Fatal("MinPeers must be disabled in passive mode")
+	}
+	if err := mgr.optimizeLocked(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := mgr.Active(); len(got) != 1 || got[0] != uri {
+		t.Fatalf("passive active = %v", got)
+	}
+	mgr.cfg.Passive = false
+	mgr.reportResult(nil)
+	if called != 1 {
+		t.Fatalf("OnNoReachablePeers calls = %d, want 1", called)
 	}
 }
 

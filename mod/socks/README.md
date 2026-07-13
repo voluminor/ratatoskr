@@ -25,7 +25,7 @@ flowchart LR
     subgraph Proxy
         Listener["TCP / Unix listener"]
         Socks5["socks5.Server"]
-        Limit["limitedListener"]
+        Limit["limitedListenerObj"]
     end
 
     Listener --> Socks5
@@ -43,7 +43,7 @@ and establishes a connection through the Yggdrasil dialer.
 ```go
 s, err := socks.New(socks.ConfigObj{
     Network:           node, // proxy.ContextDialer, usually core.Obj
-    Addr:              "127.0.0.1:1080", // or "/tmp/ygg.sock"
+    Addr:              "127.0.0.1:1080", // or a socket in a private directory
     Resolver:          resolver,         // name resolver (.pk.ygg, DNS)
     Verbose:           false,
     Logger:            logger,
@@ -51,6 +51,7 @@ s, err := socks.New(socks.ConfigObj{
     HandshakeTimeout:  10 * time.Second,
     DialTimeout:       10 * time.Second,
     TunnelIdleTimeout: 5 * time.Minute,
+    MaxAssociateTargetsPerSession: 128, // 0 — safe default, <0 — no per-session cap
     Credentials:       credentials, // optional username/password auth
 })
 ```
@@ -89,12 +90,12 @@ when idle tunnels must stay open indefinitely.
 
 The listener type is determined by the address:
 
-| Address          | Type        |
-|------------------|-------------|
-| `127.0.0.1:1080` | TCP         |
-| `[::1]:1080`     | TCP         |
-| `/tmp/ygg.sock`  | Unix socket |
-| `./local.sock`   | Unix socket |
+| Address                             | Type        |
+|-------------------------------------|-------------|
+| `127.0.0.1:1080`                    | TCP         |
+| `[::1]:1080`                        | TCP         |
+| `/run/user/1000/ratatoskr/ygg.sock` | Unix socket |
+| `./private/local.sock`              | Unix socket |
 
 Rule: if the address starts with `/` or `.` — Unix socket, otherwise TCP.
 
@@ -102,8 +103,13 @@ Rule: if the address starts with `/` or `.` — Unix socket, otherwise TCP.
 
 ## Connection limiting
 
-When `MaxConnections > 0`, the listener is wrapped in a `limitedListener` with a semaphore based on a buffered channel.
-`MaxConnections: 0` uses the safe default (`256`); use a negative value only when an unlimited listener is intentional.
+The listener is always wrapped in a `limitedListenerObj` backed by a `common.DynamicLimitObj` — a runtime-adjustable
+semaphore, so `SetMaxConnections` can change the limit while the proxy runs. `MaxConnections: 0` uses the safe default
+(`256`); a negative value makes the limit unlimited, and `Accept` never blocks on it.
+
+UDP ASSOCIATE targets are bounded to 1024 per server, 128 per principal within that server, and 128 per session by
+default. A negative value disables only the per-session cap. Each server also owns its bounded worker pool, so load or
+credentials on one embedded proxy cannot consume another proxy's quota or queue.
 
 ```mermaid
 flowchart LR
@@ -131,14 +137,16 @@ flowchart TB
     OK -->|" EADDRINUSE "| Dial["dial socket"]
     Dial --> Alive{"responds?"}
     Alive -->|" yes "| Err["ErrAlreadyListening"]
-    Alive -->|" no "| Check["Lstat: symlink?"]
+    Alive -->|" ECONNREFUSED "| Check["Lstat: same socket inode?"]
     Check -->|" symlink "| Refuse["ErrSymlinkRefusal"]
-    Check -->|" regular file "| Remove["os.Remove → retry"]
+    Check -->|" non-socket "| RefuseSock["ErrSocketRefusal"]
+    Check -->|" socket "| Remove["os.Remove → retry"]
 ```
 
 - If the socket is held by a live process — error
-- If the socket is stale — it is removed and recreated
-- Symlinks are not removed (protection against attacks)
+- The parent directory must exist, must not be a symlink, and must be private (`0700` or stricter)
+- A stale socket is removed only after `ECONNREFUSED` and a same-inode check
+- Symlinks and other non-socket paths are refused, never removed (`ErrSymlinkRefusal` / `ErrSocketRefusal`)
 - Socket permissions are fixed at `0600`
 
 On `Close`, the Unix socket file is automatically removed.
@@ -147,8 +155,14 @@ On `Close`, the Unix socket file is automatically removed.
 
 ## Errors
 
-| Variable              | Description                                  |
-|-----------------------|----------------------------------------------|
-| `ErrAlreadyEnabled`   | `New` called while the proxy is already open |
-| `ErrAlreadyListening` | Unix socket is held by another process       |
-| `ErrSymlinkRefusal`   | Refusal to remove a symlink (safety measure) |
+| Variable                  | Description                                  |
+|---------------------------|----------------------------------------------|
+| `ErrAlreadyEnabled`       | `New` called while the proxy is already open |
+| `ErrAlreadyListening`     | Unix socket is held by another process       |
+| `ErrAssociateTargetLimit` | UDP ASSOCIATE target limit reached           |
+| `ErrInvalidAddress`       | Empty or invalid listen address              |
+| `ErrNetworkRequired`      | `Start` called without a `Network` dialer    |
+| `ErrSymlinkRefusal`       | Refusal to remove a symlink (safety measure) |
+| `ErrSocketRefusal`        | Refusal to remove a non-socket path (safety) |
+| `ErrUnsafeSocketDir`      | Unix socket parent directory is not private  |
+| `ErrSocketChanged`        | Socket path changed during the stale probe   |

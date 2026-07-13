@@ -1,8 +1,10 @@
 package sigil_core
 
 import (
+	"errors"
 	"testing"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/voluminor/ratatoskr/mod/sigils/info"
 	"github.com/voluminor/ratatoskr/target"
 )
@@ -28,6 +30,27 @@ func TestNew_with_nodeInfo(t *testing.T) {
 	}
 	if obj.NodeInfo()["custom"] != "value" {
 		t.Fatal("expected custom key in NodeInfo")
+	}
+}
+
+func TestNew_rejectsCyclicNodeInfoAndSigilParams(t *testing.T) {
+	base := make(map[string]any)
+	base["self"] = base
+	cyclicParams := make(map[string]any)
+	cyclicParams["loop"] = cyclicParams
+	sigil := &mockSigilObj{name: "cyclic", params: []string{"loop"}, data: cyclicParams}
+
+	obj, errs := New(base, sigil)
+	if len(errs) != 2 {
+		t.Fatalf("errors = %v, want base and sigil cycle errors", errs)
+	}
+	for _, err := range errs {
+		if !errors.Is(err, common.ErrNodeInfoCycle) {
+			t.Fatalf("error = %v, want ErrNodeInfoCycle", err)
+		}
+	}
+	if obj.Get("cyclic") != nil {
+		t.Fatal("sigil with cyclic params was stored")
 	}
 }
 

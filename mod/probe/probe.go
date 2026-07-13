@@ -27,7 +27,11 @@ type Obj struct {
 	remoteMu         sync.RWMutex
 	remoteWG         sync.WaitGroup
 	closeOnce        sync.Once
+	closeDone        chan struct{}
 	closed           bool
+	ctx              context.Context
+	cancel           context.CancelFunc
+	remoteFlights    map[[ed25519.PublicKeySize]byte]*remoteFlightObj
 	maxTotalNodes    int
 	pollInterval     time.Duration
 	lookupRetryEvery time.Duration
@@ -58,10 +62,6 @@ const (
 	DefaultMaxConcurrency  = 256
 
 	defaultMaxDuration = 5 * time.Minute
-
-	// closeWait bounds Close's wait for in-flight remote calls; the captured
-	// handler has no context, so a stuck call cannot be cancelled.
-	closeWait = 2 * time.Second
 )
 
 // //
@@ -169,6 +169,15 @@ func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
 		return nil, ErrCoreRequired
 	}
 	logger := common.NormalizeLogger(cfg.Logger)
+	if cfg.MaxTotalNodes < 0 {
+		return nil, ErrInvalidMaxTotalNodes
+	}
+	if cfg.PollInterval < 0 {
+		return nil, ErrInvalidPollInterval
+	}
+	if cfg.LookupRetryEvery < 0 {
+		return nil, ErrInvalidLookupRetryEvery
+	}
 
 	capture := common.NewAdminCapture()
 	if err := source.SetAdmin(capture); err != nil {
@@ -180,11 +189,15 @@ func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
 		return nil, ErrRemotePeersNotCaptured
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Obj{
 		source:           source,
 		logger:           logger,
 		remotePeers:      remotePeers,
 		remoteSem:        make(chan struct{}, DefaultMaxConcurrency),
+		remoteFlights:    make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
+		ctx:              ctx,
+		cancel:           cancel,
 		maxTotalNodes:    orDefaultInt(cfg.MaxTotalNodes, DefaultMaxTotalNodes),
 		pollInterval:     orDefaultDuration(cfg.PollInterval, defaultPollInterval),
 		lookupRetryEvery: orDefaultDuration(cfg.LookupRetryEvery, defaultLookupRetryEvery),
@@ -194,28 +207,59 @@ func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
 
 // //
 
-// Close stops the cache cleanup and waits, bounded by closeWait, for in-flight
-// remote calls. The captured debug_remoteGetPeers handler has no context, so a
-// stuck call cannot be cancelled; Close gives up rather than blocking forever.
-func (o *Obj) Close() {
+func (o *Obj) startClose() <-chan struct{} {
 	o.closeOnce.Do(func() {
 		o.remoteMu.Lock()
 		o.closed = true
+		if o.cancel != nil {
+			o.cancel()
+		}
+		o.closeDone = make(chan struct{})
+		done := o.closeDone
 		o.remoteMu.Unlock()
-
-		done := make(chan struct{})
 		go func() {
 			o.remoteWG.Wait()
 			close(done)
 		}()
-		timer := time.NewTimer(closeWait)
-		defer timer.Stop()
-		select {
-		case <-done:
-		case <-timer.C:
-			o.logger.Warnf("[probe] close timed out waiting for in-flight remote calls")
-		}
 	})
+	o.remoteMu.RLock()
+	done := o.closeDone
+	o.remoteMu.RUnlock()
+	return done
+}
+
+// Close cancels queued work and waits for every accepted remote call. It is the
+// safe standalone teardown and deliberately has no implicit timeout.
+func (o *Obj) Close() {
+	<-o.startClose()
+}
+
+// CloseContext initiates the same teardown as Close but bounds only the caller's
+// wait. Accepted remote calls remain owned by the probe and a later Close waits
+// for them; ctx cancellation never abandons work silently.
+func (o *Obj) CloseContext(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	done := o.startClose()
+	select {
+	case <-done:
+		return nil
+	default:
+	}
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (o *Obj) isClosed() bool {
+	o.remoteMu.RLock()
+	closed := o.closed
+	o.remoteMu.RUnlock()
+	return closed
 }
 
 // // // // // // // // // //
@@ -223,6 +267,9 @@ func (o *Obj) Close() {
 // Tree builds a network topology tree via BFS from our node as root.
 // maxDepth > 0 required. concurrency <= 0 defaults to 16.
 func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*TreeResultObj, error) {
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
 	return o.treeBFS(ctx, maxDepth, concurrency, nil)
 }
 
@@ -231,6 +278,9 @@ func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*Tree
 func (o *Obj) TreeChan(ctx context.Context, maxDepth uint16, concurrency int, ch chan<- TreeProgressObj) (*TreeResultObj, error) {
 	if ch != nil {
 		defer close(ch)
+	}
+	if o.isClosed() {
+		return nil, ErrClosed
 	}
 	return o.treeBFS(ctx, maxDepth, concurrency, ch)
 }
@@ -255,7 +305,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 	visited[toKeyArray(selfKey)] = struct{}{}
 
 	directPeers := make([]yggcore.PeerInfo, 0)
-	directSeen := make(map[[ed25519.PublicKeySize]byte]struct{})
 	for _, p := range o.source.GetPeers() {
 		if !p.Up || len(p.Key) != ed25519.PublicKeySize {
 			continue
@@ -264,10 +313,7 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 		if _, seen := visited[k]; seen {
 			continue
 		}
-		if _, dup := directSeen[k]; dup {
-			continue
-		}
-		directSeen[k] = struct{}{}
+		visited[k] = struct{}{}
 		directPeers = append(directPeers, p)
 	}
 	// Sort ascending so the node cap keeps a deterministic, lowest-key subset.
@@ -281,14 +327,13 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 			truncated = true
 			break
 		}
-		visited[toKeyArray(p.Key)] = struct{}{}
 		child := &NodeObj{Key: p.Key, Parent: selfKey, Depth: 1, RTT: p.Latency}
 		root.Children = append(root.Children, child)
 		currentLevel = append(currentLevel, child)
 		total++
 	}
-	sortNodes(root.Children)
-	sortNodes(currentLevel)
+	// root.Children and currentLevel already follow directPeers' key order, so no
+	// re-sort is needed here.
 	if progress != nil && len(currentLevel) > 0 {
 		select {
 		case progress <- TreeProgressObj{Depth: 1, Found: len(currentLevel), Total: total, Truncated: truncated, Limit: o.maxTotalNodes}:
@@ -443,6 +488,9 @@ func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeyS
 // It walks parent links from the target up to the root instead of materialising
 // the whole tree, so repeated Trace polling stays cheap on large networks.
 func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
@@ -451,6 +499,9 @@ func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 
 // Hops returns the port-level route to the key. Requires a prior Lookup().
 func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
@@ -466,6 +517,9 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 
 // Lookup initiates a path search. Results appear in Hops() after some time.
 func (o *Obj) Lookup(key ed25519.PublicKey) {
+	if o.isClosed() {
+		return
+	}
 	o.source.SendLookup(key)
 }
 

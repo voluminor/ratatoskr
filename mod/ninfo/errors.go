@@ -14,4 +14,5 @@ var (
 	ErrUnresolvableAddr    = errors.New("ninfo: cannot resolve address to public key")
 	ErrInvalidAddr         = errors.New("ninfo: invalid address format")
 	ErrClosed              = errors.New("ninfo: closed")
+	ErrAskBusy             = errors.New("ninfo: too many distinct node-info queries")
 )

@@ -5,10 +5,11 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"maps"
 	"net"
 	"slices"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
@@ -32,34 +33,51 @@ type Obj struct {
 	// core is assigned once in New and read-only afterwards; use Close() to stop.
 	core core.Interface
 	// socks is assigned once in New and read-only afterwards; safe to read lock-free.
-	socks       *socks.Obj
-	peerManager *peermgr.Obj
-	nodeInfo    *ninfo.Obj
-	logger      yggcore.Logger
-	done        chan struct{}
-	closeOnce   sync.Once
-	closeErr    error
+	socks         *socks.Obj
+	peerManager   *peermgr.Obj
+	nodeInfo      *ninfo.Obj
+	logger        yggcore.Logger
+	closeTimeout  time.Duration
+	done          chan struct{}
+	closeOnce     sync.Once
+	closeErr      error
+	closeTimedOut atomic.Bool
+}
+
+const defaultCloseTimeout = 10 * time.Second
+
+func effectiveCloseTimeout(timeout time.Duration) time.Duration {
+	if timeout == 0 {
+		return defaultCloseTimeout
+	}
+	return timeout
 }
 
 // cloneCallerConfig insulates New from the caller's config: sigils add top-level
 // keys to NodeInfo and MulticastInterfaces is read after New (EnableMulticast), so
-// both reference fields are copied. A shallow NodeInfo clone suffices — the library
-// only adds top-level keys; a caller that later mutates its own nested map/slice
-// values owns that data and is out of scope. Other NodeConfig fields are consumed
-// once at construction, so a shallow copy of the rest is sufficient.
-func cloneCallerConfig(cfg *config.NodeConfig) *config.NodeConfig {
+// both reference fields are copied. NodeInfo is cloned recursively because its
+// nested maps and slices remain mutable after New. Other NodeConfig fields are
+// consumed once at construction, so a shallow copy of the rest is sufficient.
+func cloneCallerConfig(cfg *config.NodeConfig) (*config.NodeConfig, error) {
 	if cfg == nil {
-		return nil
+		return nil, nil
 	}
 	cloned := *cfg
-	cloned.NodeInfo = maps.Clone(cfg.NodeInfo)
+	var err error
+	cloned.NodeInfo, err = common.CloneNodeInfo(cfg.NodeInfo)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrInvalidNodeInfo, err)
+	}
 	cloned.MulticastInterfaces = slices.Clone(cfg.MulticastInterfaces)
-	return &cloned
+	return &cloned, nil
 }
 
 // New creates and starts the node.
 // If cfg.Peers is set, starts the peer manager; cfg.Config.Peers must be empty.
 func New(cfg ConfigObj) (*Obj, error) {
+	if cfg.CloseTimeout < 0 {
+		return nil, ErrInvalidCloseTimeout
+	}
 	if cfg.Ctx != nil {
 		if err := cfg.Ctx.Err(); err != nil {
 			return nil, err
@@ -75,7 +93,11 @@ func New(cfg ConfigObj) (*Obj, error) {
 		cfg.Config = config.GenerateConfig()
 		cfg.Config.AdminListen = "none"
 	} else {
-		cfg.Config = cloneCallerConfig(cfg.Config)
+		var err error
+		cfg.Config, err = cloneCallerConfig(cfg.Config)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Assemble NodeInfo from sigils
@@ -90,10 +112,9 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 
 	coreNode, err := core.New(core.ConfigObj{
-		Config:          cfg.Config,
-		Logger:          cfg.Logger,
-		CoreStopTimeout: cfg.CoreStopTimeout,
-		RSTQueueSize:    cfg.RSTQueueSize,
+		Config:       cfg.Config,
+		Logger:       cfg.Logger,
+		RSTQueueSize: cfg.RSTQueueSize,
 	})
 	if err != nil {
 		return nil, err
@@ -106,17 +127,18 @@ func New(cfg ConfigObj) (*Obj, error) {
 		return nil, fmt.Errorf("ninfo: %w", err)
 	}
 	if sigilsObj != nil {
-		for _, e := range ni.ImportSigils(sigilsObj) {
-			cfg.Logger.Warnf("[ratatoskr] parse sigil: %v", e)
+		if err := ni.ImportSigils(sigilsObj); err != nil {
+			cfg.Logger.Warnf("[ratatoskr] parse sigil: %v", err)
 		}
 	}
 
 	obj := &Obj{
-		core:     coreNode,
-		socks:    socks.NewDisabled(),
-		nodeInfo: ni,
-		logger:   cfg.Logger,
-		done:     make(chan struct{}),
+		core:         coreNode,
+		socks:        socks.NewDisabled(),
+		nodeInfo:     ni,
+		logger:       cfg.Logger,
+		closeTimeout: effectiveCloseTimeout(cfg.CloseTimeout),
+		done:         make(chan struct{}),
 	}
 
 	if cfg.Peers != nil {
@@ -132,7 +154,7 @@ func New(cfg ConfigObj) (*Obj, error) {
 		}
 		if err := mgr.Start(); err != nil {
 			_ = ni.Close()
-			mgr.Stop()
+			_ = mgr.Stop()
 			_ = coreNode.Close()
 			return nil, fmt.Errorf("peer manager: %w", err)
 		}
@@ -150,6 +172,13 @@ func New(cfg ConfigObj) (*Obj, error) {
 			case <-obj.done:
 			}
 		}()
+		// A cfg.Ctx cancelled during construction has already armed the watchdog
+		// above; surface the error instead of returning a live-looking node that is
+		// concurrently closing. Close is idempotent, so racing the watchdog is safe.
+		if err := cfg.Ctx.Err(); err != nil {
+			_ = obj.Close()
+			return nil, err
+		}
 	}
 
 	return obj, nil
@@ -231,20 +260,23 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 		CacheTTL:        cfg.NameserverCacheTTL,
 		CacheMaxEntries: cfg.NameserverCacheMaxEntries,
 	}
+	nameResolver := resolver.New(resolverCfg)
 	err := server.Start(socks.ConfigObj{
-		Network:           network,
-		Addr:              cfg.Addr,
-		Resolver:          resolver.New(resolverCfg),
-		Verbose:           cfg.Verbose,
-		Logger:            logger,
-		MaxConnections:    cfg.MaxConnections,
-		HandshakeTimeout:  cfg.HandshakeTimeout,
-		DialTimeout:       cfg.DialTimeout,
-		TunnelIdleTimeout: cfg.TunnelIdleTimeout,
-		Credentials:       cfg.Credentials,
+		Network:                       network,
+		Addr:                          cfg.Addr,
+		Resolver:                      nameResolver,
+		OwnResolver:                   true,
+		Verbose:                       cfg.Verbose,
+		Logger:                        logger,
+		MaxConnections:                cfg.MaxConnections,
+		HandshakeTimeout:              cfg.HandshakeTimeout,
+		DialTimeout:                   cfg.DialTimeout,
+		TunnelIdleTimeout:             cfg.TunnelIdleTimeout,
+		MaxAssociateTargetsPerSession: cfg.MaxAssociateTargetsPerSession,
+		Credentials:                   cfg.Credentials,
 	})
 	if err != nil {
-		return err
+		return errors.Join(err, nameResolver.Close())
 	}
 	// Close may have run its single SOCKS teardown before Start bound the listener.
 	// The closed signal precedes teardown, so a closed node here means we must
@@ -259,11 +291,7 @@ func (o *Obj) DisableSOCKS() error {
 	if o.isClosed() {
 		return ErrClosed
 	}
-	server := o.socks
-	if server == nil {
-		return nil
-	}
-	return server.Close()
+	return o.socks.Close()
 }
 
 // SetSOCKSMaxConnections adjusts the SOCKS5 connection limit at runtime.
@@ -325,7 +353,15 @@ func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, er
 
 // //
 
-// Close stops all components; safe to call multiple times
+type closeResultObj struct {
+	name string
+	err  error
+}
+
+// Close stops all components; safe to call multiple times. The total wait is
+// bounded by ConfigObj.CloseTimeout. A component that does not return before the
+// deadline continues best-effort in a detached goroutine and cannot hold the
+// application's shutdown path.
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		// Raise the closed signal before teardown. EnableSOCKS synchronizes with
@@ -333,22 +369,68 @@ func (o *Obj) Close() error {
 		// with Close is guaranteed to be observed and torn down (no leak).
 		close(o.done)
 
-		var nodeInfoErr error
-		if o.nodeInfo != nil {
-			nodeInfoErr = o.nodeInfo.Close()
+		dependents := []struct {
+			name string
+			fn   func() error
+		}{
+			{name: "ninfo", fn: o.nodeInfo.Close},
+			{name: "socks", fn: o.socks.Close},
 		}
 		if o.peerManager != nil {
-			o.peerManager.Stop()
+			dependents = append(dependents, struct {
+				name string
+				fn   func() error
+			}{name: "peermgr", fn: o.peerManager.Stop})
 		}
-		var socksErr error
-		if o.socks != nil {
-			socksErr = o.socks.Close()
+
+		results := make(chan closeResultObj, len(dependents))
+		for _, closer := range dependents {
+			go func() {
+				results <- closeResultObj{name: closer.name, err: closer.fn()}
+			}()
 		}
-		o.closeErr = errors.Join(
-			nodeInfoErr,
-			socksErr,
-			o.core.Close(),
-		)
+
+		timer := time.NewTimer(effectiveCloseTimeout(o.closeTimeout))
+		defer timer.Stop()
+		errs := make([]error, 0, len(dependents)+2)
+		startCore := func() <-chan closeResultObj {
+			result := make(chan closeResultObj, 1)
+			go func() {
+				result <- closeResultObj{name: "core", err: o.core.Close()}
+			}()
+			return result
+		}
+		timeout := func() {
+			o.closeTimedOut.Store(true)
+			errs = append(errs, fmt.Errorf("%w after %s", ErrCloseTimedOut, effectiveCloseTimeout(o.closeTimeout)))
+			o.closeErr = errors.Join(errs...)
+		}
+
+		for range dependents {
+			select {
+			case result := <-results:
+				if result.err != nil {
+					errs = append(errs, fmt.Errorf("%s: %w", result.name, result.err))
+				}
+			case <-timer.C:
+				// The graceful dependency order exhausted its budget. Still attempt the
+				// upstream teardown so a broken dependent cannot prevent best-effort
+				// resource release after Close returns.
+				_ = startCore()
+				timeout()
+				return
+			}
+		}
+
+		select {
+		case result := <-startCore():
+			if result.err != nil {
+				errs = append(errs, fmt.Errorf("%s: %w", result.name, result.err))
+			}
+			o.closeErr = errors.Join(errs...)
+		case <-timer.C:
+			timeout()
+		}
 	})
 	return o.closeErr
 }

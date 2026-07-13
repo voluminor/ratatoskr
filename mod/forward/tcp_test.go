@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -403,10 +405,12 @@ func TestStartLocalTCP_echoRoundtrip(t *testing.T) {
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
 	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
 		Mapped: echo,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -447,10 +451,12 @@ func TestStartLocalTCP_dialDoesNotBlockAcceptLoop(t *testing.T) {
 		DialTimeout:       time.Second,
 		MaxTCPConnections: 2,
 	})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
 		Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := mgr.Start(ctx); err != nil {
@@ -487,10 +493,12 @@ func TestStartLocalTCP_maxConnectionsLimitsDialFanout(t *testing.T) {
 		DialTimeout:       time.Second,
 		MaxTCPConnections: 1,
 	})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
 		Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := mgr.Start(ctx); err != nil {
@@ -523,10 +531,12 @@ func TestStartLocalTCP_cancelClosesActiveProxy(t *testing.T) {
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
 	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
 		Mapped: echo,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := mgr.Start(ctx); err != nil {
@@ -571,10 +581,12 @@ func TestStartLocalTCP_cancelStopsListener(t *testing.T) {
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
 	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
 		Mapped: echo,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	if err := mgr.Start(ctx); err != nil {
@@ -606,10 +618,12 @@ func TestStartLocalTCP_bindErrorReturned(t *testing.T) {
 	addr := ln.Addr().(*net.TCPAddr)
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
 	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: addr.Port},
 		Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err = mgr.Start(context.Background()); err == nil {
 		t.Fatal("Start returned nil for occupied TCP listen address")
@@ -619,10 +633,12 @@ func TestStartLocalTCP_bindErrorReturned(t *testing.T) {
 func TestStartTCPOnlyDoesNotRequireUDPTimeout(t *testing.T) {
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
 	mgr := newTestManagerObj(node, 0, ConfigObj{})
-	mgr.AddLocalTCP(TCPMappingObj{
+	if err := mgr.AddLocalTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("127.0.0.1")},
 		Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -635,7 +651,9 @@ func TestStartTCPOnlyDoesNotRequireUDPTimeout(t *testing.T) {
 
 func TestStart_invalidTCPMapping(t *testing.T) {
 	mgr := newTestManagerObj(&mockNodeObj{}, 0, ConfigObj{})
-	mgr.AddLocalTCP(TCPMappingObj{Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}})
+	if err := mgr.AddLocalTCP(TCPMappingObj{Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}}); err != nil {
+		t.Fatal(err)
+	}
 	err := mgr.Start(context.Background())
 	if !errors.Is(err, ErrInvalidMapping) {
 		t.Fatalf("Start = %v, want ErrInvalidMapping", err)
@@ -651,10 +669,12 @@ func TestStartRemoteTCP_echoRoundtrip(t *testing.T) {
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
 	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	mgr.AddRemoteTCP(TCPMappingObj{
+	if err := mgr.AddRemoteTCP(TCPMappingObj{
 		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: remotePort},
 		Mapped: echo,
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -685,6 +705,60 @@ func TestStartRemoteTCP_echoRoundtrip(t *testing.T) {
 }
 
 // //
+
+func TestManagerLifecycle_singleUseAndClose(t *testing.T) {
+	mgr := newTestManagerObj(&mockNodeObj{}, time.Second, ConfigObj{})
+	var nilCtx context.Context
+	if err := mgr.Start(nilCtx); err != nil { //nolint:staticcheck // Verifies the documented nil-context contract.
+		t.Fatalf("Start: %v", err)
+	}
+	if err := mgr.Start(context.Background()); !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("second Start error = %v, want ErrAlreadyStarted", err)
+	}
+	if err := mgr.AddLocalTCP(TCPMappingObj{}); !errors.Is(err, ErrAlreadyStarted) {
+		t.Fatalf("AddLocalTCP after Start error = %v, want ErrAlreadyStarted", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	if err := mgr.AddLocalUDP(UDPMappingObj{}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("AddLocalUDP after Close error = %v, want ErrClosed", err)
+	}
+}
+
+func TestIOErrorStreakTerminatesClosedAndRepeatedErrors(t *testing.T) {
+	var streak ioErrorStreakObj
+	if !streak.terminal(net.ErrClosed) {
+		t.Fatal("net.ErrClosed must be terminal immediately")
+	}
+	streak.reset()
+	err := errors.New("permanent abort")
+	for i := 1; i < terminalErrorLimit; i++ {
+		if streak.terminal(err) {
+			t.Fatalf("error became terminal after %d failures", i)
+		}
+	}
+	if !streak.terminal(err) {
+		t.Fatalf("error did not become terminal after %d failures", terminalErrorLimit)
+	}
+}
+
+func TestIOErrorStreakNeverTerminatesRetryableResourceErrors(t *testing.T) {
+	for _, errno := range []error{syscall.EMFILE, syscall.ENFILE, syscall.ENOBUFS, syscall.ECONNABORTED} {
+		t.Run(errno.Error(), func(t *testing.T) {
+			var streak ioErrorStreakObj
+			err := &net.OpError{Op: "accept", Net: "tcp", Err: os.NewSyscallError("accept4", errno)}
+			for i := 0; i < terminalErrorLimit*3; i++ {
+				if streak.terminal(err) {
+					t.Fatalf("retryable error became terminal after %d attempts: %v", i+1, err)
+				}
+			}
+		})
+	}
+}
 
 func BenchmarkProxyTCP(b *testing.B) {
 	payload := make([]byte, 4096)

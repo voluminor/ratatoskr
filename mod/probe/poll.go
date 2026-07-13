@@ -21,6 +21,9 @@ const (
 // Returns immediately if both found; waits for hops if only tree is available;
 // falls back to full poll with lookup retries until ctx expires.
 func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
 	if err := validateKey(key); err != nil {
 		return nil, err
 	}
@@ -128,33 +131,43 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 		rtt time.Duration
 	}
 
-	var remoteCount int
+	// Direct peers get RTT from core; the rest are queried remotely. Collect the
+	// remote indices first so the result channel can buffer every job; workers can
+	// finish without blocking even if ctx cancels the wait.
+	var remote []int
 	for i, n := range targets {
 		if lat, ok := peerLatency[toKeyArray(n.Key)]; ok {
 			targets[i].RTT = lat
-		} else {
-			remoteCount++
+			continue
+		}
+		if n.RTT == 0 {
+			remote = append(remote, i)
 		}
 	}
-	if remoteCount == 0 {
+	if len(remote) == 0 {
 		return
 	}
 
-	// Concurrency is bounded downstream by remoteLimit inside callRemotePeers,
-	// so no local semaphore is needed here.
-	ch := make(chan rttResultObj, remoteCount)
-	scheduled := 0
-	for i, n := range targets {
-		if n.RTT > 0 {
-			continue
-		}
-		scheduled++
-		go func(idx int, k ed25519.PublicKey) {
-			_, rtt, _ := o.callRemotePeers(ctx, k)
-			ch <- rttResultObj{idx: idx, rtt: rtt}
-		}(i, n.Key)
+	ch := make(chan rttResultObj, len(remote))
+	jobs := make(chan int, len(remote))
+	for _, idx := range remote {
+		jobs <- idx
 	}
-	for range scheduled {
+	close(jobs)
+
+	workerCount := len(remote)
+	if workerCount > DefaultMaxConcurrency {
+		workerCount = DefaultMaxConcurrency
+	}
+	for range workerCount {
+		go func() {
+			for idx := range jobs {
+				_, rtt, _ := o.callRemotePeers(ctx, targets[idx].Key)
+				ch <- rttResultObj{idx: idx, rtt: rtt}
+			}
+		}()
+	}
+	for range remote {
 		select {
 		case r := <-ch:
 			targets[r.idx].RTT = r.rtt

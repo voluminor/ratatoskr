@@ -188,8 +188,7 @@ func newResolveCore(t *testing.T) *coremod.Obj {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
 	node, err := coremod.New(coremod.ConfigObj{
-		Config:          cfg,
-		CoreStopTimeout: time.Second,
+		Config: cfg,
 	})
 	if err != nil {
 		t.Fatalf("core.New: %v", err)

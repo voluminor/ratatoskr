@@ -2,8 +2,9 @@ package sigil_core
 
 import (
 	"fmt"
-	"maps"
+	"sync"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/target"
 )
@@ -12,6 +13,7 @@ import (
 
 // Obj manages sigils and assembles local NodeInfo.
 type Obj struct {
+	mu            sync.RWMutex
 	localNodeInfo map[string]any
 	sigils        map[string]sigils.Interface
 }
@@ -23,12 +25,16 @@ func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 	s := new(Obj)
 	s.sigils = make(map[string]sigils.Interface)
 
-	s.localNodeInfo = maps.Clone(nodeInfo)
+	errs := make([]error, 0)
+	var err error
+	s.localNodeInfo, err = common.CloneNodeInfo(nodeInfo)
+	if err != nil {
+		errs = append(errs, fmt.Errorf("base NodeInfo: %w", err))
+	}
 	if s.localNodeInfo == nil {
 		s.localNodeInfo = make(map[string]any)
 	}
 
-	errs := make([]error, 0)
 	if len(sg) > 0 {
 		errs = append(errs, s.Add(sg...)...)
 	}
@@ -42,10 +48,18 @@ func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 // A copy prevents a holder from structurally mutating the served map; nested
 // values are already independent because each sigil's Params deep-copies them.
 func (s *Obj) NodeInfo() map[string]any {
-	return maps.Clone(s.localNodeInfo)
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	cloned, err := common.CloneNodeInfo(s.localNodeInfo)
+	if err != nil {
+		return nil
+	}
+	return cloned
 }
 
 func (s *Obj) Sigils() map[string]sigils.Interface {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make(map[string]sigils.Interface, len(s.sigils))
 	for name, sg := range s.sigils {
 		if sg == nil {
@@ -61,6 +75,8 @@ func (s *Obj) Sigils() map[string]sigils.Interface {
 }
 
 func (s *Obj) String() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	value, _ := s.localNodeInfo[target.Name].(string)
 	if value == "" {
 		value = CompileInfo(s.sigils)
@@ -69,14 +85,20 @@ func (s *Obj) String() string {
 }
 
 func (s *Obj) LenSigils() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.sigils)
 }
 
 func (s *Obj) LenLocal() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.localNodeInfo)
 }
 
 func (s *Obj) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return len(s.sigils) + len(s.localNodeInfo)
 }
 
@@ -89,6 +111,8 @@ func (s *Obj) Len() int {
 // shared state. On failure it is skipped and the error is collected.
 // After all sigils are processed, the ratatoskr metadata key is updated.
 func (s *Obj) Add(sg ...sigils.Interface) []error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.sigils == nil {
 		s.sigils = make(map[string]sigils.Interface)
 	}
@@ -114,8 +138,17 @@ func (s *Obj) Add(sg ...sigils.Interface) []error {
 			errs = append(errs, fmt.Errorf("duplicated sigil[%s]", si.GetName()))
 			continue
 		}
+		if len(s.sigils) >= maxInfoSigils {
+			errs = append(errs, fmt.Errorf("too many sigils: %d (max %d)", len(s.sigils)+1, maxInfoSigils))
+			continue
+		}
 
-		bufMap, err := sigils.MergeParams(s.localNodeInfo, si.Params())
+		params, err := common.CloneNodeInfo(si.Params())
+		if err != nil {
+			errs = append(errs, fmt.Errorf("sigil[%s] has invalid NodeInfo params: %w", si.GetName(), err))
+			continue
+		}
+		bufMap, err := sigils.MergeParams(s.localNodeInfo, params)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("sigil[%s] not add: %v", si.GetName(), err))
 			continue
@@ -140,6 +173,8 @@ func (s *Obj) Add(sg ...sigils.Interface) []error {
 // Get returns an independent clone of a registered sigil by name, or nil if not
 // found. Cloning keeps a caller from mutating the module's stored sigil state.
 func (s *Obj) Get(name string) sigils.Interface {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	sg, ok := s.sigils[name]
 	if !ok {
 		return nil
@@ -149,6 +184,8 @@ func (s *Obj) Get(name string) sigils.Interface {
 
 // Del removes a sigil and deletes its keys from localNodeInfo.
 func (s *Obj) Del(name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	sg, ok := s.sigils[name]
 	if !ok {
 		return fmt.Errorf("sigil[%s] not found", name)

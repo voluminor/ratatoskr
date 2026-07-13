@@ -46,6 +46,18 @@ type StatsInterface interface {
 	RSTDropped() uint64
 }
 
+// DiagnosticInterface exposes topology and NodeInfo hooks used by probe/ninfo.
+type DiagnosticInterface interface {
+	// SetAdmin is an unsafe construction-time hook: upstream handler registration
+	// is not concurrency-safe and exposes privileged debug handlers to the callback.
+	SetAdmin(admin yggcore.AddHandler) error
+	SendLookup(key ed25519.PublicKey)
+	GetSelf() yggcore.SelfInfo
+	GetSessions() []yggcore.SessionInfo
+	GetTree() []yggcore.TreeEntryInfo
+	GetPaths() []yggcore.PathEntryInfo
+}
+
 // Interface is the full public contract of the Yggdrasil node.
 type Interface interface {
 	NetworkInterface
@@ -53,5 +65,6 @@ type Interface interface {
 	AdminInterface
 	MulticastInterface
 	StatsInterface
+	DiagnosticInterface
 	Close() error
 }

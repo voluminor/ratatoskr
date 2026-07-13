@@ -254,6 +254,22 @@ func newTestResolverObj(dialer proxy.ContextDialer, nameserver string, cfg Confi
 	return New(cfg)
 }
 
+func TestCacheKeyNormalizesTrailingDot(t *testing.T) {
+	if a, b := cacheKey("Example.PK.YGG."), cacheKey("example.pk.ygg"); a != b {
+		t.Fatalf("cache keys differ: %q != %q", a, b)
+	}
+}
+
+func TestResolveAfterClose(t *testing.T) {
+	r := New(ConfigObj{})
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := r.Resolve(context.Background(), "200::1"); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Resolve error = %v, want ErrClosed", err)
+	}
+}
+
 func resolveConcurrently(tb testing.TB, r *Obj, name string, concurrency int) {
 	tb.Helper()
 	var wg sync.WaitGroup

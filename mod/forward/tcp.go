@@ -36,11 +36,7 @@ type tcpStartObj struct {
 }
 
 func (l *tcpLimitObj) acquire() bool {
-	if l == nil {
-		return true
-	}
-	if l.max <= 0 {
-		l.active.Add(1)
+	if l == nil || l.max <= 0 {
 		return true
 	}
 	for {
@@ -55,7 +51,7 @@ func (l *tcpLimitObj) acquire() bool {
 }
 
 func (l *tcpLimitObj) release() {
-	if l != nil {
+	if l != nil && l.max > 0 {
 		l.active.Add(-1)
 	}
 }
@@ -218,6 +214,7 @@ func proxyTCP(c1, c2 net.Conn, closeTimeout, idleTimeout time.Duration) {
 func (m *ManagerObj) startTCPProxy(ctx context.Context, client net.Conn, limiter *tcpLimitObj, dial func(context.Context) (net.Conn, error), target string) {
 	defer m.wg.Done()
 	defer limiter.release()
+	defer m.stats.activeTCP.Add(-1)
 
 	dialCtx, cancel := dialTimeoutContext(ctx, m.dialTimeout)
 	remote, err := dial(dialCtx)
@@ -290,6 +287,7 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 			limiter := m.newTCPLimit()
 			limitLog := intervalLogObj{}
 			backoff := time.Duration(0)
+			errorStreak := ioErrorStreakObj{}
 
 			acceptCtx, acceptCancel := context.WithCancel(ctx)
 			defer acceptCancel()
@@ -305,12 +303,17 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 						return
 					}
 					m.log.Errorf("[forward] %s TCP accept error: %s", st.acceptLabel, err)
+					if errorStreak.terminal(err) {
+						m.stats.terminalErrors.Add(1)
+						return
+					}
 					backoff = nextBackoff(backoff)
 					if !sleepContext(ctx, backoff) {
 						return
 					}
 					continue
 				}
+				errorStreak.reset()
 				backoff = 0
 				if !limiter.acquire() {
 					if limitLog.allow(limitLogInterval) {
@@ -320,6 +323,7 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 					continue
 				}
 				m.wg.Add(1)
+				m.stats.activeTCP.Add(1)
 				go m.startTCPProxy(ctx, c, limiter, func(dialCtx context.Context) (net.Conn, error) {
 					return st.dial(st.mapping, dialCtx)
 				}, st.target(st.mapping))

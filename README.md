@@ -196,6 +196,7 @@ flowchart LR
 
 - If `cfg.Config == nil` — random keys are generated
 - If `cfg.Logger == nil` — logs are discarded (noop logger)
+- Cyclic or more than 64-level-deep `Config.NodeInfo` values are rejected with `ErrInvalidNodeInfo`
 - If `cfg.Sigils != nil` — NodeInfo is assembled from sigils; `Config.NodeInfo` is used as the base
 - If `cfg.Peers != nil` — peer manager is started; `cfg.Config.Peers` must be empty
 - If `cfg.Ctx != nil` — node shuts down automatically on context cancellation
@@ -235,10 +236,13 @@ For details on network operations, components, and NIC — see [mod/core/README.
 ```go
 func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error
 func (o *Obj) DisableSOCKS() error
+func (o *Obj) SetSOCKSMaxConnections(n int)
+func (o *Obj) SOCKSMaxConnections() int
 ```
 
 `EnableSOCKS` starts the SOCKS5 proxy. The resolver is created automatically based on `cfg.Nameserver`.
 `DisableSOCKS` stops the proxy; idempotent.
+`SetSOCKSMaxConnections` / `SOCKSMaxConnections` adjust and read the connection limit at runtime.
 
 ```mermaid
 stateDiagram-v2
@@ -354,7 +358,7 @@ flowchart LR
   Snapshot --> RST["RSTDropped"]
   Snapshot --> Peers["GetPeers() → []PeerSnapshotObj"]
   Snapshot --> Active["PeerManagerActive() → []string"]
-  Snapshot --> SOCKS["IsEnabled, Addr, IsUnix"]
+  Snapshot --> SOCKS["SOCKS connections, targets, pending and rejected work"]
 ```
 
 Returns `SnapshotObj` with JSON tags — can be serialized directly for `/status` or `/metrics`.
@@ -365,20 +369,27 @@ Returns `SnapshotObj` with JSON tags — can be serialized directly for `/status
 func (o *Obj) Close() error
 ```
 
-Stops all components. Idempotent (`sync.Once`) — safe for repeated and concurrent calls.
-
-Shutdown order:
+Stops dependent components (`peermgr`, SOCKS, and ninfo) concurrently, then
+closes the core after they have released captured handlers and transports. The
+single `CloseTimeout` budget covers both phases. If it expires, core teardown is
+still started best-effort, `Close()` returns `ErrCloseTimedOut`, and unfinished
+work continues in the background. The method is idempotent and safe for repeated
+or concurrent calls.
 
 ```mermaid
 flowchart TD
   Close --> PM["peermgr.Stop()"]
-  PM --> S1["Disable SOCKS"]
-  S1 --> S15["ninfo.Close()"]
-  S15 --> S2["core.Close() — multicast, admin, listeners, core.Stop, NIC, gVisor"]
-  S2 --> Done["Done"]
+  Close --> S1["socks.Close()"]
+  Close --> S15["ninfo.Close()"]
+  PM --> Gate{"dependents stopped<br/>or deadline reached"}
+  S1 --> Gate
+  S15 --> Gate
+  Gate --> S2["core.Close()"]
+  S2 --> Done
+  Gate --> Done["all complete or ErrCloseTimedOut"]
 ```
 
-Collects errors from all components via `errors.Join`.
+Collects errors observed before the deadline via `errors.Join`.
 
 ---
 
@@ -388,34 +399,34 @@ Collects errors from all components via `errors.Join`.
 
 Node creation parameters.
 
-| Field             | Type                 | Default | Description                                                                       |
-|-------------------|----------------------|---------|-----------------------------------------------------------------------------------|
-| `Ctx`             | `context.Context`    | `nil`   | Parent context; on cancellation — automatic `Close()`. `nil` — manual control     |
-| `Config`          | `*config.NodeConfig` | `nil`   | Yggdrasil configuration. `nil` — random keys                                      |
-| `Logger`          | `yggcore.Logger`     | `nil`   | Logger. `nil` — logs are discarded                                                |
-| `CoreStopTimeout` | `time.Duration`      | `0`     | `core.Stop()` timeout. `0` — no limit                                             |
-| `Peers`           | `*peermgr.ConfigObj` | `nil`   | Peer manager. `nil` — peers from `Config.Peers`. Non-nil + `Config.Peers` → error |
-| `Sigils`          | `[]sigils.Interface` | `nil`   | Sigils for NodeInfo. `nil` — not used. Combines with `Config.NodeInfo`            |
+| Field          | Type                 | Default | Description                                                                       |
+|----------------|----------------------|---------|-----------------------------------------------------------------------------------|
+| `Ctx`          | `context.Context`    | `nil`   | Parent context; on cancellation — automatic `Close()`. `nil` — manual control     |
+| `Config`       | `*config.NodeConfig` | `nil`   | Yggdrasil configuration. `nil` — random keys                                      |
+| `Logger`       | `yggcore.Logger`     | `nil`   | Logger. `nil` — logs are discarded                                                |
+| `CloseTimeout` | `time.Duration`      | `0`     | Total root shutdown budget. `0` — 10s; `<0` — invalid                             |
+| `RSTQueueSize` | `int`                | `0`     | RST deferred queue size. `0` — core default                                       |
+| `Peers`        | `*peermgr.ConfigObj` | `nil`   | Peer manager. `nil` — peers from `Config.Peers`. Non-nil + `Config.Peers` → error |
+| `Sigils`       | `[]sigils.Interface` | `nil`   | Sigils for NodeInfo. `nil` — not used. Combines with `Config.NodeInfo`            |
 
 ### SOCKSConfigObj
 
 SOCKS5 proxy parameters.
 
-| Field                            | Type                         | Default  | Description                                                           |
-|----------------------------------|------------------------------|----------|-----------------------------------------------------------------------|
-| `Addr`                           | string                       | required | TCP `"127.0.0.1:1080"` or Unix `"/tmp/ygg.sock"` (`/` or `.` — Unix)  |
-| `Nameserver`                     | string                       | `""`     | DNS on the Yggdrasil network. `"[ipv6]:port"`. Empty — `.pk.ygg` only |
-| `Verbose`                        | bool                         | `false`  | Log each SOCKS connection                                             |
-| `MaxConnections`                 | int                          | `0`      | Max concurrent connections. `0` — safe default, `<0` — unlimited      |
-| `HandshakeTimeout`               | `time.Duration`              | `0`      | SOCKS handshake timeout. `0` — safe default, `<0` — disabled          |
-| `DialTimeout`                    | `time.Duration`              | `0`      | Outbound dial timeout. `0` — safe default, `<0` — disabled            |
-| `TunnelIdleTimeout`              | `time.Duration`              | `0`      | Established tunnel idle timeout. `0` — safe default, `<0` — disabled  |
-| `NameserverLookupTimeout`        | `time.Duration`              | `0`      | DNS lookup timeout. `0` — safe default, `<0` — hard safety cap        |
-| `NameserverMaxConcurrentLookups` | int                          | `0`      | Max concurrent DNS lookups. `0` — safe default, `<0` — high cap       |
-| `NameserverCacheTTL`             | `time.Duration`              | `0`      | Positive DNS cache TTL. `0` — safe default, `<0` — disabled           |
-| `NameserverCacheMaxEntries`      | int                          | `0`      | Positive DNS cache cap. `0` — safe default, `<0` — disabled           |
-| `UnixSocketMode`                 | `os.FileMode`                | `0`      | Unix socket permissions. `0` — `0600`                                 |
-| `Credentials`                    | `socks.CredentialsInterface` | `nil`    | Optional SOCKS5 username/password validator                           |
+| Field                           | Type                         | Default  | Description                                                                                                         |
+|---------------------------------|------------------------------|----------|---------------------------------------------------------------------------------------------------------------------|
+| `Addr`                          | string                       | required | TCP `"127.0.0.1:1080"` or a Unix socket inside a private directory (`0700`)                                         |
+| `Nameserver`                    | string                       | `""`     | DNS on the Yggdrasil network. `"[ipv6]:port"`. Empty — `.pk.ygg` only                                               |
+| `Verbose`                       | bool                         | `false`  | Log each SOCKS connection                                                                                           |
+| `MaxConnections`                | int                          | `0`      | Max concurrent connections. `0` — safe default, `<0` — unlimited                                                    |
+| `HandshakeTimeout`              | `time.Duration`              | `0`      | SOCKS handshake timeout. `0` — safe default, `<0` — disabled                                                        |
+| `DialTimeout`                   | `time.Duration`              | `0`      | Outbound dial timeout. `0` — safe default, `<0` — disabled                                                          |
+| `TunnelIdleTimeout`             | `time.Duration`              | `0`      | Established tunnel idle timeout. `0` — safe default, `<0` — disabled                                                |
+| `MaxAssociateTargetsPerSession` | int                          | `0`      | UDP ASSOCIATE target cap per session. `0` — safe default, `<0` — no per-session cap; per-server cap still applies   |
+| `NameserverLookupTimeout`       | `time.Duration`              | `0`      | DNS lookup timeout. `0` — safe default, `<0` — no resolver-imposed deadline (Go DNS client's own ~5s still applies) |
+| `NameserverCacheTTL`            | `time.Duration`              | `0`      | Positive DNS cache TTL. `0` — safe default, `<0` — disabled                                                         |
+| `NameserverCacheMaxEntries`     | int                          | `0`      | Positive DNS cache cap. `0` — safe default, `<0` — disabled                                                         |
+| `Credentials`                   | `socks.CredentialsInterface` | `nil`    | Optional SOCKS5 username/password validator                                                                         |
 
 ---
 
@@ -452,11 +463,12 @@ SOCKS5 proxy parameters.
 
 ### SOCKSSnapshotObj
 
-| Field     | Type   | Description               |
-|-----------|--------|---------------------------|
-| `Enabled` | `bool` | Proxy is running          |
-| `Addr`    | string | Address (`omitempty`)     |
-| `IsUnix`  | `bool` | Unix socket (`omitempty`) |
+| Field               | Type   | Description               |
+|---------------------|--------|---------------------------|
+| `Enabled`           | `bool` | Proxy is running          |
+| `Addr`              | string | Address (`omitempty`)     |
+| `IsUnix`            | `bool` | Unix socket (`omitempty`) |
+| `ActiveConnections` | `int`  | Active connection count   |
 
 ---
 
@@ -466,6 +478,7 @@ SOCKS5 proxy parameters.
 |----------------------------|-----------------------------------------------------------|
 | `ErrPeersConflict`         | `Config.Peers` and `Peers` manager are set simultaneously |
 | `ErrPeerManagerNotEnabled` | Peer manager method called but manager is not enabled     |
+| `ErrClosed`                | Method called after the node was closed                   |
 
 Errors from `core.Interface` (`ErrNotAvailable`, etc.) are described in [mod/core/README.md](mod/core/README.md).
 
@@ -515,10 +528,14 @@ flowchart TD
   ASK --> READY
   READY --> CLOSE["Close()"]
   CLOSE --> S1["peermgr.Stop()"]
-  S1 --> S2["Disable SOCKS"]
-  S2 --> S25["ninfo.Close()"]
-  S25 --> S3["core.Close()"]
-  S3 --> DONE([Done])
+  CLOSE --> S2["socks.Close()"]
+  CLOSE --> S25["ninfo.Close()"]
+  S1 --> GATE{"dependents stopped<br/>or deadline"}
+  S2 --> GATE
+  S25 --> GATE
+  GATE --> S3["core.Close()"]
+  S3 --> DONE
+  GATE --> DONE([Done or ErrCloseTimedOut])
 ```
 
 Three ways to shut down:
@@ -605,8 +622,10 @@ defer node.DisableSOCKS()
 Unix socket:
 
 ```go
+dir, err := os.MkdirTemp("", "ratatoskr-socks-") // mode 0700
+if err != nil { return err }
 err = node.EnableSOCKS(ratatoskr.SOCKSConfigObj{
-Addr: "/tmp/ygg-socks.sock",
+Addr: filepath.Join(dir, "ygg-socks.sock"),
 })
 ```
 

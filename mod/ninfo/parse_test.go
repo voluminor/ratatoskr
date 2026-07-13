@@ -2,7 +2,6 @@ package ninfo
 
 import (
 	"encoding/json"
-	"slices"
 	"strings"
 	"testing"
 
@@ -229,7 +228,7 @@ func TestParsedObj_NodeInfo_plain(t *testing.T) {
 
 func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa", "key1"))))
+	_ = obj.AddSigil(newMockSigil("aaa", "key1"))
 	m := map[string]any{
 		target.Name: "[aaa] " + target.Version,
 		"key1":      "test",
@@ -250,7 +249,7 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 
 func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa", "key1"))))
+	_ = obj.AddSigil(newMockSigil("aaa", "key1"))
 	m := map[string]any{
 		target.Name: "[aaa] v9.9.9",
 		"key1":      "test",
@@ -264,7 +263,7 @@ func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
 
 func TestParsedObj_NodeInfo_preservesUnknownSigilNames(t *testing.T) {
 	obj := newTestObj()
-	obj.AddSigil(slices.Values(seqOf(newMockSigil("aaa", "key1"))))
+	_ = obj.AddSigil(newMockSigil("aaa", "key1"))
 	m := map[string]any{
 		target.Name: "[aaa,zzz] v9.9.9",
 		"key1":      "test",

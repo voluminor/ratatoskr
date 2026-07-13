@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,6 +109,44 @@ func TestTree_backgroundContextUsesMaxDuration(t *testing.T) {
 	_, err := obj.Tree(context.Background(), 2, 1)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected context deadline from MaxDuration, got %v", err)
+	}
+}
+
+func TestEnrichPath_boundsLocalFanout(t *testing.T) {
+	const extraNodes = 16
+
+	path := make([]*NodeObj, DefaultMaxConcurrency+extraNodes+1)
+	for i := range path {
+		path[i] = &NodeObj{Key: cacheTestKey(i + 1)}
+	}
+	var active atomic.Int64
+	var maxActive atomic.Int64
+	obj := &Obj{
+		source:    &treeSourceObj{},
+		logger:    noopLoggerObj{},
+		remoteSem: make(chan struct{}, len(path)),
+		remotePeers: func(json.RawMessage) (interface{}, error) {
+			current := active.Add(1)
+			for {
+				previous := maxActive.Load()
+				if current <= previous || maxActive.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+			defer active.Add(-1)
+			time.Sleep(5 * time.Millisecond)
+			return yggcore.DebugGetPeersResponse{}, nil
+		},
+	}
+
+	obj.enrichPath(context.Background(), path)
+	if got := maxActive.Load(); got > DefaultMaxConcurrency {
+		t.Fatalf("enrichPath started %d remote calls, want at most %d", got, DefaultMaxConcurrency)
+	}
+	for i, n := range path[1:] {
+		if n.RTT <= 0 {
+			t.Fatalf("path[%d] RTT was not enriched", i+1)
+		}
 	}
 }
 

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,13 +30,26 @@ const (
 	acceptRetryMinDelay     = 10 * time.Millisecond
 	acceptRetryMaxDelay     = time.Second
 
-	defaultMaxAssociateTargets = 1024
+	defaultMaxAssociateTargets             = 1024
+	defaultMaxAssociateTargetsPerSession   = 128
+	defaultMaxAssociateTargetsPerPrincipal = 128
 )
 
 func effectiveMaxConnections(n int) int {
 	switch {
 	case n == 0:
 		return defaultMaxConnections
+	case n < 0:
+		return -1
+	default:
+		return n
+	}
+}
+
+func effectiveMaxAssociateTargetsPerSession(n int) int {
+	switch {
+	case n == 0:
+		return defaultMaxAssociateTargetsPerSession
 	case n < 0:
 		return -1
 	default:
@@ -56,6 +68,12 @@ func effectiveDuration(d, def time.Duration) time.Duration {
 	default:
 		return d
 	}
+}
+
+type failClosedResolverObj struct{}
+
+func (failClosedResolverObj) Resolve(ctx context.Context, _ string) (context.Context, net.IP, error) {
+	return ctx, nil, ErrResolverRequired
 }
 
 func finishHandshake(_ context.Context, writer io.Writer, request *socks5.Request) error {
@@ -78,24 +96,150 @@ func retryableAcceptError(err error) bool {
 
 // Obj — SOCKS5 proxy server over Yggdrasil
 type Obj struct {
-	listener          net.Listener
-	addr              string
-	isUnix            bool
-	logger            yggcore.Logger
-	maxConnections    atomic.Int64
-	dialTimeout       time.Duration
-	tunnelIdleTimeout time.Duration
-	limiter           *common.DynamicLimitObj
-	associateLimiter  *common.DynamicLimitObj
-	mu                sync.Mutex
-	serveWG           *sync.WaitGroup
+	listener                      net.Listener
+	addr                          string
+	isUnix                        bool
+	logger                        yggcore.Logger
+	maxConnections                atomic.Int64
+	dialTimeout                   time.Duration
+	tunnelIdleTimeout             time.Duration
+	maxAssociateTargetsPerSession int
+	limiter                       *common.DynamicLimitObj
+	associateLimiter              *common.DynamicLimitObj
+	associatePool                 *associateWorkerPoolObj
+	serveTasks                    *serverTaskGroupObj
+	associatePrincipalMu          sync.Mutex
+	associatePrincipals           map[string]int
+	mu                            sync.Mutex
+	serveWG                       *sync.WaitGroup
+	resolverCloser                io.Closer
+	associatePending              atomic.Int64
+	associateRejected             atomic.Int64
+}
+
+// SnapshotObj is a point-in-time view of server load and admission pressure.
+type SnapshotObj struct {
+	ActiveConnections        int
+	ActiveAssociateTargets   int
+	PendingAssociateTargets  int64
+	RejectedAssociateTargets int64
+}
+
+// serverTaskGroupObj implements socks5.GPool while retaining ownership of every
+// ServeConn and proxy-copy goroutine. Once Server.Serve returns there can be no
+// new root tasks; nested tasks are submitted before their tracked parent exits,
+// so WaitGroup's positive-counter Add/Wait rule is preserved.
+type serverTaskGroupObj struct {
+	wg sync.WaitGroup
+}
+
+func (g *serverTaskGroupObj) Submit(task func()) error {
+	g.wg.Add(1)
+	go func() {
+		defer g.wg.Done()
+		task()
+	}()
+	return nil
+}
+
+func (g *serverTaskGroupObj) Wait() {
+	if g != nil {
+		g.wg.Wait()
+	}
+}
+
+// connectTargetSetObj owns outbound TCP CONNECT targets for one Start/Close
+// generation. Closing the set also rejects and closes a dial that completes
+// after shutdown took its snapshot.
+type connectTargetSetObj struct {
+	mu     sync.Mutex
+	closed bool
+	conns  map[*trackedConnectConnObj]struct{}
+}
+
+type trackedConnectConnObj struct {
+	net.Conn
+	owner     *connectTargetSetObj
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func newConnectTargetSet() *connectTargetSetObj {
+	return &connectTargetSetObj{conns: make(map[*trackedConnectConnObj]struct{})}
+}
+
+func (s *connectTargetSetObj) track(conn net.Conn) (net.Conn, error) {
+	tracked := &trackedConnectConnObj{Conn: conn, owner: s}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = conn.Close()
+		return nil, net.ErrClosed
+	}
+	s.conns[tracked] = struct{}{}
+	s.mu.Unlock()
+	return tracked, nil
+}
+
+func (s *connectTargetSetObj) closeAll() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.closed = true
+	conns := make([]*trackedConnectConnObj, 0, len(s.conns))
+	for conn := range s.conns {
+		conns = append(conns, conn)
+	}
+	s.mu.Unlock()
+	for _, conn := range conns {
+		_ = conn.Close()
+	}
+}
+
+func (s *connectTargetSetObj) remove(conn *trackedConnectConnObj) {
+	s.mu.Lock()
+	delete(s.conns, conn)
+	s.mu.Unlock()
+}
+
+func (c *trackedConnectConnObj) Close() error {
+	c.closeOnce.Do(func() {
+		c.closeErr = c.Conn.Close()
+		c.owner.remove(c)
+	})
+	return c.closeErr
+}
+
+func (c *trackedConnectConnObj) CloseWrite() error {
+	if conn, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return conn.CloseWrite()
+	}
+	return nil
+}
+
+// Snapshot returns counters without resetting them.
+func (s *Obj) Snapshot() SnapshotObj {
+	s.mu.Lock()
+	limiter := s.associateLimiter
+	s.mu.Unlock()
+	activeTargets := 0
+	if limiter != nil {
+		activeTargets = int(limiter.Active())
+	}
+	return SnapshotObj{
+		ActiveConnections:        s.ActiveConnections(),
+		ActiveAssociateTargets:   activeTargets,
+		PendingAssociateTargets:  s.associatePending.Load(),
+		RejectedAssociateTargets: s.associateRejected.Load(),
+	}
 }
 
 // ConfigObj contains all SOCKS5 startup parameters.
 type ConfigObj struct {
 	// Network dials outbound connections through Yggdrasil.
 	Network proxy.ContextDialer
-	// Address: TCP "127.0.0.1:1080" or Unix "/tmp/ygg.sock"
+	// Address: TCP "127.0.0.1:1080" or a Unix socket in a private directory.
 	Addr string
 	// Name resolver (.pk.ygg, DNS)
 	Resolver socks5.NameResolver
@@ -111,6 +255,15 @@ type ConfigObj struct {
 	DialTimeout time.Duration
 	// Established tunnel idle timeout; 0 -> safe default, <0 -> disabled
 	TunnelIdleTimeout time.Duration
+	// Maximum UDP ASSOCIATE targets per session; 0 -> safe default,
+	// <0 -> no per-session cap. The per-server safety cap still applies.
+	MaxAssociateTargetsPerSession int
+	// AllowSystemDNS opts direct mod/socks users into host DNS when Resolver is nil.
+	// The default is fail-closed so target names cannot leak outside Yggdrasil.
+	AllowSystemDNS bool
+	// OwnResolver closes Resolver after the server has stopped. It is intended for
+	// composition roots that construct the resolver specifically for this server.
+	OwnResolver bool
 	// Optional SOCKS5 username/password credentials
 	Credentials CredentialsInterface
 }
@@ -170,12 +323,23 @@ func (s *Obj) ActiveConnections() int {
 
 // DialTimeout — immutable outbound dial timeout set at Start.
 func (s *Obj) DialTimeout() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.dialTimeout
 }
 
 // TunnelIdleTimeout — immutable tunnel idle timeout set at Start.
 func (s *Obj) TunnelIdleTimeout() time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.tunnelIdleTimeout
+}
+
+// MaxAssociateTargetsPerSession — immutable per-session UDP ASSOCIATE target cap set at Start.
+func (s *Obj) MaxAssociateTargetsPerSession() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxAssociateTargetsPerSession
 }
 
 // //
@@ -184,6 +348,9 @@ func (s *Obj) TunnelIdleTimeout() time.Duration {
 func (s *Obj) Start(cfg ConfigObj) error {
 	if cfg.Network == nil {
 		return ErrNetworkRequired
+	}
+	if strings.TrimSpace(cfg.Addr) == "" {
+		return fmt.Errorf("%w: empty address", ErrInvalidAddress)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -196,23 +363,44 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	s.maxConnections.Store(int64(effectiveMaxConnections(cfg.MaxConnections)))
 	s.dialTimeout = effectiveDuration(cfg.DialTimeout, defaultDialTimeout)
 	s.tunnelIdleTimeout = effectiveDuration(cfg.TunnelIdleTimeout, defaultTunnelIdleTime)
+	s.maxAssociateTargetsPerSession = effectiveMaxAssociateTargetsPerSession(cfg.MaxAssociateTargetsPerSession)
 	s.associateLimiter = common.NewDynamicLimit(defaultMaxAssociateTargets)
+	s.associatePool = newAssociateWorkerPool()
+	s.serveTasks = &serverTaskGroupObj{}
+	connectTargets := newConnectTargetSet()
+	s.associatePrincipalMu.Lock()
+	s.associatePrincipals = make(map[string]int)
+	s.associatePrincipalMu.Unlock()
 	associateResolver := cfg.Resolver
 	if associateResolver == nil {
-		associateResolver = socks5.DNSResolver{}
+		if cfg.AllowSystemDNS {
+			associateResolver = socks5.DNSResolver{}
+		} else {
+			associateResolver = failClosedResolverObj{}
+		}
 	}
 	opts := []socks5.Option{
+		socks5.WithGPool(s.serveTasks),
 		socks5.WithDial(func(ctx context.Context, network, addr string) (net.Conn, error) {
 			timeout := s.dialTimeout
+			var (
+				conn net.Conn
+				err  error
+			)
 			if timeout <= 0 {
-				return cfg.Network.DialContext(ctx, network, addr)
+				conn, err = cfg.Network.DialContext(ctx, network, addr)
+			} else {
+				if ctx == nil {
+					ctx = context.Background()
+				}
+				dialCtx, cancel := context.WithTimeout(ctx, timeout)
+				defer cancel()
+				conn, err = cfg.Network.DialContext(dialCtx, network, addr)
 			}
-			if ctx == nil {
-				ctx = context.Background()
+			if err != nil {
+				return nil, err
 			}
-			dialCtx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			return cfg.Network.DialContext(dialCtx, network, addr)
+			return connectTargets.track(conn)
 		}),
 		socks5.WithConnectMiddleware(finishHandshake),
 		socks5.WithBindMiddleware(finishHandshake),
@@ -221,9 +409,7 @@ func (s *Obj) Start(cfg ConfigObj) error {
 			return s.handleAssociate(ctx, writer, request, cfg.Network, associateResolver)
 		}),
 	}
-	if cfg.Resolver != nil {
-		opts = append(opts, socks5.WithResolver(cfg.Resolver))
-	}
+	opts = append(opts, socks5.WithResolver(associateResolver))
 	if cfg.Credentials != nil {
 		opts = append(opts, socks5.WithCredential(cfg.Credentials))
 	}
@@ -246,11 +432,20 @@ func (s *Obj) Start(cfg ConfigObj) error {
 		ln, err = net.Listen("tcp", cfg.Addr)
 	}
 	if err != nil {
+		s.associateLimiter = nil
+		s.associatePool = nil
+		s.serveTasks = nil
+		s.associatePrincipalMu.Lock()
+		s.associatePrincipals = nil
+		s.associatePrincipalMu.Unlock()
 		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
 	}
 	s.listener = ln
 	s.addr = cfg.Addr
 	s.isUnix = isUnix
+	if cfg.OwnResolver {
+		s.resolverCloser, _ = associateResolver.(io.Closer)
+	}
 
 	s.listener = newLimitedListener(
 		s.listener,
@@ -269,7 +464,7 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		s.finishServe(serveLn, server.Serve(serveLn))
+		s.finishServe(serveLn, connectTargets, server.Serve(serveLn))
 	}()
 
 	return nil
@@ -311,9 +506,14 @@ func (s *Obj) IsEnabled() bool {
 	return s.listener != nil
 }
 
-func (s *Obj) finishServe(ln net.Listener, err error) {
+func (s *Obj) finishServe(ln net.Listener, connectTargets *connectTargetSetObj, err error) {
 	limited, _ := ln.(*limitedListenerObj)
 	_ = ln.Close()
+	// A half-closed client can leave go-socks5 blocked in target.Read while its
+	// CONNECT handler waits for both proxy directions. Close outbound targets
+	// before joining that task tree. The set's closed gate also catches a dial
+	// that returns concurrently with shutdown.
+	connectTargets.closeAll()
 	if limited != nil {
 		limited.wait()
 	}
@@ -323,8 +523,22 @@ func (s *Obj) finishServe(ln net.Listener, err error) {
 		s.mu.Unlock()
 		return
 	}
+	associatePool := s.associatePool
+	serveTasks := s.serveTasks
+	s.mu.Unlock()
+
+	// Keep listener published until every accepted connection, proxy-copy task,
+	// UDP handler, and UDP worker job has left this server. Start therefore cannot
+	// reset per-server state while an old generation is still releasing it.
+	serveTasks.Wait()
+	associatePool.close()
+
+	s.mu.Lock()
+	if s.listener != ln {
+		s.mu.Unlock()
+		return
+	}
 	addr := s.addr
-	isUnix := s.isUnix
 	if err != nil && !errors.Is(err, net.ErrClosed) {
 		if s.logger != nil {
 			s.logger.Errorf("[socks] server stopped: %v", err)
@@ -337,12 +551,20 @@ func (s *Obj) finishServe(ln net.Listener, err error) {
 		s.limiter = nil
 	}
 	s.serveWG = nil
+	s.associatePool = nil
+	s.serveTasks = nil
+	s.associateLimiter = nil
+	s.associatePrincipalMu.Lock()
+	s.associatePrincipals = nil
+	s.associatePrincipalMu.Unlock()
+	resolverCloser := s.resolverCloser
+	s.resolverCloser = nil
 	logger := s.logger
 	s.mu.Unlock()
-
-	if isUnix {
-		_ = os.Remove(addr)
+	if resolverCloser != nil {
+		_ = resolverCloser.Close()
 	}
+
 	if logger != nil {
 		logger.Infof("[socks] stopped on %s", addr)
 	}

@@ -3,6 +3,7 @@ package peermgr
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"net"
 	"sync"
 
@@ -13,23 +14,33 @@ import (
 
 // mockNodeObj — minimal peer-capable node for peermgr tests
 type mockNodeObj struct {
-	mu      sync.Mutex
-	peers   []yggcore.PeerInfo
-	added   []string
-	removed []string
+	mu             sync.Mutex
+	peers          []yggcore.PeerInfo
+	added          []string
+	removed        []string
+	addAttempts    int
+	addPeerFail    map[string]bool
+	removePeerFail map[string]bool
 }
 
 func (m *mockNodeObj) AddPeer(uri string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.addAttempts++
+	if m.addPeerFail[uri] {
+		return errors.New("add peer failed")
+	}
 	m.added = append(m.added, uri)
-	m.mu.Unlock()
 	return nil
 }
 
 func (m *mockNodeObj) RemovePeer(uri string) error {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.removed = append(m.removed, uri)
-	m.mu.Unlock()
+	if m.removePeerFail[uri] {
+		return errors.New("remove peer failed")
+	}
 	return nil
 }
 

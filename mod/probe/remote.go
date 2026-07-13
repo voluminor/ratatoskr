@@ -13,7 +13,8 @@ import (
 
 // // // // // // // // // //
 
-type remoteCallResultObj struct {
+type remoteFlightObj struct {
+	done  chan struct{}
 	peers []ed25519.PublicKey
 	rtt   time.Duration
 	err   error
@@ -47,32 +48,9 @@ func releaseRemoteSlot(sem chan struct{}) {
 	}
 }
 
-func (o *Obj) startRemoteCall() error {
-	o.remoteMu.RLock()
-	defer o.remoteMu.RUnlock()
-	if o.closed {
-		return ErrClosed
-	}
-	o.remoteWG.Add(1)
-	return nil
-}
-
-func (o *Obj) finishRemoteCall() {
-	o.remoteWG.Done()
-}
-
-func (o *Obj) remoteClosed() bool {
-	o.remoteMu.RLock()
-	closed := o.closed
-	o.remoteMu.RUnlock()
-	return closed
-}
-
-// //
-
 // callRemotePeers queries a remote node's peers via debug_remoteGetPeers.
 // Returns immediately on ctx cancellation; the underlying call (~6s timeout)
-// may outlive the return; in-flight calls are capped and joined by Close.
+// may outlive the return. Calls for the same key share one underlying handler.
 func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error) {
 	if o.remotePeers == nil {
 		return nil, 0, ErrRemotePeersDisabled
@@ -86,47 +64,74 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 	if err := ctx.Err(); err != nil {
 		return nil, 0, err
 	}
-	if o.remoteClosed() {
+
+	keyArray := toKeyArray(key)
+	o.remoteMu.Lock()
+	if o.closed {
+		o.remoteMu.Unlock()
 		return nil, 0, ErrClosed
 	}
-
-	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key)})
-	ch := make(chan remoteCallResultObj, 1)
-	if err := acquireRemoteSlot(ctx, o.remoteSem); err != nil {
-		return nil, 0, err
+	if o.remoteFlights == nil {
+		o.remoteFlights = make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj)
 	}
-	if err := o.startRemoteCall(); err != nil {
-		releaseRemoteSlot(o.remoteSem)
-		return nil, 0, err
+	if flight := o.remoteFlights[keyArray]; flight != nil {
+		o.remoteMu.Unlock()
+		return waitRemoteFlight(ctx, flight)
 	}
+	flight := &remoteFlightObj{done: make(chan struct{})}
+	o.remoteFlights[keyArray] = flight
+	o.remoteWG.Add(1)
+	o.remoteMu.Unlock()
+	go o.runRemoteFlight(keyArray, flight)
+	return waitRemoteFlight(ctx, flight)
+}
 
-	go func() {
-		defer o.finishRemoteCall()
-		defer releaseRemoteSlot(o.remoteSem)
-		start := time.Now()
-		raw, err := o.remotePeers(req)
-		rtt := time.Since(start)
-		if err != nil {
-			ch <- remoteCallResultObj{rtt: rtt, err: err}
-			return
-		}
-		peers, truncated, err := parseRemotePeersResponse(raw, DefaultMaxPeersPerNode)
-		if truncated {
-			o.logger.Warnf("[probe] node %x returned more than %d peers, truncated to cap", key[:8], DefaultMaxPeersPerNode)
-		}
-		ch <- remoteCallResultObj{peers: peers, rtt: rtt, err: err}
-	}()
-
+func waitRemoteFlight(ctx context.Context, flight *remoteFlightObj) ([]ed25519.PublicKey, time.Duration, error) {
 	select {
 	case <-ctx.Done():
 		return nil, 0, ctx.Err()
-	case r := <-ch:
-		if r.err != nil {
-			o.logger.Debugf("[probe] remoteGetPeers failed for %x: %v", key[:8], r.err)
-			return nil, r.rtt, r.err
+	case <-flight.done:
+		if flight.err != nil {
+			return nil, flight.rtt, flight.err
 		}
-		return r.peers, r.rtt, nil
+		return clonePeerKeys(flight.peers), flight.rtt, nil
 	}
+}
+
+func (o *Obj) runRemoteFlight(key [ed25519.PublicKeySize]byte, flight *remoteFlightObj) {
+	defer o.remoteWG.Done()
+	defer func() {
+		o.remoteMu.Lock()
+		if o.remoteFlights[key] == flight {
+			delete(o.remoteFlights, key)
+		}
+		o.remoteMu.Unlock()
+		close(flight.done)
+	}()
+	workCtx := o.ctx
+	if workCtx == nil {
+		workCtx = context.Background()
+	}
+	if err := acquireRemoteSlot(workCtx, o.remoteSem); err != nil {
+		flight.err = ErrClosed
+		return
+	}
+	defer releaseRemoteSlot(o.remoteSem)
+	req, _ := json.Marshal(map[string]string{"key": hex.EncodeToString(key[:])})
+	start := time.Now()
+	raw, err := o.remotePeers(req)
+	flight.rtt = time.Since(start)
+	if err != nil {
+		flight.err = err
+		o.logger.Debugf("[probe] remoteGetPeers failed for %x: %v", key[:8], err)
+		return
+	}
+	peers, truncated, err := parseRemotePeersResponse(raw, DefaultMaxPeersPerNode)
+	if truncated {
+		o.logger.Warnf("[probe] node %x returned more than %d peers, truncated to cap", key[:8], DefaultMaxPeersPerNode)
+	}
+	flight.peers = peers
+	flight.err = err
 }
 
 // //
@@ -137,9 +142,6 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 // limit valid keys (truncated=true) so an over-sharing node stays reachable with
 // a bounded peer set; messages larger than maxRemotePeerMessageBytes are rejected.
 func parseRemotePeersResponse(raw interface{}, limit int) ([]ed25519.PublicKey, bool, error) {
-	if limit <= 0 {
-		return nil, false, fmt.Errorf("%w: MaxPeersPerNode must be > 0", ErrInvalidConfig)
-	}
 	outer, ok := raw.(yggcore.DebugGetPeersResponse)
 	if !ok {
 		return nil, false, fmt.Errorf("probe: unexpected response type %T", raw)

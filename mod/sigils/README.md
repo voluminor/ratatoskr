@@ -39,7 +39,8 @@ conflict detection, and assembly into the final NodeInfo. The `ninfo` module han
 
 ### File structure
 
-Every sigil lives in its own subpackage under `mod/sigils/<name>/` with three files:
+Every sigil lives in its own subpackage under `mod/sigils/<name>/` with three required files plus an optional
+`access.go`:
 
 ```
 mod/sigils/<name>/

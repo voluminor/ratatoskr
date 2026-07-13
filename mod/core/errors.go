@@ -6,7 +6,6 @@ import "errors"
 
 var (
 	ErrNotAvailable       = errors.New("core: netstack is not available")
-	ErrCloseTimedOut      = errors.New("core: close timed out")
 	ErrAlreadyEnabled     = errors.New("core: already enabled")
 	ErrAdminDisabled      = errors.New("core: admin socket disabled")
 	ErrUnsupportedNetwork = errors.New("core: unsupported network")
@@ -15,6 +14,7 @@ var (
 	ErrInvalidAddress     = errors.New("core: invalid IP address")
 	ErrIPv6Only           = errors.New("core: IPv6 address required")
 	ErrRSTQueueTooLarge   = errors.New("core: RST queue size too large")
+	ErrInvalidNodeInfo    = errors.New("core: invalid NodeInfo")
 
 	ErrInvalidAllowedPublicKey = errors.New("core: invalid AllowedPublicKey")
 )

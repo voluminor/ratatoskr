@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -237,6 +238,117 @@ func TestCallRemotePeers_closeWaitsForDetachedCall(t *testing.T) {
 	case <-closed:
 	case <-time.After(time.Second):
 		t.Fatal("Close did not return after detached call finished")
+	}
+}
+
+func TestCloseContextTimesOutWithoutAbandoningAcceptedCall(t *testing.T) {
+	key := genKey(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	obj := &Obj{
+		logger: noopLoggerObj{},
+		remotePeers: func(json.RawMessage) (interface{}, error) {
+			close(started)
+			<-release
+			return yggcore.DebugGetPeersResponse{}, nil
+		},
+	}
+
+	callerCtx, cancelCaller := context.WithCancel(context.Background())
+	callerDone := make(chan error, 1)
+	go func() {
+		_, _, err := obj.callRemotePeers(callerCtx, key)
+		callerDone <- err
+	}()
+	<-started
+	cancelCaller()
+	if err := <-callerDone; !errors.Is(err, context.Canceled) {
+		close(release)
+		t.Fatalf("caller error = %v, want context.Canceled", err)
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	err := obj.CloseContext(closeCtx)
+	cancelClose()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		close(release)
+		t.Fatalf("CloseContext error = %v, want context.DeadlineExceeded", err)
+	}
+	if _, _, err = obj.callRemotePeers(context.Background(), key); !errors.Is(err, ErrClosed) {
+		close(release)
+		t.Fatalf("call after CloseContext error = %v, want ErrClosed", err)
+	}
+
+	closed := make(chan struct{})
+	go func() {
+		obj.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		close(release)
+		t.Fatal("Close returned before the accepted call finished")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after the accepted call returned")
+	}
+}
+
+func TestCloseContextReturnsSuccessWhenAlreadyClosed(t *testing.T) {
+	obj := &Obj{}
+	obj.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := obj.CloseContext(ctx); err != nil {
+		t.Fatalf("CloseContext after completed Close = %v, want nil", err)
+	}
+}
+
+func TestCallRemotePeers_sameKeySingleFlight(t *testing.T) {
+	key := genKey(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	obj := &Obj{
+		logger:        noopLoggerObj{},
+		ctx:           context.Background(),
+		remoteSem:     make(chan struct{}, 4),
+		remoteFlights: make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
+		remotePeers: func(json.RawMessage) (interface{}, error) {
+			if calls.Add(1) == 1 {
+				close(started)
+			}
+			<-release
+			return yggcore.DebugGetPeersResponse{}, nil
+		},
+	}
+	firstCtx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, _, err := obj.callRemotePeers(firstCtx, key)
+		firstDone <- err
+	}()
+	<-started
+	secondDone := make(chan error, 1)
+	go func() {
+		_, _, err := obj.callRemotePeers(context.Background(), key)
+		secondDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v", err)
+	}
+	close(release)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second caller: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying calls = %d, want 1", got)
 	}
 }
 

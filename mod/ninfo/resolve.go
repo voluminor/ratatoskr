@@ -21,7 +21,7 @@ var (
 	// 64 hex chars
 	reHexKey = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	// [ip6]:port
-	reBracketIPv6 = regexp.MustCompile(`^\[([0-9a-fA-F:]+)\]:\d{1,5}$`)
+	reBracketIPv6 = regexp.MustCompile(`^\[(?:[0-9a-fA-F:]+)\]:\d{1,5}$`)
 	// bare ipv6 (must contain at least one colon)
 	reBareIPv6 = regexp.MustCompile(`^[0-9a-fA-F]*:[0-9a-fA-F:]*$`)
 )
@@ -29,7 +29,7 @@ var (
 // // // // // // // // // //
 
 func (obj *Obj) resolveAddr(ctx context.Context, addr string) (ed25519.PublicKey, error) {
-	if obj.isClosed(obj.ctx) {
+	if obj.isClosed() {
 		return nil, ErrClosed
 	}
 	addr = strings.TrimSpace(addr)
@@ -92,7 +92,7 @@ const maxLookupInterval = time.Second
 // module closes. When the caller sets no deadline the poll is bounded by
 // MaxLookupTime so a lookup for an offline node cannot run forever.
 func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey, error) {
-	if obj.isClosed(obj.ctx) {
+	if obj.isClosed() {
 		return nil, ErrClosed
 	}
 	callerCtx := ensureCallerContext(ctx)

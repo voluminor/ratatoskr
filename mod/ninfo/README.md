@@ -42,7 +42,7 @@ flowchart LR
 
     AskAddr -->|"resolve addr → key"| Ask
     Ask --> AskResult["AskResultObj\n{RTT, Node, Software}"]
-  AskResult -.->|" .Node "| ParsedObj["ParsedObj\n{Version, Sigils, Extra}"]
+  AskResult -.->|" .Node "| ParsedObj["ParsedObj\n{Version, Sigils, SigilNames, Extra}"]
   ImportSigils -.->|" reads sigils from "| SC["sigil_core.Obj"]
 
     Parse --> ParsedObj
@@ -58,12 +58,12 @@ obj, err := ninfo.New(ninfo.ConfigObj{
 })
 ```
 
-`New` captures the `getNodeInfo` handler from `core.NodeInfoSourceInterface` via `SetAdmin`. Returns `ErrCoreRequired`
-or `ErrNodeInfoNotCaptured` on failure. NodeInfo timing and limits are fixed internal defaults; there are no tuning
-knobs.
+`New` captures the `getNodeInfo` handler from the configured `Source` via `SetAdmin`. Returns `ErrCoreRequired` when
+`Source` is nil, or `ErrNodeInfoNotCaptured` when the handler is absent. Query timing is tunable through `ConfigObj`
+(`MaxAskTime`, `AskRetryPause`, `LookupInterval`, `MaxLookupTime`); a zero field falls back to its internal default.
 
-`Close()` cancels the module context, waits for in-flight `Ask` handlers to finish, and makes future `Ask` calls return
-`ErrClosed`.
+`Close()` cancels the shared module context. `Ask` runs in the caller's goroutine, so there is nothing to join: any
+in-flight or later `Ask` observes the cancellation and returns `ErrClosed`.
 
 ---
 
@@ -78,8 +78,10 @@ Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error)
 Sends a `getNodeInfo` request to the node identified by `key`. Returns parsed metadata with measured RTT. Uses sigils
 registered via `AddSigil`/`ImportSigils` for response parsing.
 
-The underlying network call runs in a goroutine. Cancelling `ctx` returns immediately with `ctx.Err()`, while the
-handler itself remains bounded by the module concurrency limit and is joined by `Close`.
+The captured `getNodeInfo` handler is called synchronously in the caller's goroutine and retried after `AskRetryPause`
+until a response arrives, `ctx` expires, or the module closes. Each attempt is also bounded by Yggdrasil's own internal
+handler timeout, which often fires before routing converges on a freshly started node, so retrying is what lets the
+address eventually resolve. On `ctx` expiry `Ask` returns the last attempt's error; on `Close` it returns `ErrClosed`.
 
 ### AskAddr
 
@@ -99,8 +101,10 @@ Resolves `addr` to a public key, then calls `Ask`.
 | Bare IPv6        | `200:abcd::1`        | Network lookup via yggdrasil core |
 
 IPv6 resolution works by deriving a partial key from the address and calling `SendLookup`, then polling peers, sessions,
-and paths until a match is found or the context expires. The poll interval is a fixed 100ms, and a fixed 30s cap
-bounds the total wait even when the caller's context has no deadline.
+and paths until a match is found or the context expires. The poll starts at `LookupInterval` (default 100ms) and backs
+off exponentially up to 1s between lookups; when the caller sets no deadline the total wait is bounded by
+`MaxLookupTime`
+(default 30s) so a lookup for an offline node cannot run forever.
 
 ```mermaid
 flowchart LR
@@ -166,7 +170,9 @@ User-provided sigils are cloned via `Clone()` before parsing, so the caller's te
 type ParsedObj struct {
 Version string
 Sigils  map[string]sigils.Interface
-Extra   map[string]any
+// SigilNames preserves valid metadata names this build cannot parse.
+SigilNames []string
+Extra      map[string]any
 }
 ```
 
@@ -184,13 +190,15 @@ Extra   map[string]any
 ### AddSigil / GetSigil / DelSigil
 
 ```go
-AddSigil(sg ...sigils.Interface) []error
+AddSigil(seq iter.Seq[sigils.Interface]) []error
 GetSigil(name string) sigils.Interface
 DelSigil(name string) error
 ```
 
-`AddSigil` validates names via `sigils.ValidateName` and rejects duplicates. Invalid or duplicate sigils are skipped and
-collected as errors.
+`AddSigil` consumes a sequence of sigils, each self-naming via `GetName()`. It validates names via `sigils.ValidateName`
+and rejects nil, invalid, reserved (built-in), duplicate, and non-cloneable sigils; each rejection is skipped and
+reported as a per-sigil error. Accepted sigils are stored as clones. `GetSigil` returns a clone of the named sigil, or
+nil.
 
 ### ImportSigils
 
@@ -198,7 +206,8 @@ collected as errors.
 ImportSigils(src *sigil_core.Obj) []error
 ```
 
-Appends sigils from a `sigil_core.Obj` into parse sigils. Existing names are preserved and returned as conflict errors.
+Appends the non-reserved sigils from a `sigil_core.Obj` into the parse set. Reserved built-in names are skipped
+silently; names already present are kept and reported as conflict errors, as are a nil source or a nil sigil.
 
 ---
 
@@ -211,5 +220,7 @@ Appends sigils from a `sigil_core.Obj` into parse sigils. Existing names are pre
 | `ErrInvalidKeyLength`    | `Ask`: public key has wrong length                         |
 | `ErrUnexpectedResponse`  | `callNodeInfo`: response is not `GetNodeInfoResponse`      |
 | `ErrEmptyResponse`       | `callNodeInfo`: response map is empty                      |
+| `ErrNodeInfoTooLarge`    | `parseAskResponse`: response exceeds the 16 KB cap         |
 | `ErrUnresolvableAddr`    | `resolveIPv6`: lookup timed out                            |
 | `ErrInvalidAddr`         | `resolveAddr`: address does not match any supported format |
+| `ErrClosed`              | `Ask` / `AskAddr`: the module has been closed              |

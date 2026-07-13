@@ -78,7 +78,7 @@ error is returned only if there are no valid peers at all. A negative `MaxPerPro
 | `Logger`          | Logger                                                                   | required |
 | `MaxPerProto`     | Best peers per protocol; `0`/`1` — one best, `N>1` — top-N, `<0` → error | `1`      |
 | `ProbeTimeout`    | Connection wait timeout per probe window                                 | `10s`    |
-| `RefreshInterval` | Re-evaluation interval; `0` — only at start; tiny positives are clamped  | `0`      |
+| `RefreshInterval` | Re-evaluation interval; `0` — only at start; positive — used as-is       | `0`      |
 | `BatchSize`       | Max peers probed simultaneously per window; `0`/`1` — default, capped    | `64`     |
 
 ---
@@ -138,8 +138,8 @@ mgr.Stop()     // stop and remove all peers
 
 `Start` launches a goroutine that immediately performs optimization and then schedules repeats via `RefreshInterval`.
 `ProbeTimeout` and `RefreshInterval` are immutable: set them once through `ConfigObj` at `New`. To change them, create a
-new manager. `Optimize()` remains available at runtime to force an immediate re-evaluation. Positive `RefreshInterval`
-values below the safety floor are clamped.
+new manager. `Optimize()` remains available at runtime to force an immediate re-evaluation. A positive `RefreshInterval`
+is used as-is; `0` or negative leaves only the startup pass.
 
 `Optimize` can be called manually — it blocks until completion. It is serialized: no more than one optimization runs at
 a time. A cycle is bounded only by `Stop` (which cancels the context). A cancelled cycle is not rolled back: it leaves
@@ -156,12 +156,14 @@ to call multiple times; shutdown does not depend on any user callback.
 entries, errs := peermgr.ValidatePeers(uris)
 ```
 
-`ValidatePeers` accepts the Yggdrasil transport schemes `tcp`, `tls`, `quic`, `ws`, `wss`
+`ValidatePeers` normalizes and deduplicates Yggdrasil peer URIs (schemes such as `tcp`, `tls`, `quic`, `ws`, `wss`)
 and checks each URI:
 
 - Empty strings are skipped
+- Malformed URIs (`url.Parse` failure) → error
 - Duplicates by normalized URI (query and fragment stripped) → error
-- Scheme and host presence are validated
+- Scheme and host are not restricted here: the scheme only groups peers per protocol, and `AddPeer` rejects genuinely
+  bad URIs at probe time
 - Order is preserved
 
 ---

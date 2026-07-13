@@ -92,15 +92,13 @@ func TestValidatePeers_duplicateBareQueryMarker(t *testing.T) {
 	}
 }
 
-func TestValidatePeers_missingHostAccepted(t *testing.T) {
-	// Host is no longer validated here; a hostless URI is accepted and left for
-	// node.AddPeer to reject at probe time.
+func TestValidatePeers_missingHostRejected(t *testing.T) {
 	res, errs := ValidatePeers([]string{"tcp://"})
-	if len(errs) != 0 {
-		t.Fatalf("expected no validation error, got: %v", errs)
+	if len(errs) != 1 || !errors.Is(errs[0], ErrInvalidURI) {
+		t.Fatalf("expected ErrInvalidURI, got: %v", errs)
 	}
-	if len(res) != 1 {
-		t.Fatalf("expected the peer to be accepted, got %d", len(res))
+	if len(res) != 0 {
+		t.Fatalf("expected the peer to be rejected, got %d", len(res))
 	}
 }
 
@@ -169,6 +167,23 @@ func TestValidatePeers_errorsRedactQuery(t *testing.T) {
 		if strings.Contains(msg, "password=") || strings.Contains(msg, "secret") {
 			t.Fatalf("validation error leaked query secret: %v", err)
 		}
+	}
+}
+
+func TestNormalizePeerURI_stripsUserinfoAndQuery(t *testing.T) {
+	got := normalizePeerURI("tls://user:secret@Host:1?password=abc#frag")
+	if want := "tls://host:1"; got != want {
+		t.Fatalf("normalizePeerURI = %q, want %q", got, want)
+	}
+}
+
+func TestValidatePeers_requiresStructureButAllowsUnknownSchemes(t *testing.T) {
+	valid, errs := ValidatePeers([]string{"peer-without-scheme", "future+transport://host:1", "unix:///tmp/ygg.sock"})
+	if len(errs) != 1 {
+		t.Fatalf("errors = %d, want one structural error: %v", len(errs), errs)
+	}
+	if len(valid) != 2 {
+		t.Fatalf("valid = %d, want unknown network and path transports", len(valid))
 	}
 }
 

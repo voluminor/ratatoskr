@@ -26,8 +26,9 @@ non-fatal: each failed sigil is skipped, the rest are applied normally.
 | `LenLocal`  | `() int`                           | Number of keys in assembled NodeInfo                                |
 | `Len`       | `() int`                           | `LenSigils() + LenLocal()`                                          |
 
-`Add` validates each sigil name, checks for duplicates, calls `SetParams` to merge keys into the internal map, and
-updates the `ratatoskr` metadata key via `CompileInfo`.
+`Add` validates each sigil name, checks for duplicates, merges the sigil's `Params()` into the internal map via
+`sigils.MergeParams` (the sigil never receives the live map), stores a clone of the sigil, and updates the `ratatoskr`
+metadata key via `CompileInfo`.
 
 `Del` removes keys that were introduced by that sigil during `Add` and recompiles the metadata key. User-supplied base
 keys that existed before `Add` are preserved.
@@ -61,7 +62,7 @@ flowchart LR
     base["base NodeInfo map"]
     sg["sigils"]
     base --> Obj
-    sg --> Add["Add: validate + SetParams"]
+    sg --> Add["Add: validate + MergeParams"]
     Add --> compile["CompileInfo"]
     compile --> meta["ratatoskr key: '[inet,info] v0.1.3'"]
     meta --> Obj

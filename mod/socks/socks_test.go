@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -93,12 +94,55 @@ type staticResolverObj struct {
 	calls atomic.Int64
 }
 
+type rotatingResolverObj struct {
+	name  string
+	ips   []net.IP
+	calls atomic.Int64
+}
+
+type failingResolverObj struct {
+	err   error
+	calls atomic.Int64
+}
+
+type mapResolverObj struct {
+	ips   map[string]net.IP
+	calls atomic.Int64
+}
+
 func (r *staticResolverObj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
 	if name != r.name {
 		return ctx, nil, errors.New("unexpected resolver name")
 	}
 	r.calls.Add(1)
 	return ctx, append(net.IP(nil), r.ip...), nil
+}
+
+func (r *rotatingResolverObj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
+	if name != canonicalTestName(r.name) {
+		return ctx, nil, errors.New("unexpected resolver name")
+	}
+	call := r.calls.Add(1)
+	ip := r.ips[int((call-1)%int64(len(r.ips)))]
+	return ctx, append(net.IP(nil), ip...), nil
+}
+
+func (r *failingResolverObj) Resolve(ctx context.Context, _ string) (context.Context, net.IP, error) {
+	r.calls.Add(1)
+	return ctx, nil, r.err
+}
+
+func (r *mapResolverObj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
+	ip, ok := r.ips[canonicalTestName(name)]
+	if !ok {
+		return ctx, nil, errors.New("unexpected resolver name")
+	}
+	r.calls.Add(1)
+	return ctx, append(net.IP(nil), ip...), nil
+}
+
+func canonicalTestName(name string) string {
+	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
 type credentialsObj struct{}
@@ -305,11 +349,8 @@ func udpEchoServer(t *testing.T) net.PacketConn {
 	return echo
 }
 
-func associateRelay(t *testing.T, cfg ConfigObj, ip string, port int) (*Obj, net.Conn, *net.UDPAddr) {
+func associateRelayOnServer(t *testing.T, cfg ConfigObj, ip string, port int) (net.Conn, *net.UDPAddr) {
 	t.Helper()
-	s := newSocks(t, cfg)
-	t.Cleanup(func() { _ = s.Close() })
-
 	conn, err := net.Dial("tcp", cfg.Addr)
 	if err != nil {
 		t.Fatal(err)
@@ -335,10 +376,18 @@ func associateRelay(t *testing.T, cfg ConfigObj, ip string, port int) (*Obj, net
 	if relay.IP.IsUnspecified() {
 		relay.IP = net.IPv4(127, 0, 0, 1)
 	}
+	return conn, relay
+}
+
+func associateRelay(t *testing.T, cfg ConfigObj, ip string, port int) (*Obj, net.Conn, *net.UDPAddr) {
+	t.Helper()
+	s := newSocks(t, cfg)
+	t.Cleanup(func() { _ = s.Close() })
+	conn, relay := associateRelayOnServer(t, cfg, ip, port)
 	return s, conn, relay
 }
 
-func sendSocksUDP(t *testing.T, conn net.PacketConn, relay net.Addr, target string, payload []byte) []byte {
+func sendSocksUDPDatagram(t *testing.T, conn net.PacketConn, relay net.Addr, target string, payload []byte) statute.Datagram {
 	t.Helper()
 	packet, err := statute.NewDatagram(target, payload)
 	if err != nil {
@@ -356,7 +405,12 @@ func sendSocksUDP(t *testing.T, conn net.PacketConn, relay net.Addr, target stri
 	if err != nil {
 		t.Fatalf("ParseDatagram: %v", err)
 	}
-	return got.Data
+	return got
+}
+
+func sendSocksUDP(t *testing.T, conn net.PacketConn, relay net.Addr, target string, payload []byte) []byte {
+	t.Helper()
+	return sendSocksUDPDatagram(t, conn, relay, target, payload).Data
 }
 
 func silentTCPServer(t *testing.T) *net.TCPAddr {
@@ -414,6 +468,19 @@ func TestNewDisabled_Start(t *testing.T) {
 	}
 }
 
+func TestStartCloseStartUsesFreshConnectTargetSet(t *testing.T) {
+	cfg := tcpCfgOnFreePort(t)
+	s := NewDisabled()
+	for generation := 1; generation <= 2; generation++ {
+		if err := s.Start(cfg); err != nil {
+			t.Fatalf("generation %d Start: %v", generation, err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatalf("generation %d Close: %v", generation, err)
+		}
+	}
+}
+
 func TestNew_nilLoggerDoesNotPanic(t *testing.T) {
 	s := newSocks(t, ConfigObj{Network: mockDialerObj{}, Addr: "127.0.0.1:0"})
 	defer func() { _ = s.Close() }()
@@ -466,6 +533,24 @@ func TestNew_invalidAddr(t *testing.T) {
 	}
 }
 
+func TestNew_emptyAddr(t *testing.T) {
+	_, err := New(ConfigObj{Network: mockDialerObj{}, Logger: noopLogObj{}})
+	if !errors.Is(err, ErrInvalidAddress) {
+		t.Fatalf("expected ErrInvalidAddress, got %v", err)
+	}
+}
+
+func TestStart_emptyAddrDoesNotEnable(t *testing.T) {
+	s := NewDisabled()
+	err := s.Start(ConfigObj{Network: mockDialerObj{}, Logger: noopLogObj{}})
+	if !errors.Is(err, ErrInvalidAddress) {
+		t.Fatalf("expected ErrInvalidAddress, got %v", err)
+	}
+	if s.IsEnabled() {
+		t.Fatal("empty address must not enable the listener")
+	}
+}
+
 func TestNew_failedUnixReturnsError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix sockets not supported on Windows")
@@ -498,6 +583,31 @@ func TestNew_defaultMaxConnections(t *testing.T) {
 	}
 	if got := s.TunnelIdleTimeout(); got != defaultTunnelIdleTime {
 		t.Fatalf("expected default tunnel idle timeout %s, got %s", defaultTunnelIdleTime, got)
+	}
+}
+
+func TestMaxAssociateTargetsPerSession_normalization(t *testing.T) {
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{name: "default", in: 0, want: defaultMaxAssociateTargetsPerSession},
+		{name: "custom", in: 7, want: 7},
+		{name: "no per-session cap", in: -1, want: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tcpCfg()
+			cfg.MaxAssociateTargetsPerSession = tt.in
+			s := newSocks(t, cfg)
+			defer func() { _ = s.Close() }()
+
+			if got := s.MaxAssociateTargetsPerSession(); got != tt.want {
+				t.Fatalf("MaxAssociateTargetsPerSession = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -553,6 +663,110 @@ func TestClose_closesIdleConnections(t *testing.T) {
 	buf := make([]byte, 1)
 	if _, err = conn.Read(buf); err == nil {
 		t.Fatal("expected idle connection to be closed")
+	}
+}
+
+func TestClose_unblocksHalfClosedConnectWithSilentTarget(t *testing.T) {
+	targetLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("target listen: %v", err)
+	}
+	defer func() { _ = targetLn.Close() }()
+
+	targetAccepted := make(chan net.Conn, 1)
+	go func() {
+		conn, acceptErr := targetLn.Accept()
+		if acceptErr == nil {
+			targetAccepted <- conn
+		}
+	}()
+
+	cfg := tcpCfgOnFreePort(t)
+	cfg.TunnelIdleTimeout = -1
+	s := newSocks(t, cfg)
+
+	clientRaw, err := net.Dial("tcp", cfg.Addr)
+	if err != nil {
+		t.Fatalf("client dial: %v", err)
+	}
+	client := clientRaw.(*net.TCPConn)
+	defer func() { _ = client.Close() }()
+
+	if resp := sendNoAuthGreeting(t, client); resp[1] != 0x00 {
+		t.Fatalf("expected no-auth accepted, got %v", resp)
+	}
+	targetAddr := targetLn.Addr().(*net.TCPAddr)
+	if resp := sendIPv4ConnectRequest(t, client, "127.0.0.1", targetAddr.Port); resp[1] != 0x00 {
+		t.Fatalf("expected CONNECT success, got %v", resp)
+	}
+
+	var target net.Conn
+	select {
+	case target = <-targetAccepted:
+	case <-time.After(time.Second):
+		t.Fatal("target connection was not accepted")
+	}
+	defer func() { _ = target.Close() }()
+
+	targetSawEOF := make(chan struct{})
+	go func() {
+		var buf [1]byte
+		_, _ = target.Read(buf[:])
+		close(targetSawEOF)
+	}()
+	if err = client.CloseWrite(); err != nil {
+		t.Fatalf("client CloseWrite: %v", err)
+	}
+	select {
+	case <-targetSawEOF:
+	case <-time.After(time.Second):
+		t.Fatal("client half-close did not reach target")
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- s.Close() }()
+	select {
+	case err = <-closed:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		// Release the old implementation's target.Read so the failed test does not
+		// leave its shutdown goroutine behind.
+		_ = target.Close()
+		<-closed
+		t.Fatal("Close stayed blocked on the silent outbound CONNECT target")
+	}
+}
+
+func TestConnectTargetSet_trackRacingCloseNeverLeaks(t *testing.T) {
+	for i := 0; i < 1000; i++ {
+		targets := newConnectTargetSet()
+		conn := &closeTrackConnObj{}
+		start := make(chan struct{})
+		tracked := make(chan error, 1)
+		var closeWG sync.WaitGroup
+		closeWG.Add(1)
+		go func() {
+			<-start
+			_, trackErr := targets.track(conn)
+			tracked <- trackErr
+		}()
+		go func() {
+			defer closeWG.Done()
+			<-start
+			targets.closeAll()
+		}()
+		close(start)
+
+		err := <-tracked
+		closeWG.Wait()
+		if err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Fatalf("iteration %d: track error = %v, want nil or net.ErrClosed", i, err)
+		}
+		if !conn.closed.Load() {
+			t.Fatalf("iteration %d: target escaped concurrent close", i)
+		}
 	}
 }
 
@@ -682,7 +896,7 @@ func TestServeErrorClearsEnabledState(t *testing.T) {
 	s.mu.Unlock()
 
 	boom := errors.New("accept failed")
-	s.finishServe(ln, boom)
+	s.finishServe(ln, nil, boom)
 	if s.IsEnabled() {
 		t.Fatal("server should not stay enabled after serve error")
 	}
@@ -732,6 +946,58 @@ func TestAssociate_udpEcho(t *testing.T) {
 	}
 }
 
+// TestAssociate_udpConcurrentTargets drives one relay to many distinct targets
+// from a single client socket, so one forward() goroutine per target relays back
+// concurrently. Under -race this exercises the shared, set-once clientUDP read.
+func TestAssociate_udpConcurrentTargets(t *testing.T) {
+	const targets = 6
+	echoes := make([]net.PacketConn, targets)
+	for i := range echoes {
+		echoes[i] = udpEchoServer(t)
+	}
+	cfg := tcpCfgOnFreePort(t)
+	_, _, relay := associateRelay(t, cfg, "0.0.0.0", 0)
+
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = udpConn.Close() }()
+	_ = udpConn.SetDeadline(time.Now().Add(3 * time.Second))
+
+	want := make(map[string]struct{}, targets)
+	for i, echo := range echoes {
+		payload := []byte("ratatoskr-udp-" + strconv.Itoa(i))
+		want[string(payload)] = struct{}{}
+		packet, err := statute.NewDatagram(echo.LocalAddr().String(), payload)
+		if err != nil {
+			t.Fatalf("NewDatagram: %v", err)
+		}
+		if _, err := udpConn.WriteTo(packet.Bytes(), relay); err != nil {
+			t.Fatalf("relay write: %v", err)
+		}
+	}
+
+	got := make(map[string]struct{}, targets)
+	buf := make([]byte, 64*1024)
+	for len(got) < targets {
+		n, _, err := udpConn.ReadFrom(buf)
+		if err != nil {
+			t.Fatalf("relay read (%d/%d received): %v", len(got), targets, err)
+		}
+		d, err := statute.ParseDatagram(buf[:n])
+		if err != nil {
+			t.Fatalf("ParseDatagram: %v", err)
+		}
+		got[string(d.Data)] = struct{}{}
+	}
+	for w := range want {
+		if _, ok := got[w]; !ok {
+			t.Fatalf("missing echo %q", w)
+		}
+	}
+}
+
 func TestAssociate_usesResolverForDatagramDomain(t *testing.T) {
 	echo := udpEchoServer(t)
 	cfg := tcpCfgOnFreePort(t)
@@ -752,8 +1018,351 @@ func TestAssociate_usesResolverForDatagramDomain(t *testing.T) {
 	if !bytes.Equal(got, payload) {
 		t.Fatalf("unexpected UDP echo payload %q", got)
 	}
-	if resolver.calls.Load() == 0 {
-		t.Fatal("resolver was not used for UDP datagram domain")
+	got = sendSocksUDP(t, udpConn, relay, target, payload)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected second UDP echo payload %q", got)
+	}
+	if got := resolver.calls.Load(); got != 1 {
+		t.Fatalf("resolver calls = %d, want 1", got)
+	}
+}
+
+func TestAssociate_datagramDomainKeyIgnoresResolverRotation(t *testing.T) {
+	echo := udpEchoServer(t)
+	cfg := tcpCfgOnFreePort(t)
+	resolver := &rotatingResolverObj{
+		name: "udp-target.pk.ygg",
+		ips:  []net.IP{net.IPv4(127, 0, 0, 1), net.IPv4(127, 0, 0, 2)},
+	}
+	cfg.Resolver = resolver
+	_, _, relay := associateRelay(t, cfg, "0.0.0.0", 0)
+
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = udpConn.Close() }()
+	_ = udpConn.SetDeadline(time.Now().Add(time.Second))
+
+	payload := []byte("ratatoskr-socks-udp-rr")
+	target := net.JoinHostPort("UDP-Target.PK.YGG.", strconv.Itoa(echo.LocalAddr().(*net.UDPAddr).Port))
+	got := sendSocksUDPDatagram(t, udpConn, relay, target, payload)
+	if !bytes.Equal(got.Data, payload) {
+		t.Fatalf("unexpected UDP echo payload %q", got.Data)
+	}
+	if got.DstAddr.FQDN != "UDP-Target.PK.YGG." {
+		t.Fatalf("first response FQDN = %q, want first spelling", got.DstAddr.FQDN)
+	}
+	got = sendSocksUDPDatagram(t, udpConn, relay, net.JoinHostPort("udp-target.pk.ygg", strconv.Itoa(echo.LocalAddr().(*net.UDPAddr).Port)), payload)
+	if !bytes.Equal(got.Data, payload) {
+		t.Fatalf("unexpected second UDP echo payload %q", got.Data)
+	}
+	if got.DstAddr.FQDN != "UDP-Target.PK.YGG." {
+		t.Fatalf("second response FQDN = %q, want first target spelling", got.DstAddr.FQDN)
+	}
+	if got := resolver.calls.Load(); got != 1 {
+		t.Fatalf("resolver calls = %d, want 1", got)
+	}
+}
+
+func TestAssociate_datagramDomainsResolvingSameIPKeepDistinctTargets(t *testing.T) {
+	echo := udpEchoServer(t)
+	cfg := tcpCfgOnFreePort(t)
+	resolver := &mapResolverObj{
+		ips: map[string]net.IP{
+			"one.pk.ygg": net.IPv4(127, 0, 0, 1),
+			"two.pk.ygg": net.IPv4(127, 0, 0, 1),
+		},
+	}
+	cfg.Resolver = resolver
+	_, _, relay := associateRelay(t, cfg, "0.0.0.0", 0)
+
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = udpConn.Close() }()
+	_ = udpConn.SetDeadline(time.Now().Add(time.Second))
+
+	payload := []byte("ratatoskr-socks-udp-same-ip")
+	port := strconv.Itoa(echo.LocalAddr().(*net.UDPAddr).Port)
+	first := sendSocksUDPDatagram(t, udpConn, relay, net.JoinHostPort("one.pk.ygg", port), payload)
+	if !bytes.Equal(first.Data, payload) {
+		t.Fatalf("unexpected first UDP echo payload %q", first.Data)
+	}
+	second := sendSocksUDPDatagram(t, udpConn, relay, net.JoinHostPort("two.pk.ygg", port), payload)
+	if !bytes.Equal(second.Data, payload) {
+		t.Fatalf("unexpected second UDP echo payload %q", second.Data)
+	}
+	if first.DstAddr.FQDN != "one.pk.ygg" {
+		t.Fatalf("first response FQDN = %q, want one.pk.ygg", first.DstAddr.FQDN)
+	}
+	if second.DstAddr.FQDN != "two.pk.ygg" {
+		t.Fatalf("second response FQDN = %q, want two.pk.ygg", second.DstAddr.FQDN)
+	}
+	if got := resolver.calls.Load(); got != 2 {
+		t.Fatalf("resolver calls = %d, want 2", got)
+	}
+}
+
+func TestAssociate_ipLiteralSkipsResolver(t *testing.T) {
+	echo := udpEchoServer(t)
+	cfg := tcpCfgOnFreePort(t)
+	resolver := &failingResolverObj{err: errors.New("resolver should not be used")}
+	cfg.Resolver = resolver
+	_, _, relay := associateRelay(t, cfg, "0.0.0.0", 0)
+
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = udpConn.Close() }()
+	_ = udpConn.SetDeadline(time.Now().Add(time.Second))
+
+	payload := []byte("ratatoskr-socks-udp-ip")
+	got := sendSocksUDP(t, udpConn, relay, echo.LocalAddr().String(), payload)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected UDP echo payload %q", got)
+	}
+	if got := resolver.calls.Load(); got != 0 {
+		t.Fatalf("resolver calls = %d, want 0", got)
+	}
+}
+
+func TestAssociateTargetKey_separatesDomainEncodedIPFromIPLiteral(t *testing.T) {
+	domainKey, err := associateTargetKey(statute.AddrSpec{
+		FQDN:     "127.0.0.1",
+		Port:     53,
+		AddrType: statute.ATYPDomain,
+	})
+	if err != nil {
+		t.Fatalf("domain key: %v", err)
+	}
+	literalKey, err := associateTargetKey(statute.AddrSpec{
+		IP:       net.IPv4(127, 0, 0, 1),
+		Port:     53,
+		AddrType: statute.ATYPIPv4,
+	})
+	if err != nil {
+		t.Fatalf("literal key: %v", err)
+	}
+	if domainKey == literalKey {
+		t.Fatalf("domain-form IP and IP literal must not share a target key: %+v", domainKey)
+	}
+	if domainKey.kind != statute.ATYPDomain || literalKey.kind != statute.ATYPIPv4 {
+		t.Fatalf("unexpected key kinds: domain=%d literal=%d", domainKey.kind, literalKey.kind)
+	}
+}
+
+func TestAssociate_invalidDomainTargetDoesNotResolveOrAcquireSlot(t *testing.T) {
+	if _, err := associateTargetKey(statute.AddrSpec{
+		FQDN:     string([]byte{0xff}),
+		Port:     53,
+		AddrType: statute.ATYPDomain,
+	}); !errors.Is(err, errAssociateInvalidTarget) {
+		t.Fatalf("invalid UTF-8 domain key error = %v, want errAssociateInvalidTarget", err)
+	}
+
+	limiter := common.NewDynamicLimit(1)
+	resolver := &failingResolverObj{err: errors.New("resolver should not be used")}
+	s := &associateSessionObj{
+		owner:         &Obj{},
+		ctx:           context.Background(),
+		network:       mockDialerObj{},
+		resolver:      resolver,
+		serverLimiter: limiter,
+		maxTargets:    defaultMaxAssociateTargetsPerSession,
+		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
+	}
+
+	target, err := s.target(statute.Datagram{
+		DstAddr: statute.AddrSpec{FQDN: ".", Port: 53, AddrType: statute.ATYPDomain},
+		Data:    []byte("x"),
+	})
+	if target != nil {
+		t.Fatalf("expected no target, got %+v", target)
+	}
+	if !errors.Is(err, errAssociateInvalidTarget) {
+		t.Fatalf("expected errAssociateInvalidTarget, got %v", err)
+	}
+	if got := resolver.calls.Load(); got != 0 {
+		t.Fatalf("resolver calls = %d, want 0", got)
+	}
+	if got := limiter.Active(); got != 0 {
+		t.Fatalf("server associate targets = %d, want 0", got)
+	}
+}
+
+func TestAssociate_perSessionTargetLimitDoesNotBlockOtherSessions(t *testing.T) {
+	echo1 := udpEchoServer(t)
+	echo2 := udpEchoServer(t)
+	cfg := tcpCfgOnFreePort(t)
+	cfg.MaxAssociateTargetsPerSession = 1
+	s := newSocks(t, cfg)
+	t.Cleanup(func() { _ = s.Close() })
+
+	_, relay1 := associateRelayOnServer(t, cfg, "0.0.0.0", 0)
+	first, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = first.Close() }()
+	_ = first.SetDeadline(time.Now().Add(time.Second))
+
+	payload := []byte("ratatoskr-socks-udp-cap")
+	got := sendSocksUDP(t, first, relay1, echo1.LocalAddr().String(), payload)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected first UDP echo payload %q", got)
+	}
+
+	packet, err := statute.NewDatagram(echo2.LocalAddr().String(), payload)
+	if err != nil {
+		t.Fatalf("NewDatagram: %v", err)
+	}
+	if _, err = first.WriteTo(packet.Bytes(), relay1); err != nil {
+		t.Fatalf("UDP relay write: %v", err)
+	}
+	buf := make([]byte, 1024)
+	_ = first.SetDeadline(time.Now().Add(200 * time.Millisecond))
+	if n, _, err := first.ReadFrom(buf); err == nil {
+		t.Fatalf("per-session cap should drop second target, got packet %x", buf[:n])
+	}
+	if got := s.associateLimiter.Active(); got != 1 {
+		t.Fatalf("server associate targets = %d, want 1", got)
+	}
+
+	_, relay2 := associateRelayOnServer(t, cfg, "0.0.0.0", 0)
+	second, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = second.Close() }()
+	_ = second.SetDeadline(time.Now().Add(time.Second))
+	got = sendSocksUDP(t, second, relay2, echo2.LocalAddr().String(), payload)
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("unexpected second session UDP echo payload %q", got)
+	}
+}
+
+func TestAssociate_targetRemovalFreesPerSessionCapacity(t *testing.T) {
+	echo1 := udpEchoServer(t)
+	echo2 := udpEchoServer(t)
+	relay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP: %v", err)
+	}
+	defer func() { _ = relay.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	limiter := common.NewDynamicLimit(4)
+	s := &associateSessionObj{
+		owner:         &Obj{},
+		ctx:           ctx,
+		cancel:        cancel,
+		network:       mockDialerObj{},
+		relay:         relay,
+		serverLimiter: limiter,
+		maxTargets:    1,
+		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
+	}
+
+	firstPacket, err := statute.NewDatagram(echo1.LocalAddr().String(), []byte("one"))
+	if err != nil {
+		t.Fatalf("first NewDatagram: %v", err)
+	}
+	firstTarget, err := s.target(firstPacket)
+	if err != nil {
+		t.Fatalf("first target: %v", err)
+	}
+	if got := limiter.Active(); got != 1 {
+		t.Fatalf("server associate targets = %d, want 1", got)
+	}
+
+	secondPacket, err := statute.NewDatagram(echo2.LocalAddr().String(), []byte("two"))
+	if err != nil {
+		t.Fatalf("second NewDatagram: %v", err)
+	}
+	if target, err := s.target(secondPacket); target != nil || !errors.Is(err, ErrAssociateTargetLimit) {
+		t.Fatalf("second target before removal = (%+v, %v), want ErrAssociateTargetLimit", target, err)
+	}
+
+	firstTarget.close()
+	s.deleteTarget(firstTarget)
+
+	secondTarget, err := s.target(secondPacket)
+	if err != nil {
+		t.Fatalf("second target after removal: %v", err)
+	}
+	secondTarget.close()
+	s.deleteTarget(secondTarget)
+	if got := limiter.Active(); got != 0 {
+		t.Fatalf("server associate targets = %d, want 0", got)
+	}
+}
+
+func TestAssociate_resolveFailureDoesNotConsumeGlobalLimiter(t *testing.T) {
+	limiter := common.NewDynamicLimit(1)
+	resolver := &failingResolverObj{err: errors.New("resolve failed")}
+	s := &associateSessionObj{
+		owner:         &Obj{},
+		ctx:           context.Background(),
+		network:       mockDialerObj{},
+		resolver:      resolver,
+		serverLimiter: limiter,
+		maxTargets:    defaultMaxAssociateTargetsPerSession,
+		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
+	}
+	packet, err := statute.NewDatagram("blocked.pk.ygg:53", []byte("x"))
+	if err != nil {
+		t.Fatalf("NewDatagram: %v", err)
+	}
+	target, err := s.target(packet)
+	if target != nil {
+		t.Fatalf("expected no target, got %+v", target)
+	}
+	if err == nil {
+		t.Fatal("expected resolve error")
+	}
+	if got := limiter.Active(); got != 0 {
+		t.Fatalf("server associate targets = %d, want 0", got)
+	}
+	if got := resolver.calls.Load(); got != 1 {
+		t.Fatalf("resolver calls = %d, want 1", got)
+	}
+}
+
+func TestAssociate_noPerSessionCapStillHonorsGlobalLimitBeforeResolve(t *testing.T) {
+	limiter := common.NewDynamicLimit(1)
+	if !limiter.Acquire() {
+		t.Fatal("failed to saturate global limiter")
+	}
+	resolver := &failingResolverObj{err: errors.New("resolver should not be used")}
+	s := &associateSessionObj{
+		owner:         &Obj{},
+		ctx:           context.Background(),
+		network:       mockDialerObj{},
+		resolver:      resolver,
+		serverLimiter: limiter,
+		maxTargets:    -1,
+		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
+	}
+	packet, err := statute.NewDatagram("blocked.pk.ygg:53", []byte("x"))
+	if err != nil {
+		t.Fatalf("NewDatagram: %v", err)
+	}
+	target, err := s.target(packet)
+	if target != nil {
+		t.Fatalf("expected no target, got %+v", target)
+	}
+	if !errors.Is(err, ErrAssociateTargetLimit) {
+		t.Fatalf("expected ErrAssociateTargetLimit, got %v", err)
+	}
+	if got := resolver.calls.Load(); got != 0 {
+		t.Fatalf("resolver calls = %d, want 0", got)
+	}
+	if got := limiter.Active(); got != 1 {
+		t.Fatalf("server associate targets = %d, want saturated slot to remain", got)
 	}
 }
 
@@ -837,11 +1446,20 @@ func TestAssociate_controlCloseCancelsPendingUDPDial(t *testing.T) {
 
 // //
 
+func privateSocketTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func TestNew_Unix(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix sockets not supported on Windows")
 	}
-	path := t.TempDir() + "/test.sock"
+	path := privateSocketTempDir(t) + "/test.sock"
 	s := newSocks(t, ConfigObj{Network: mockDialerObj{}, Addr: path, Logger: noopLogObj{}})
 	defer func() { _ = s.Close() }()
 	if !s.IsUnix() {
@@ -856,7 +1474,7 @@ func TestNew_UnixDefaultMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix sockets not supported on Windows")
 	}
-	path := t.TempDir() + "/mode.sock"
+	path := privateSocketTempDir(t) + "/mode.sock"
 	s := newSocks(t, ConfigObj{Network: mockDialerObj{}, Addr: path, Logger: noopLogObj{}})
 	defer func() { _ = s.Close() }()
 
@@ -873,7 +1491,7 @@ func TestListenUnix_staleSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix sockets not supported on Windows")
 	}
-	path := t.TempDir() + "/stale.sock"
+	path := privateSocketTempDir(t) + "/stale.sock"
 
 	// Create and immediately close a listener → stale socket file remains
 	ln, err := net.Listen("unix", path)
@@ -898,7 +1516,7 @@ func TestListenUnix_activeSocket(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix sockets not supported on Windows")
 	}
-	path := t.TempDir() + "/active.sock"
+	path := privateSocketTempDir(t) + "/active.sock"
 
 	ln, err := net.Listen("unix", path)
 	if err != nil {
@@ -927,7 +1545,11 @@ func TestRemoveUnixSocket_regular(t *testing.T) {
 		t.Fatalf("close file: %v", err)
 	}
 
-	if err := removeUnixSocket(path); !errors.Is(err, ErrSocketRefusal) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := removeUnixSocket(path, info); !errors.Is(err, ErrSocketRefusal) {
 		t.Fatalf("expected ErrSocketRefusal, got %v", err)
 	}
 	if _, err := os.Lstat(path); err != nil {
@@ -1248,23 +1870,22 @@ func TestAssociate_targetDialedAfterCloseReleasesResources(t *testing.T) {
 		cancel:        cancel,
 		network:       dialer,
 		relay:         relay,
-		globalLimiter: limiter,
-		targets:       make(map[string]*associateTargetObj),
+		serverLimiter: limiter,
+		maxTargets:    defaultMaxAssociateTargetsPerSession,
+		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
 	}
 
 	packet, err := statute.NewDatagram("127.0.0.1:9", []byte("x"))
 	if err != nil {
 		t.Fatalf("NewDatagram: %v", err)
 	}
-	client := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40000}
-
 	type resultObj struct {
 		target *associateTargetObj
 		err    error
 	}
 	done := make(chan resultObj, 1)
 	go func() {
-		tgt, err := s.target(packet, client)
+		tgt, err := s.target(packet)
 		done <- resultObj{tgt, err}
 	}()
 
@@ -1356,19 +1977,223 @@ func TestAssociate_rejectsForeignSourceIP(t *testing.T) {
 	control := net.ParseIP("10.0.0.1")
 
 	accepted := &associateSessionObj{controlIP: control}
-	if _, ok := accepted.acceptClient(&net.UDPAddr{IP: control, Port: 5000}); !ok {
+	if ok := accepted.acceptClient(&net.UDPAddr{IP: control, Port: 5000}); !ok {
 		t.Fatal("datagram from the control host must be accepted")
 	}
 
 	foreign := &associateSessionObj{controlIP: control}
-	if _, ok := foreign.acceptClient(&net.UDPAddr{IP: net.ParseIP("10.0.0.9"), Port: 5000}); ok {
+	if ok := foreign.acceptClient(&net.UDPAddr{IP: net.ParseIP("10.0.0.9"), Port: 5000}); ok {
 		t.Fatal("first datagram from a foreign host must be rejected, not win the relay")
 	}
 
 	// When the control IP is unknown (writer is not a net.Conn), pinning is off
 	// and the prior first-source-wins behavior is preserved.
 	unpinned := &associateSessionObj{}
-	if _, ok := unpinned.acceptClient(&net.UDPAddr{IP: net.ParseIP("10.0.0.9"), Port: 5000}); !ok {
+	if ok := unpinned.acceptClient(&net.UDPAddr{IP: net.ParseIP("10.0.0.9"), Port: 5000}); !ok {
 		t.Fatal("nil control IP should fall back to accepting the first source")
+	}
+}
+
+func TestAssociate_pendingDialDoesNotBlockExistingTarget(t *testing.T) {
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = relay.Close() }()
+
+	dialer := &blockingDialerObj{started: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	owner := &Obj{
+		dialTimeout:      time.Hour,
+		associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets),
+		associatePool:    newAssociateWorkerPool(),
+	}
+	defer owner.associatePool.close()
+	session := &associateSessionObj{
+		owner:         owner,
+		ctx:           ctx,
+		cancel:        cancel,
+		network:       dialer,
+		resolver:      &staticResolverObj{name: "slow.pk.ygg", ip: net.IPv4(127, 0, 0, 1)},
+		relay:         relay,
+		serverLimiter: owner.associateLimiter,
+		workerPool:    owner.associatePool,
+		principal:     "test:hol",
+		maxTargets:    defaultMaxAssociateTargetsPerSession,
+		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
+		pending:       make(map[associateTargetKeyObj]struct{}),
+	}
+	existingPacket := statute.Datagram{DstAddr: statute.AddrSpec{IP: net.IPv4(127, 0, 0, 1), Port: 7, AddrType: statute.ATYPIPv4}, Data: []byte("existing")}
+	existingKey, err := associateTargetKey(existingPacket.DstAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing := &associateTargetObj{session: session, key: existingKey, conn: &closeTrackConnObj{}}
+	session.targets[existingKey] = existing
+
+	slowPacket := statute.Datagram{DstAddr: statute.AddrSpec{FQDN: "slow.pk.ygg", Port: 8, AddrType: statute.ATYPDomain}, Data: []byte("slow")}
+	if target, err := session.route(slowPacket); err != nil || target != nil {
+		t.Fatalf("route slow target = (%v, %v), want pending", target, err)
+	}
+	select {
+	case <-dialer.started:
+	case <-time.After(time.Second):
+		t.Fatal("slow dial did not start")
+	}
+
+	start := time.Now()
+	target, err := session.route(existingPacket)
+	if err != nil || target != existing {
+		t.Fatalf("route existing target = (%v, %v)", target, err)
+	}
+	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
+		t.Fatalf("existing target blocked behind pending dial for %s", elapsed)
+	}
+	cancel()
+	session.pendingWG.Wait()
+}
+
+func TestAssociate_principalLimitIsIndependent(t *testing.T) {
+	limiter := common.NewDynamicLimit(defaultMaxAssociateTargets)
+	owner := &Obj{}
+	a := &associateSessionObj{owner: owner, serverLimiter: limiter, principal: "test:principal-a"}
+	b := &associateSessionObj{owner: owner, serverLimiter: limiter, principal: "test:principal-b"}
+	for range defaultMaxAssociateTargetsPerPrincipal {
+		if !a.acquireTargetSlot() {
+			t.Fatal("principal A reached its limit too early")
+		}
+	}
+	if a.acquireTargetSlot() {
+		t.Fatal("principal A exceeded its quota")
+	}
+	if !b.acquireTargetSlot() {
+		t.Fatal("principal B must retain an independent quota")
+	}
+	b.releaseTargetSlot(b.principal)
+	for range defaultMaxAssociateTargetsPerPrincipal {
+		a.releaseTargetSlot(a.principal)
+	}
+}
+
+func TestAssociate_serverLimitsAreIndependent(t *testing.T) {
+	ownerA := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets)}
+	ownerB := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets)}
+	a := &associateSessionObj{owner: ownerA, serverLimiter: ownerA.associateLimiter, principal: "unix"}
+	b := &associateSessionObj{owner: ownerB, serverLimiter: ownerB.associateLimiter, principal: "unix"}
+	for range defaultMaxAssociateTargetsPerPrincipal {
+		if !a.acquireTargetSlot() {
+			t.Fatal("server A reached its principal limit too early")
+		}
+	}
+	if a.acquireTargetSlot() {
+		t.Fatal("server A exceeded its principal quota")
+	}
+	if !b.acquireTargetSlot() {
+		t.Fatal("server B was affected by server A's principal quota")
+	}
+	b.releaseTargetSlot(b.principal)
+	for range defaultMaxAssociateTargetsPerPrincipal {
+		a.releaseTargetSlot(a.principal)
+	}
+}
+
+func TestAssociate_workerPoolsAreIndependent(t *testing.T) {
+	poolA := newAssociateWorkerPool()
+	poolB := newAssociateWorkerPool()
+	releaseA := make(chan struct{})
+	var startedA atomic.Int64
+	for range associateWorkerCount {
+		if !poolA.submit(func() {
+			startedA.Add(1)
+			<-releaseA
+		}) {
+			t.Fatal("failed to occupy a worker in pool A")
+		}
+	}
+	deadline := time.Now().Add(time.Second)
+	for startedA.Load() != associateWorkerCount && time.Now().Before(deadline) {
+		runtime.Gosched()
+	}
+	if got := startedA.Load(); got != associateWorkerCount {
+		close(releaseA)
+		poolA.close()
+		poolB.close()
+		t.Fatalf("started workers in pool A = %d, want %d", got, associateWorkerCount)
+	}
+	for range associateJobQueueSize {
+		if !poolA.submit(func() {}) {
+			close(releaseA)
+			poolA.close()
+			poolB.close()
+			t.Fatal("pool A queue filled before its documented capacity")
+		}
+	}
+	if poolA.submit(func() {}) {
+		close(releaseA)
+		poolA.close()
+		poolB.close()
+		t.Fatal("saturated pool A accepted a job beyond its bounded queue")
+	}
+
+	doneB := make(chan struct{})
+	if !poolB.submit(func() { close(doneB) }) {
+		close(releaseA)
+		poolA.close()
+		poolB.close()
+		t.Fatal("pool B was affected by saturation of pool A")
+	}
+	select {
+	case <-doneB:
+	case <-time.After(time.Second):
+		close(releaseA)
+		poolA.close()
+		poolB.close()
+		t.Fatal("pool B job did not run")
+	}
+	close(releaseA)
+	poolA.close()
+	poolB.close()
+}
+
+func TestServerTaskGroupWaitsForNestedTasks(t *testing.T) {
+	group := &serverTaskGroupObj{}
+	startNested := make(chan struct{})
+	nestedStarted := make(chan struct{})
+	releaseNested := make(chan struct{})
+	if err := group.Submit(func() {
+		<-startNested
+		_ = group.Submit(func() {
+			close(nestedStarted)
+			<-releaseNested
+		})
+	}); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	waitDone := make(chan struct{})
+	go func() {
+		group.Wait()
+		close(waitDone)
+	}()
+	close(startNested)
+	<-nestedStarted
+	select {
+	case <-waitDone:
+		close(releaseNested)
+		t.Fatal("Wait returned before a nested proxy task")
+	default:
+	}
+	close(releaseNested)
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("Wait did not return after all nested tasks")
+	}
+}
+
+func TestFailClosedResolver(t *testing.T) {
+	ctx := context.Background()
+	if _, _, err := (failClosedResolverObj{}).Resolve(ctx, "example.com"); !errors.Is(err, ErrResolverRequired) {
+		t.Fatalf("Resolve error = %v, want ErrResolverRequired", err)
 	}
 }

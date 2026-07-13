@@ -56,14 +56,16 @@ The resolver uses `PreferGo: true` (pure Go DNS, no cgo).
 
 `ConfigObj` is optional. Defaults are safe for embedded use:
 
-| Field                  | Default | Description                                              |
-|------------------------|---------|----------------------------------------------------------|
-| `LookupTimeout`        | `10s`   | DNS lookup timeout. `0` — default, `<0` uses hard cap    |
-| `CacheTTL`             | `30s`   | Positive DNS cache TTL. `0` — default, `<0` off          |
-| `CacheMaxEntries`      | `4096`  | Positive DNS cache cap. `0` — default, `<0` off          |
+| Field             | Default | Description                                                                        |
+|-------------------|---------|------------------------------------------------------------------------------------|
+| `LookupTimeout`   | `10s`   | DNS lookup timeout. `0` — default, `<0` — no resolver deadline (Go DNS client ~5s) |
+| `CacheTTL`        | `30s`   | Positive DNS cache TTL. `0` — default, `<0` off                                    |
+| `CacheMaxEntries` | `4096`  | Positive DNS cache cap. `0` — default, `<0` off                                    |
 
-Concurrency of DNS lookups is bounded by the caller (the SOCKS connection limit) and by singleflight collapsing
-duplicate in-flight names, so the resolver has no separate lookup limiter.
+Concurrency of DNS lookups is bounded three ways: by the caller (the SOCKS connection limit), by singleflight collapsing
+duplicate in-flight names, and by an admission cap of 256 distinct in-flight names — a genuinely new name beyond that
+cap
+returns `ErrLookupBusy`, while joining an existing flight is always allowed.
 
 ---
 
@@ -98,10 +100,13 @@ The key must be exactly 32 bytes after hex decoding.
 
 ### Settings
 
-`LookupTimeout` and `CacheTTL` are immutable: set them once through `ConfigObj` at `New`. The getters
-`LookupTimeout()` and `CacheTTL()` expose the current values; to change them, create a new resolver. `LookupTimeout < 0`
-uses the hard safety cap instead of disabling the deadline. `CacheTTL < 0` disables caching entirely. Failed DNS lookups
-are cached for a short bounded TTL to avoid repeated timeout amplification while a nameserver is down.
+`LookupTimeout` and `CacheTTL` are immutable: set them once through `ConfigObj` at `New`; to change them, create a new
+resolver. `LookupTimeout < 0` imposes no resolver deadline — the lookup is single-flighted and detached from the
+caller's
+context, so it is bounded by the Go DNS client's own per-query timeout (~5s), not by the caller's context.
+`CacheTTL < 0`
+disables caching entirely. Failed DNS lookups are cached for a short bounded TTL to avoid repeated timeout amplification
+while a nameserver is down.
 
 ### IP literals
 
@@ -126,10 +131,12 @@ Returns the first address found. If no addresses are found — `ErrNoAddresses`.
 
 ## Errors
 
-| Variable                    | Description                                      |
-|-----------------------------|--------------------------------------------------|
-| `ErrNoNameserver`           | DNS server is not configured                     |
-| `ErrNoAddresses`            | DNS query returned no addresses                  |
-| `ErrDialerRequired`         | DNS is configured without a dialer               |
-| `ErrInvalidPublicKeyDomain` | `.pk.ygg` public key domain is invalid           |
-| `ErrInvalidKeyLength`       | Public key is not 32 bytes                       |
+| Variable                    | Description                             |
+|-----------------------------|-----------------------------------------|
+| `ErrNoNameserver`           | DNS server is not configured            |
+| `ErrNoAddresses`            | DNS query returned no addresses         |
+| `ErrDialerRequired`         | DNS is configured without a dialer      |
+| `ErrInvalidPublicKeyDomain` | `.pk.ygg` public key domain is invalid  |
+| `ErrInvalidKeyLength`       | Public key is not 32 bytes              |
+| `ErrNonYggdrasilAddress`    | DNS response is not a Yggdrasil address |
+| `ErrLookupBusy`             | Too many concurrent distinct lookups    |

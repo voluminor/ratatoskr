@@ -16,8 +16,7 @@ without requiring an admin socket.
     - [Hops](#hops)
     - [Trace](#trace)
 - [Node information](#node-information)
-- [Caching](#caching)
-- [Configurable parameters](#configurable-parameters)
+- [Resource limits](#resource-limits)
 - [Data structures](#data-structures)
 - [Errors](#errors)
 
@@ -37,7 +36,6 @@ flowchart TB
     subgraph BFS["BFS traversal"]
         Pool["workerPool"]
         Remote["debug_remoteGetPeers"]
-        Cache["peerCache"]
     end
 
     subgraph Core["yggcore.Core"]
@@ -49,7 +47,6 @@ flowchart TB
 
     Tree --> Pool
     Pool --> Remote
-    Remote --> Cache
     Remote -->|" call via core "| Core
     Path --> GetTree
     Hops --> GetPaths
@@ -63,18 +60,26 @@ flowchart TB
 ## Initialization
 
 ```go
-p, err := probe.New(coreNode, logger)
+p, err := probe.New(coreNode, probe.ConfigObj{Logger: logger})
 defer p.Close()
 ```
 
-Resource limits (per-node peer cap, total-node cap, concurrency, cache TTL, timeouts) are fixed internal defaults:
-topology data comes from untrusted remote nodes, so those bounds are package constants rather than caller knobs.
+`ConfigObj` tunes the logger, crawl timing (`PollInterval`, `LookupRetryEvery`, `MaxDuration`) and the total-node cap
+(`MaxTotalNodes`); zero values fall back to internal defaults. The per-node peer cap and hops-wait timeout stay fixed
+package constants — topology data comes from untrusted remote nodes, so those bounds are not caller knobs.
 
 `New` intercepts the `debug_remoteGetPeers` handler from `core.ProbeSourceInterface` via a fake admin socket. This
 allows querying
 remote nodes without a real admin socket.
 
-`Close` waits for in-flight remote peer queries, then stops the background cache cleanup goroutine.
+`Close` rejects new work and waits for every already accepted remote query to finish. This is the standalone-module
+contract: accepted work is not abandoned. If the caller needs a bounded wait, use `CloseContext(ctx)`. Its context
+bounds only the caller's wait; shutdown continues and a later `Close` or `CloseContext` can still observe completion.
+
+Each `Tree` call reads a fresh topology snapshot. There is intentionally no cross-call result cache: mesh peer sets can
+change between calls, while the remote call itself is cheap compared with traversal and network latency. A traversal
+still deduplicates visited keys and coalesces concurrent requests for the same key. Applications that prefer stale data
+may cache the complete `TreeResultObj` at their own freshness boundary.
 
 ---
 
@@ -201,8 +206,9 @@ flowchart TB
 
 ## Resource limits
 
-Topology-probing limits are fixed internal defaults (a probe is cheap to re-instantiate, and its inputs come from
-untrusted remote nodes, so the bounds are not caller-tunable):
+`MaxTotalNodes` and the crawl timings (poll interval, lookup retry, max duration) are tunable via `ConfigObj`
+(0 → the default below). The per-node peer cap, hops-wait timeout, and concurrency ceiling stay fixed — a probe is
+cheap to re-instantiate and its inputs come from untrusted remote nodes:
 
 | Constant                 | Description                                             | Default |
 |--------------------------|---------------------------------------------------------|---------|
@@ -258,17 +264,17 @@ Hops     []HopObj  // route via pathfinder
 
 ## Errors
 
-| Variable                       | Description                                    |
-|--------------------------------|------------------------------------------------|
-| `ErrCoreRequired`              | Core not provided to `New`                     |
-| `ErrInvalidConfig`             | Per-node peer limit is not positive            |
-| `ErrRemotePeersNotCaptured`    | `debug_remoteGetPeers` handler not intercepted |
-| `ErrMaxDepthRequired`          | `maxDepth` must be > 0                         |
-| `ErrInvalidKeyLength`          | Public key is not 32 bytes                     |
-| `ErrKeyNotInTree`              | Key not found in spanning tree                 |
-| `ErrNoActivePath`              | No active route in pathfinder                  |
-| `ErrNodeUnreachable`           | Node is unreachable (cached)                   |
-| `ErrRemotePeersDisabled`       | `debug_remoteGetPeers` is unavailable          |
-| `ErrTreeEmpty`                 | Spanning tree entries are empty                |
-| `ErrNoRoot`                    | No root node in tree                           |
-| `ErrLookupTimedOut`            | Route lookup timed out                         |
+| Variable                    | Description                                    |
+|-----------------------------|------------------------------------------------|
+| `ErrCoreRequired`           | Core not provided to `New`                     |
+| `ErrRemotePeersNotCaptured` | `debug_remoteGetPeers` handler not intercepted |
+| `ErrMaxDepthRequired`       | `maxDepth` must be > 0                         |
+| `ErrInvalidKeyLength`       | Public key is not 32 bytes                     |
+| `ErrKeyNotInTree`           | Key not found in spanning tree                 |
+| `ErrNoActivePath`           | No active route in pathfinder                  |
+| `ErrRemotePeersDisabled`    | `debug_remoteGetPeers` is unavailable          |
+| `ErrRemoteResponseTooLarge` | Remote peer message exceeds the size cap       |
+| `ErrTreeEmpty`              | Spanning tree entries are empty                |
+| `ErrNoRoot`                 | No self-rooted node in tree                    |
+| `ErrLookupTimedOut`         | Route lookup timed out                         |
+| `ErrClosed`                 | Probe closed; remote calls are rejected        |

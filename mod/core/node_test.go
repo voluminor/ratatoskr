@@ -1,9 +1,8 @@
 package core
 
 import (
+	"context"
 	"errors"
-	"io"
-	"net"
 	"strings"
 	"testing"
 	"time"
@@ -40,35 +39,44 @@ func (networkDispatcherObj) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stac
 
 // //
 
-type blockingCloserObj struct {
-	started chan struct{}
-	release chan struct{}
-	done    chan struct{}
-}
-
-func newBlockingCloserObj() *blockingCloserObj {
-	return &blockingCloserObj{
-		started: make(chan struct{}),
-		release: make(chan struct{}),
-		done:    make(chan struct{}),
-	}
-}
-
-func (c *blockingCloserObj) Close() error {
-	close(c.started)
-	defer close(c.done)
-	<-c.release
-	return nil
-}
-
-// //
-
 func TestNewNilLoggerDoesNotPanic(t *testing.T) {
 	node, err := New(ConfigObj{})
 	if err != nil {
 		t.Fatalf("unexpected new node error: %v", err)
 	}
 	t.Cleanup(func() { _ = node.Close() })
+}
+
+func TestNewRejectsCyclicNodeInfo(t *testing.T) {
+	cfg := config.GenerateConfig()
+	cfg.AdminListen = "none"
+	cfg.NodeInfo = make(map[string]any)
+	cfg.NodeInfo["self"] = cfg.NodeInfo
+	if _, err := New(ConfigObj{Config: cfg}); !errors.Is(err, ErrInvalidNodeInfo) {
+		t.Fatalf("New error = %v, want ErrInvalidNodeInfo", err)
+	}
+}
+
+func TestDialContextNilContextDoesNotPanic(t *testing.T) {
+	node, err := New(ConfigObj{})
+	if err != nil {
+		t.Fatalf("unexpected new node error: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+
+	var nilCtx context.Context
+	panicked := make(chan interface{}, 1)
+	go func() {
+		defer func() { panicked <- recover() }()
+		// Unreachable overlay target: with the ctx normalized the dial blocks in
+		// connect until the node is closed; the point is that nil ctx must not panic.
+		_, _ = node.DialContext(nilCtx, "tcp", "[200::1]:1")
+	}()
+	time.Sleep(100 * time.Millisecond)
+	_ = node.Close()
+	if r := <-panicked; r != nil {
+		t.Fatalf("DialContext(nil) panicked: %v", r)
+	}
 }
 
 func TestNewUsesConfiguredMTU(t *testing.T) {
@@ -170,78 +178,29 @@ func TestBuildCoreOptionsAcceptsValidAllowedPublicKey(t *testing.T) {
 }
 
 func TestParseAddressRequiresExplicitPort(t *testing.T) {
-	_, _, err := parseAddress("[200::1]:")
+	_, err := parseAddress("[200::1]:")
 	if !errors.Is(err, ErrPortRequired) {
 		t.Fatalf("expected ErrPortRequired, got %v", err)
 	}
 }
 
 func TestParseAddressRejectsIPv4Literal(t *testing.T) {
-	_, _, err := parseAddress("127.0.0.1:80")
+	_, err := parseAddress("127.0.0.1:80")
 	if !errors.Is(err, ErrIPv6Only) {
 		t.Fatalf("expected ErrIPv6Only, got %v", err)
 	}
 }
 
-func TestRestartAdminAfterMulticastChangeClearsReadyOnEnableFailure(t *testing.T) {
-	node := &Obj{
-		logger:    noopLoggerObj{},
-		adminAddr: "tcp://127.0.0.1:0",
-	}
-	node.adminSocket.name = "admin"
-	node.adminSocket.active = true
-	node.adminSocket.stopFn = func() error { return nil }
-	node.handlersWired = true
-
-	err := node.restartAdminAfterMulticastChange()
-	if !errors.Is(err, ErrNotAvailable) {
-		t.Fatalf("expected ErrNotAvailable from enable, got %v", err)
-	}
-	if node.handlersWired {
-		t.Fatal("handlersWired should be cleared after admin disable")
-	}
-}
-
-func TestRestartAdminAfterMulticastChangeClearsReadyOnDisableFailure(t *testing.T) {
+func TestDisableAdminReturnsStopError(t *testing.T) {
 	stopErr := errors.New("stop admin")
-	node := &Obj{
-		logger:    noopLoggerObj{},
-		adminAddr: "tcp://127.0.0.1:0",
-	}
+	node := &Obj{logger: noopLoggerObj{}}
 	node.adminSocket.name = "admin"
 	node.adminSocket.active = true
 	node.adminSocket.stopFn = func() error { return stopErr }
-	node.handlersWired = true
-
-	err := node.restartAdminAfterMulticastChange()
-	if !errors.Is(err, stopErr) {
-		t.Fatalf("expected stop error, got %v", err)
-	}
-	if node.handlersWired {
-		t.Fatal("handlersWired should be cleared after failed admin stop")
-	}
-}
-
-func TestDisableAdminClearsStateOnStopFailure(t *testing.T) {
-	stopErr := errors.New("stop admin")
-	node := &Obj{
-		logger:    noopLoggerObj{},
-		adminAddr: "tcp://127.0.0.1:0",
-	}
-	node.adminSocket.name = "admin"
-	node.adminSocket.active = true
-	node.adminSocket.stopFn = func() error { return stopErr }
-	node.handlersWired = true
 
 	err := node.DisableAdmin()
 	if !errors.Is(err, stopErr) {
 		t.Fatalf("expected stop error, got %v", err)
-	}
-	if node.adminAddr != "" {
-		t.Fatalf("admin address should be cleared, got %q", node.adminAddr)
-	}
-	if node.handlersWired {
-		t.Fatal("handlersWired should be cleared after failed admin stop")
 	}
 	if _, active := node.adminSocket.get(); active {
 		t.Fatal("admin socket component should be inactive after failed admin stop")
@@ -324,117 +283,5 @@ func TestNICEnqueueRSTDropsAfterClose(t *testing.T) {
 	}
 	if got := nic.rstDropped.Load(); got != 1 {
 		t.Fatalf("expected one dropped RST packet, got %d", got)
-	}
-}
-
-func TestObj_CloseTimeoutReturnsAndCleanupCanFinish(t *testing.T) {
-	closer := newBlockingCloserObj()
-	node := &Obj{
-		logger:      noopLoggerObj{},
-		coreTimeout: 10 * time.Millisecond,
-	}
-	node.closers = map[io.Closer]struct{}{closer: {}}
-
-	err := node.Close()
-	if !errors.Is(err, ErrCloseTimedOut) {
-		t.Fatalf("expected close timeout, got %v", err)
-	}
-
-	select {
-	case <-closer.started:
-	case <-time.After(time.Second):
-		t.Fatal("blocking closer was not reached")
-	}
-
-	close(closer.release)
-	select {
-	case <-closer.done:
-	case <-time.After(time.Second):
-		t.Fatal("background cleanup did not finish after release")
-	}
-
-	if err = node.Close(); !errors.Is(err, ErrCloseTimedOut) {
-		t.Fatalf("second close should keep timeout result: %v", err)
-	}
-}
-
-func TestObj_CloseTimeoutClosesNetstackFallback(t *testing.T) {
-	cfg := config.GenerateConfig()
-	cfg.AdminListen = "none"
-	closer := newBlockingCloserObj()
-	node, err := New(ConfigObj{Config: cfg, Logger: noopLoggerObj{}, CoreStopTimeout: 10 * time.Millisecond})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	ns := node.netstackPtr.Load()
-	if ns == nil || ns.nic == nil {
-		t.Fatal("expected netstack NIC")
-	}
-	node.closers = map[io.Closer]struct{}{closer: {}}
-
-	err = node.Close()
-	if !errors.Is(err, ErrCloseTimedOut) {
-		t.Fatalf("expected close timeout, got %v", err)
-	}
-	select {
-	case <-closer.started:
-	case <-time.After(time.Second):
-		t.Fatal("blocking closer was not reached")
-	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		ns.nic.rstMu.Lock()
-		rstClosed := ns.nic.rstClosed
-		ns.nic.rstMu.Unlock()
-		if rstClosed {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("netstack NIC was not closed after close timeout")
-		}
-		time.Sleep(time.Millisecond)
-	}
-	close(closer.release)
-	select {
-	case <-closer.done:
-	case <-time.After(time.Second):
-		t.Fatal("background cleanup did not finish after release")
-	}
-}
-
-// //
-
-type nopCloserObj struct{}
-
-func (nopCloserObj) Close() error { return nil }
-
-func TestClosers_removedOnCallerCloseAndRejectedAfterShutdown(t *testing.T) {
-	node := &Obj{
-		logger: noopLoggerObj{},
-	}
-
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	tracked := &trackedListenerObj{Listener: ln, owner: node}
-	if !node.addCloser(tracked) {
-		t.Fatal("addCloser should accept before shutdown")
-	}
-	if err = tracked.Close(); err != nil {
-		t.Fatalf("tracked close: %v", err)
-	}
-	node.closersMu.Lock()
-	left := len(node.closers)
-	node.closersMu.Unlock()
-	if left != 0 {
-		t.Fatalf("caller-closed listener still tracked: %d entries", left)
-	}
-
-	if err = node.Close(); err != nil {
-		t.Fatalf("node close: %v", err)
-	}
-	if node.addCloser(nopCloserObj{}) {
-		t.Fatal("addCloser should reject after shutdown")
 	}
 }

@@ -27,8 +27,10 @@ type ConfigObj struct {
 	// Logger; nil → logs are discarded
 	Logger yggcore.Logger
 
-	// core.Stop() timeout; 0 → no limit
-	CoreStopTimeout time.Duration
+	// Total budget for Close(); 0 → 10s default, <0 → invalid.
+	// Once the budget expires, Close returns ErrCloseTimedOut while unfinished
+	// component teardown continues best-effort in the background.
+	CloseTimeout time.Duration
 
 	// RST packet deferred queue size; 0 → core default.
 	RSTQueueSize int
@@ -49,7 +51,7 @@ type ConfigObj struct {
 
 // SOCKSConfigObj — SOCKS5 proxy startup parameters
 type SOCKSConfigObj struct {
-	// Address: TCP "127.0.0.1:1080" or Unix "/tmp/ygg.sock"
+	// Address: TCP "127.0.0.1:1080" or a Unix socket in a private directory.
 	Addr string
 
 	// DNS server in the Yggdrasil network for .ygg domains.
@@ -71,7 +73,12 @@ type SOCKSConfigObj struct {
 	// SOCKS established tunnel idle timeout; 0 -> safe default, <0 -> disabled
 	TunnelIdleTimeout time.Duration
 
-	// DNS lookup timeout for Nameserver; 0 -> safe default, <0 -> hard safety cap
+	// Max UDP ASSOCIATE targets per session; 0 -> safe default,
+	// <0 -> no per-session cap. The per-server safety cap still applies.
+	MaxAssociateTargetsPerSession int
+
+	// DNS lookup timeout for Nameserver; 0 -> safe default, <0 -> no resolver-imposed
+	// deadline (each query is still bounded by the Go DNS client's own ~5s timeout)
 	NameserverLookupTimeout time.Duration
 
 	// Positive DNS cache TTL for Nameserver; 0 -> safe default, <0 -> disabled

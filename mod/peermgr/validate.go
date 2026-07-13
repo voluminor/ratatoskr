@@ -19,6 +19,10 @@ func normalizePeerURL(u *url.URL) string {
 	v := *u
 	v.Scheme = strings.ToLower(v.Scheme)
 	v.Host = strings.ToLower(v.Host)
+	// Drop userinfo alongside the query: it is not part of the peer identity
+	// (yggdrasil carries peer secrets in the query, which is also stripped) and
+	// this form feeds both the dedup key and log/error output.
+	v.User = nil
 	v.RawQuery = ""
 	v.ForceQuery = false
 	v.Fragment = ""
@@ -55,9 +59,13 @@ func ValidatePeers(peers []string) ([]peerEntryObj, []error) {
 		u.Scheme = strings.ToLower(u.Scheme)
 		u.Host = strings.ToLower(u.Host)
 
-		// Scheme and host are not validated here: the scheme is only used to group
-		// peers per protocol, and node.AddPeer rejects and logs genuinely bad URIs
-		// at probe time. Only malformed URIs (url.Parse failure) and duplicates fail.
+		// Keep transport schemes open-ended for future Yggdrasil versions, but
+		// require the URI structure every peer transport needs: a scheme and either
+		// an authority or a path (for transports such as unix://).
+		if u.Scheme == "" || (u.Host == "" && u.Path == "") {
+			errs = append(errs, fmt.Errorf("%w %q", ErrInvalidURI, normalizePeerURI(s)))
+			continue
+		}
 		matchURI := normalizePeerURL(u)
 		if seen[matchURI] {
 			errs = append(errs, fmt.Errorf("%w %q", ErrDuplicatePeer, matchURI))

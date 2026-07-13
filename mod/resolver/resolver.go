@@ -41,6 +41,11 @@ type Obj struct {
 	cacheMaxEntries int
 	lookupMu        sync.Mutex
 	lookupFlights   map[string]*lookupFlightObj
+	lookupWG        sync.WaitGroup
+	ctx             context.Context
+	cancel          context.CancelFunc
+	closeOnce       sync.Once
+	closed          bool
 	cacheMu         sync.RWMutex
 	cache           map[string]cacheEntryObj
 }
@@ -52,7 +57,9 @@ type ConfigObj struct {
 	// DNS server address. Empty string disables DNS and keeps only .pk.ygg/literals.
 	Nameserver string
 	// DNS lookup timeout applied per lookup: 0 -> default (10s), N>0 -> N used
-	// as-is, N<0 -> disabled (bounded only by the caller's context).
+	// as-is, N<0 -> no resolver-imposed deadline. Lookups are shared via
+	// single-flight and detached from the caller's context, so with N<0 the query
+	// is bounded by the Go DNS client's own per-query timeout (~5s), not the caller.
 	LookupTimeout time.Duration
 	// Positive DNS cache TTL; 0 -> safe default, <0 -> disabled.
 	CacheTTL time.Duration
@@ -141,12 +148,16 @@ func safeContext(ctx context.Context) context.Context {
 }
 
 func (r *Obj) lookupContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	baseCtx := context.WithoutCancel(safeContext(ctx))
+	baseCtx := r.ctx
+	if baseCtx == nil {
+		baseCtx = context.Background()
+	}
 	if r.lookupTimeout > 0 {
 		return context.WithTimeout(baseCtx, r.lookupTimeout)
 	}
-	// Disabled (lookupTimeout <= 0): no internal deadline; the lookup is bounded
-	// only by whatever the caller propagates through its own context.
+	// Disabled (lookupTimeout <= 0): no resolver-imposed deadline. baseCtx already
+	// dropped the caller's cancel/deadline (single-flight), so the query is bounded
+	// by the Go DNS client's own per-query timeout, not the caller's context.
 	return context.WithCancel(baseCtx)
 }
 
@@ -163,7 +174,7 @@ func (r *Obj) waitLookupFlight(ctx context.Context, flight *lookupFlightObj) (ne
 }
 
 func cacheKey(name string) string {
-	return strings.ToLower(name)
+	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
 // validDNSName rejects names DNS can never resolve so junk queries neither reach
@@ -267,9 +278,9 @@ func (r *Obj) cacheSetEntry(key string, entry cacheEntryObj) {
 	if r.cacheTTL <= 0 || r.cache == nil {
 		return
 	}
-	// Uniform TTL: insertion order equals expiry order, so a full cache just drops
-	// one entry and re-queries on the next miss; lazy expiry on read reclaims the
-	// rest. No separate ordering structure is needed.
+	// When full, evict one arbitrary entry (map order) to make room; lazy expiry on
+	// read reclaims the rest. The cache is a best-effort bound, not strict LRU —
+	// no insertion/expiry ordering is tracked, so no separate structure is needed.
 	if _, exists := r.cache[key]; !exists && len(r.cache) >= r.cacheMaxEntries {
 		r.cacheEvictOneLocked()
 	}
@@ -303,6 +314,10 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 	}
 
 	r.lookupMu.Lock()
+	if r.closed {
+		r.lookupMu.Unlock()
+		return nil, ErrClosed
+	}
 	if flight := r.lookupFlights[key]; flight != nil {
 		r.lookupMu.Unlock()
 		return r.waitLookupFlight(waitCtx, flight)
@@ -315,6 +330,7 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 	}
 	flight := &lookupFlightObj{done: make(chan struct{})}
 	r.lookupFlights[key] = flight
+	r.lookupWG.Add(1)
 	r.lookupMu.Unlock()
 
 	go r.runLookupFlight(ctx, key, name, flight)
@@ -322,6 +338,7 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 }
 
 func (r *Obj) runLookupFlight(ctx context.Context, key, name string, flight *lookupFlightObj) {
+	defer r.lookupWG.Done()
 	defer func() {
 		r.lookupMu.Lock()
 		if r.lookupFlights[key] == flight {
@@ -370,12 +387,15 @@ func (r *Obj) runLookupFlight(ctx context.Context, key, name string, flight *loo
 func New(cfg ConfigObj) *Obj {
 	cacheTTL := effectiveCacheTTL(cfg.CacheTTL)
 	cacheMaxEntries := effectiveCacheMaxEntries(cfg.CacheMaxEntries)
+	ctx, cancel := context.WithCancel(context.Background())
 	r := &Obj{
 		resolver:        &net.Resolver{PreferGo: true},
 		lookupTimeout:   effectiveLookupTimeout(cfg.LookupTimeout),
 		cacheTTL:        cacheTTL,
 		cacheMaxEntries: cacheMaxEntries,
 		lookupFlights:   make(map[string]*lookupFlightObj),
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 	if cfg.Nameserver != "" {
 		r.hasDNS = true
@@ -393,19 +413,41 @@ func New(cfg ConfigObj) *Obj {
 		}
 		dnsAddr := net.JoinHostPort(host, port)
 		r.resolver.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			if dialer == nil {
-				return nil, ErrDialerRequired
-			}
 			return dialer.DialContext(ctx, network, dnsAddr)
 		}
 	}
 	return r
 }
 
+// Close cancels active DNS work and waits for admitted single-flight lookups.
+// A root ratatoskr instance applies the hard shutdown deadline around this call.
+func (r *Obj) Close() error {
+	r.closeOnce.Do(func() {
+		r.lookupMu.Lock()
+		r.closed = true
+		if r.cancel != nil {
+			r.cancel()
+		}
+		r.lookupMu.Unlock()
+		r.lookupWG.Wait()
+	})
+	return nil
+}
+
+func (r *Obj) isClosed() bool {
+	r.lookupMu.Lock()
+	closed := r.closed
+	r.lookupMu.Unlock()
+	return closed
+}
+
 // //
 
 // Resolve — <pubkey>.pk.ygg, IPv6 literals, DNS (when nameserver is configured)
 func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
+	if r.isClosed() {
+		return ctx, nil, ErrClosed
+	}
 	// Public key → IPv6
 	if ip, ok, err := resolvePublicKeyDomain(name); ok {
 		if err != nil {

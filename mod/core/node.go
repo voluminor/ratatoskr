@@ -6,14 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/yggdrasil-network/yggdrasil-go/src/admin"
@@ -56,18 +54,12 @@ type Obj struct {
 	logger      yggcore.Logger
 	multicast   componentObj[*multicast.Multicast]
 	adminSocket componentObj[*admin.AdminSocket]
-	// adminMu is the single lock for admin/multicast handler transitions;
-	// it guards adminAddr and handlersWired.
-	adminMu       sync.Mutex
-	adminAddr     string
-	handlersWired bool
-	closeOnce     sync.Once
-	closers       map[io.Closer]struct{}
-	closersMu     sync.Mutex
-	closersDone   bool
-	coreTimeout   time.Duration
-	rstQueueSize  int
-	closeErr      error
+	// adminMu serializes multicast→admin handler wiring across the two independent
+	// enable paths; admin.AddHandler writes its handler map without a lock.
+	adminMu      sync.Mutex
+	closeOnce    sync.Once
+	rstQueueSize int
+	closeErr     error
 }
 
 // New creates and starts the Yggdrasil node.
@@ -80,12 +72,16 @@ func New(cfg ConfigObj) (*Obj, error) {
 		nodeCfg = config.GenerateConfig()
 		nodeCfg.AdminListen = "none"
 	} else {
-		// Take ownership of a shallow copy so a post-New caller mutation cannot
-		// race the node. MulticastInterfaces is read lazily by EnableMulticast, so
-		// its backing array is cloned too; the nested NodeInfo map stays shared and
-		// is owned by the node from here on.
+		// Take ownership of a copy so post-New caller mutations cannot race the
+		// node. Both lazily-read multicast settings and nested NodeInfo values are
+		// cloned.
 		cloned := *nodeCfg
 		cloned.MulticastInterfaces = slices.Clone(nodeCfg.MulticastInterfaces)
+		var err error
+		cloned.NodeInfo, err = common.CloneNodeInfo(nodeCfg.NodeInfo)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidNodeInfo, err)
+		}
 		nodeCfg = &cloned
 	}
 
@@ -100,7 +96,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 	obj := &Obj{
 		nodeCfg:      nodeCfg,
 		logger:       log,
-		coreTimeout:  cfg.CoreStopTimeout,
 		rstQueueSize: rstQueueSize,
 		multicast:    componentObj[*multicast.Multicast]{name: "multicast"},
 		adminSocket:  componentObj[*admin.AdminSocket]{name: "admin"},
@@ -134,20 +129,16 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 // //
 
-// Close stops the node; safe to call multiple times.
-// Owned components (multicast, admin) are released synchronously, before the
-// bounded region. The upstream core stop, the netstack teardown, and the tracked
-// listeners then run in that order, all bounded by CoreStopTimeout (0 → no limit)
-// so a misbehaving closer cannot hang Close past the deadline. On timeout Close
-// returns ErrCloseTimedOut while a single background goroutine finishes; a
-// genuinely hung core.Stop() keeps its transport sockets until it completes — the
-// inherent limit of bounding an uncancellable upstream call.
+// Close stops the node; safe to call multiple times. It performs a complete
+// standalone teardown and may therefore wait for upstream core.Stop(). The root
+// ratatoskr package provides the optional hard shutdown deadline for applications
+// that need a bounded return even if an upstream version stops responding.
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		c := o.corePtr.Swap(nil)
 		ns := o.netstackPtr.Swap(nil)
 		errs := o.closeOwned()
-		errs = append(errs, o.stopCoreAndStack(c, ns)...)
+		o.teardown(c, ns)
 		o.closeErr = errors.Join(errs...)
 	})
 	return o.closeErr
@@ -166,58 +157,17 @@ func (o *Obj) closeOwned() []error {
 	return errs
 }
 
-// stopCoreAndStack stops the core, destroys the netstack, then closes tracked
-// listeners — in that order so ipv6rwc.Read unblocks and the reload-critical
-// sockets are freed first. This whole region can block unpredictably, so it is
-// bounded by CoreStopTimeout: on timeout Close returns ErrCloseTimedOut while a
-// single teardown goroutine finishes once the core does. All stops are idempotent.
-func (o *Obj) stopCoreAndStack(c *yggcore.Core, ns *netstackObj) []error {
-	if o.coreTimeout <= 0 {
-		return o.teardown(c, ns)
-	}
-	done := make(chan []error, 1)
-	go func() {
-		done <- o.teardown(c, ns)
-	}()
-	timer := time.NewTimer(o.coreTimeout)
-	defer timer.Stop()
-	select {
-	case errs := <-done:
-		return errs
-	case <-timer.C:
-		o.logger.Warnf("[core] core stop timed out after %s", o.coreTimeout)
-		return []error{fmt.Errorf("%w after %s", ErrCloseTimedOut, o.coreTimeout)}
-	}
-}
-
-// teardown performs the ordered, blocking part of shutdown: stop the core,
-// destroy the netstack, then close tracked listeners. Its listener errors are
-// dropped on the timeout path where ErrCloseTimedOut already dominates.
-func (o *Obj) teardown(c *yggcore.Core, ns *netstackObj) []error {
+// teardown performs the ordered, blocking part of shutdown: stop the core, then
+// destroy the netstack (which aborts every registered endpoint, including
+// listeners the caller opened via Listen/ListenPacket). Ordered so ipv6rwc.Read
+// unblocks and the reload-critical sockets are freed first.
+func (o *Obj) teardown(c *yggcore.Core, ns *netstackObj) {
 	if c != nil {
 		c.Stop()
 	}
 	if ns != nil {
 		ns.close()
 	}
-	return o.closeTrackedResources()
-}
-
-// closeTrackedResources closes and clears every registered resource (listeners,
-// etc.) outside the lock, because their Close() calls back into removeCloser.
-func (o *Obj) closeTrackedResources() []error {
-	o.closersMu.Lock()
-	closers := o.closers
-	o.closers = nil
-	o.closersDone = true
-	o.closersMu.Unlock()
-	var errs []error
-	for cl := range closers {
-		if err := cl.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errs
 }
 
 // //
@@ -232,41 +182,23 @@ func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Con
 }
 
 // Listen creates a TCP listener; ":port" or "[ipv6]:port".
-// Closed automatically on Close()
+// Aborted automatically on Close() when the netstack is destroyed.
 func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
 		return nil, ErrNotAvailable
 	}
-	ln, err := ns.Listen(network, address)
-	if err != nil {
-		return nil, err
-	}
-	tracked := &trackedListenerObj{Listener: ln, owner: o}
-	if !o.addCloser(tracked) {
-		_ = ln.Close()
-		return nil, ErrNotAvailable
-	}
-	return tracked, nil
+	return ns.Listen(network, address)
 }
 
 // ListenPacket creates a UDP listener; ":port" or "[ipv6]:port".
-// Closed automatically on Close()
+// Aborted automatically on Close() when the netstack is destroyed.
 func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
 		return nil, ErrNotAvailable
 	}
-	pc, err := ns.ListenPacket(network, address)
-	if err != nil {
-		return nil, err
-	}
-	tracked := &trackedPacketConnObj{PacketConn: pc, owner: o}
-	if !o.addCloser(tracked) {
-		_ = pc.Close()
-		return nil, ErrNotAvailable
-	}
-	return tracked, nil
+	return ns.ListenPacket(network, address)
 }
 
 // //
@@ -313,7 +245,7 @@ func (o *Obj) MTU() uint64 {
 // RSTDropped — count of RST packets dropped on queue overflow
 func (o *Obj) RSTDropped() uint64 {
 	ns := o.netstackPtr.Load()
-	if ns == nil || ns.nic == nil {
+	if ns == nil {
 		return 0
 	}
 	return ns.nic.rstDropped.Load()
@@ -328,6 +260,11 @@ func (o *Obj) RetryPeers() error {
 	return nil
 }
 
+// SetAdmin exposes Yggdrasil's low-level handler-registration hook. It is unsafe
+// to call concurrently with another SetAdmin, EnableAdmin, or EnableMulticast:
+// upstream mutates its handler registry without synchronization, and a capture
+// callback can observe privileged debug handlers. Call it only during controlled
+// module construction and never with an untrusted AddHandler implementation.
 func (o *Obj) SetAdmin(a yggcore.AddHandler) error {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -450,10 +387,9 @@ func (o *Obj) EnableMulticast() error {
 }
 
 func (o *Obj) DisableMulticast() error {
-	if err := o.multicast.disable(); err != nil {
-		return err
-	}
-	return o.restartAdminAfterMulticastChange()
+	// The multicast admin handler is left wired; it is safe on a stopped multicast
+	// (reports its last interface set) and yggdrasil exposes no unregister.
+	return o.multicast.disable()
 }
 
 // //
@@ -485,7 +421,6 @@ func (o *Obj) EnableAdmin(addr string) error {
 	if err != nil {
 		return err
 	}
-	o.adminAddr = addr
 	o.syncAdminHandlers()
 	return nil
 }
@@ -494,99 +429,24 @@ func (o *Obj) DisableAdmin() error {
 	o.adminMu.Lock()
 	defer o.adminMu.Unlock()
 
-	err := o.adminSocket.disable()
-	o.adminAddr = ""
-	o.handlersWired = false
-	return err
+	return o.adminSocket.disable()
 }
 
 // //
 
-// restartAdminAfterMulticastChange rebuilds the admin socket after multicast is
-// disabled, dropping the now-stale multicast handlers. It is a no-op unless
-// those handlers were actually wired.
-func (o *Obj) restartAdminAfterMulticastChange() error {
-	o.adminMu.Lock()
-	defer o.adminMu.Unlock()
-
-	if o.adminAddr == "" || !o.handlersWired {
-		return nil
-	}
-	addr := o.adminAddr
-	// yggdrasil-go exposes no way to unregister handlers, so rebuild the socket.
-	err := o.adminSocket.disable()
-	o.handlersWired = false
-	if err != nil {
-		return err
-	}
-	if err := o.adminSocket.enable(func() (*admin.AdminSocket, func() error, error) {
-		return o.newAdminSocket(addr)
-	}); err != nil {
-		return err
-	}
-	o.syncAdminHandlers()
-	return nil
-}
-
-// syncAdminHandlers wires multicast handlers into the admin socket exactly once,
-// when both components are active. Caller must hold adminMu.
+// syncAdminHandlers wires the multicast diagnostic handler into the admin socket
+// when both components are active. Idempotent: AddHandler rejects a duplicate, so
+// after a multicast restart the command keeps reporting the first instance until
+// the admin socket is torn down. Caller must hold adminMu.
 func (o *Obj) syncAdminHandlers() {
-	if o.handlersWired {
-		return
-	}
 	as, adminActive := o.adminSocket.get()
 	mc, multicastActive := o.multicast.get()
-	if !adminActive || !multicastActive || as == nil || mc == nil {
-		return
+	if adminActive && multicastActive {
+		mc.SetupAdminHandlers(as)
 	}
-	mc.SetupAdminHandlers(as)
-	o.handlersWired = true
 }
 
 // //
-
-// trackedListenerObj unregisters itself from the owner on Close,
-// so caller-closed listeners do not accumulate until node Close()
-type trackedListenerObj struct {
-	net.Listener
-	owner *Obj
-}
-
-func (t *trackedListenerObj) Close() error {
-	t.owner.removeCloser(t)
-	return t.Listener.Close()
-}
-
-// trackedPacketConnObj — same as trackedListenerObj for packet listeners
-type trackedPacketConnObj struct {
-	net.PacketConn
-	owner *Obj
-}
-
-func (t *trackedPacketConnObj) Close() error {
-	t.owner.removeCloser(t)
-	return t.PacketConn.Close()
-}
-
-// addCloser registers a resource for Close(); returns false once shutdown has started
-func (o *Obj) addCloser(c io.Closer) bool {
-	o.closersMu.Lock()
-	defer o.closersMu.Unlock()
-	if o.closersDone {
-		return false
-	}
-	if o.closers == nil {
-		o.closers = make(map[io.Closer]struct{})
-	}
-	o.closers[c] = struct{}{}
-	return true
-}
-
-func (o *Obj) removeCloser(c io.Closer) {
-	o.closersMu.Lock()
-	delete(o.closers, c)
-	o.closersMu.Unlock()
-}
 
 func buildCoreOptions(cfg *config.NodeConfig) ([]yggcore.SetupOption, error) {
 	n := 2 + len(cfg.Listen) + len(cfg.Peers) + len(cfg.AllowedPublicKeys)

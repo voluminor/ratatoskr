@@ -6,6 +6,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/voluminor/ratatoskr/internal/common"
@@ -25,6 +26,12 @@ var ErrNodeRequired = errors.New("forward: node is required")
 // ErrInvalidMapping is returned by Start() when a forwarding mapping is incomplete.
 var ErrInvalidMapping = errors.New("forward: invalid mapping")
 
+// ErrAlreadyStarted is returned when a manager is started or changed after Start.
+var ErrAlreadyStarted = errors.New("forward: manager already started")
+
+// ErrClosed is returned when a closed manager is started or changed.
+var ErrClosed = errors.New("forward: manager is closed")
+
 // TCPMappingObj — TCP mapping: local address ↔ remote
 type TCPMappingObj struct {
 	Listen *net.TCPAddr
@@ -43,9 +50,11 @@ type UDPLoopConfigObj struct {
 	ListenConn    net.PacketConn
 	Dial          func(context.Context, net.Addr) (net.Conn, error)
 	DialTimeout   time.Duration
+	WriteTimeout  time.Duration
 	MaxPacketSize int
 	Timeout       time.Duration
 	MaxSessions   int
+	stats         *statsObj
 }
 
 // UDPReverseConfigObj contains all inputs for a UDP reverse proxy worker.
@@ -53,9 +62,9 @@ type UDPReverseConfigObj struct {
 	Dst           net.PacketConn
 	DstAddr       net.Addr
 	Src           net.Conn
+	WriteTimeout  time.Duration
 	MaxPacketSize int
 	Activity      func()
-	writer        *packetWriterObj
 }
 
 // ConfigObj contains all forwarding dependencies and limits.
@@ -83,6 +92,9 @@ type ConfigObj struct {
 
 	// UDPMaxPacketSize bounds UDP payload bytes per datagram; 0 -> node MTU, <0 -> max datagram size.
 	UDPMaxPacketSize int
+
+	// UDPWriteTimeout bounds a write from a reverse UDP writer; 0 -> safe default, <0 -> disabled.
+	UDPWriteTimeout time.Duration
 }
 
 // //
@@ -103,10 +115,14 @@ const (
 	// DefaultTCPIdleTimeout bounds established TCP sessions with no traffic.
 	DefaultTCPIdleTimeout = 5 * time.Minute
 
+	// DefaultUDPWriteTimeout bounds reverse writes to a mapping listener.
+	DefaultUDPWriteTimeout = 5 * time.Second
+
 	maxUDPDatagramSize = 65535
 	acceptBackoffMin   = 10 * time.Millisecond
 	acceptBackoffMax   = time.Second
 	limitLogInterval   = time.Second
+	terminalErrorLimit = 8
 )
 
 // ManagerObj — forwarding rule manager: New → Add* → Start
@@ -119,7 +135,14 @@ type ManagerObj struct {
 	maxTCPConnections int
 	maxUDPSessions    int
 	udpMaxPacketSize  int
+	udpWriteTimeout   time.Duration
 	wg                sync.WaitGroup
+	stateMu           sync.Mutex
+	started           bool
+	closed            bool
+	cancel            context.CancelFunc
+	closeOnce         sync.Once
+	stats             statsObj
 
 	localTCPs  []TCPMappingObj
 	remoteTCPs []TCPMappingObj
@@ -127,8 +150,74 @@ type ManagerObj struct {
 	remoteUDPs []UDPMappingObj
 }
 
+type statsObj struct {
+	activeTCP       atomic.Int64
+	activeUDP       atomic.Int64
+	reverseUDPDrops atomic.Int64
+	terminalErrors  atomic.Int64
+}
+
+// SnapshotObj is a lock-free point-in-time view of forwarding load and drops.
+type SnapshotObj struct {
+	ActiveTCP       int64
+	ActiveUDP       int64
+	ReverseUDPDrops int64
+	TerminalErrors  int64
+}
+
+// Snapshot returns current counters without resetting them.
+func (m *ManagerObj) Snapshot() SnapshotObj {
+	return SnapshotObj{
+		ActiveTCP:       m.stats.activeTCP.Load(),
+		ActiveUDP:       m.stats.activeUDP.Load(),
+		ReverseUDPDrops: m.stats.reverseUDPDrops.Load(),
+		TerminalErrors:  m.stats.terminalErrors.Load(),
+	}
+}
+
 type intervalLogObj struct {
 	next atomic.Int64
+}
+
+// ioErrorStreakObj prevents a broken Listener/PacketConn implementation from
+// spinning forever on the same immediate error while still allowing transient
+// failures to recover with backoff.
+type ioErrorStreakObj struct {
+	message string
+	count   int
+}
+
+func (s *ioErrorStreakObj) terminal(err error) bool {
+	if errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	// Resource exhaustion and aborted accepts are recoverable once pressure drops.
+	// Keep the bounded backoff in the caller, but never permanently kill a mapping
+	// merely because the kernel returned the same transient errno repeatedly.
+	if retryableIOError(err) {
+		s.reset()
+		return false
+	}
+	message := err.Error()
+	if message != s.message {
+		s.message = message
+		s.count = 1
+		return false
+	}
+	s.count++
+	return s.count >= terminalErrorLimit
+}
+
+func retryableIOError(err error) bool {
+	return errors.Is(err, syscall.EMFILE) ||
+		errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ENOBUFS) ||
+		errors.Is(err, syscall.ECONNABORTED)
+}
+
+func (s *ioErrorStreakObj) reset() {
+	s.message = ""
+	s.count = 0
 }
 
 func (l *intervalLogObj) allow(interval time.Duration) bool {
@@ -192,13 +281,6 @@ func udpCleanupInterval(timeout time.Duration) time.Duration {
 	return interval
 }
 
-func effectiveDialTimeout(d time.Duration) time.Duration {
-	if d == 0 {
-		return DefaultDialTimeout
-	}
-	return d
-}
-
 func dialTimeoutContext(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout < 0 {
 		return ctx, func() {}
@@ -237,6 +319,13 @@ func (m *ManagerObj) hasUDPMappings() bool {
 	return len(m.localUDPs) > 0 || len(m.remoteUDPs) > 0
 }
 
+func effectiveUDPWriteTimeout(d time.Duration) time.Duration {
+	if d == 0 {
+		return DefaultUDPWriteTimeout
+	}
+	return d
+}
+
 // //
 
 func (m *ManagerObj) newTCPLimit() *tcpLimitObj {
@@ -248,10 +337,11 @@ func (m *ManagerObj) applyConfig(cfg ConfigObj) {
 	m.log = common.NormalizeLogger(cfg.Logger)
 	m.node = cfg.Node
 	m.timeout = cfg.UDPTimeout
-	m.dialTimeout = effectiveDialTimeout(cfg.DialTimeout)
+	m.dialTimeout = cfg.DialTimeout
 	m.tcpIdleTimeout = effectiveTCPIdleTimeout(cfg.TCPIdleTimeout)
 	m.maxTCPConnections = effectiveMaxConnections(cfg.MaxTCPConnections, DefaultMaxTCPConnections)
 	m.maxUDPSessions = effectiveMaxConnections(cfg.MaxUDPSessions, DefaultMaxUDPSessions)
+	m.udpWriteTimeout = effectiveUDPWriteTimeout(cfg.UDPWriteTimeout)
 	if cfg.UDPMaxPacketSize < 0 {
 		m.udpMaxPacketSize = maxUDPDatagramSize
 	} else if cfg.UDPMaxPacketSize > 0 {
@@ -268,76 +358,159 @@ func New(cfg ConfigObj) *ManagerObj {
 
 // //
 
-func (m *ManagerObj) AddLocalTCP(mappings ...TCPMappingObj) {
+func (m *ManagerObj) mutable() error {
+	if m.closed {
+		return ErrClosed
+	}
+	if m.started {
+		return ErrAlreadyStarted
+	}
+	return nil
+}
+
+func (m *ManagerObj) AddLocalTCP(mappings ...TCPMappingObj) error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if err := m.mutable(); err != nil {
+		return err
+	}
 	m.localTCPs = append(m.localTCPs, mappings...)
+	return nil
 }
 
-func (m *ManagerObj) AddRemoteTCP(mappings ...TCPMappingObj) {
+func (m *ManagerObj) AddRemoteTCP(mappings ...TCPMappingObj) error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if err := m.mutable(); err != nil {
+		return err
+	}
 	m.remoteTCPs = append(m.remoteTCPs, mappings...)
+	return nil
 }
 
-func (m *ManagerObj) AddLocalUDP(mappings ...UDPMappingObj) {
+func (m *ManagerObj) AddLocalUDP(mappings ...UDPMappingObj) error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if err := m.mutable(); err != nil {
+		return err
+	}
 	m.localUDPs = append(m.localUDPs, mappings...)
+	return nil
 }
 
-func (m *ManagerObj) AddRemoteUDP(mappings ...UDPMappingObj) {
+func (m *ManagerObj) AddRemoteUDP(mappings ...UDPMappingObj) error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if err := m.mutable(); err != nil {
+		return err
+	}
 	m.remoteUDPs = append(m.remoteUDPs, mappings...)
+	return nil
 }
 
 // ClearLocal clears local mappings. Before Start()
-func (m *ManagerObj) ClearLocal() {
+func (m *ManagerObj) ClearLocal() error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if err := m.mutable(); err != nil {
+		return err
+	}
 	m.localTCPs = nil
 	m.localUDPs = nil
+	return nil
 }
 
 // ClearRemote clears remote mappings. Before Start()
-func (m *ManagerObj) ClearRemote() {
+func (m *ManagerObj) ClearRemote() error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if err := m.mutable(); err != nil {
+		return err
+	}
 	m.remoteTCPs = nil
 	m.remoteUDPs = nil
+	return nil
 }
 
 // //
 
-// Start launches goroutines for all mappings; called once
+// Start launches goroutines for all mappings. A manager is single-use: after the
+// first call, mappings cannot be changed and another Start returns ErrAlreadyStarted.
 func (m *ManagerObj) Start(ctx context.Context) error {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if m.closed {
+		return ErrClosed
+	}
+	if m.started {
+		return ErrAlreadyStarted
+	}
+	m.started = true
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	m.cancel = cancel
+
 	if m.hasUDPMappings() && m.timeout <= 0 {
+		cancel()
 		return ErrInvalidSessionTimeout
 	}
 	if m.node == nil {
+		cancel()
 		return ErrNodeRequired
 	}
 
 	localTCP, err := m.prepareLocalTCP()
 	if err != nil {
+		cancel()
 		return err
 	}
 	remoteTCP, err := m.prepareRemoteTCP()
 	if err != nil {
+		cancel()
 		closeTCPStarts(localTCP)
 		return err
 	}
 	localUDP, err := m.prepareLocalUDP()
 	if err != nil {
+		cancel()
 		closeTCPStarts(localTCP)
 		closeTCPStarts(remoteTCP)
 		return err
 	}
 	remoteUDP, err := m.prepareRemoteUDP()
 	if err != nil {
+		cancel()
 		closeTCPStarts(localTCP)
 		closeTCPStarts(remoteTCP)
 		closeUDPStarts(localUDP)
 		return err
 	}
 
-	m.runTCPStarts(ctx, localTCP)
-	m.runTCPStarts(ctx, remoteTCP)
-	m.runUDPStarts(ctx, localUDP)
-	m.runUDPStarts(ctx, remoteUDP)
+	m.runTCPStarts(runCtx, localTCP)
+	m.runTCPStarts(runCtx, remoteTCP)
+	m.runUDPStarts(runCtx, localUDP)
+	m.runUDPStarts(runCtx, remoteUDP)
 	return nil
 }
 
-// Wait blocks until all goroutines finish
+// Wait blocks until all goroutines finish. It does not initiate shutdown.
 func (m *ManagerObj) Wait() {
 	m.wg.Wait()
+}
+
+// Close cancels all forwarding work and waits for the standalone module to stop.
+func (m *ManagerObj) Close() error {
+	m.closeOnce.Do(func() {
+		m.stateMu.Lock()
+		m.closed = true
+		cancel := m.cancel
+		m.stateMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+	m.Wait()
+	return nil
 }

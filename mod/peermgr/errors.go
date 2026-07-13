@@ -12,4 +12,6 @@ var (
 	ErrDuplicatePeer      = errors.New("peermgr: duplicate peer")
 	ErrInvalidURI         = errors.New("peermgr: invalid URI")
 	ErrInvalidMaxPerProto = errors.New("peermgr: MaxPerProto must be 0 or greater")
+	ErrInvalidMinPeers    = errors.New("peermgr: MinPeers must be 0 or greater")
+	ErrMinPeersTooHigh    = errors.New("peermgr: MinPeers must be less than the number of peers")
 )

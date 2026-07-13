@@ -71,10 +71,9 @@ Layers from bottom to top:
 
 ```go
 obj, err := core.New(core.ConfigObj{
-Config:          nodeCfg, // *config.NodeConfig; nil — random keys
-Logger:          logger,  // nil — logs are discarded
-CoreStopTimeout: 5 * time.Second,
-RSTQueueSize:    100, // 0 → 100 by default
+Config:       nodeCfg, // *config.NodeConfig; nil — random keys
+Logger:       logger,  // nil — logs are discarded
+RSTQueueSize: 100,     // 0 → 100 by default
 })
 defer obj.Close()
 ```
@@ -132,6 +131,7 @@ Creates a UDP listener. Address format is the same as `Listen`. Automatically cl
 obj.AddPeer("tls://203.0.113.55:443")
 obj.RemovePeer("tls://203.0.113.55:443")
 peers := obj.GetPeers() // []yggcore.PeerInfo
+obj.RetryPeers()        // re-trigger connection attempts to configured peers
 ```
 
 URI formats: `tcp://`, `tls://`, `quic://`, `ws://`, `wss://`.
@@ -182,23 +182,27 @@ Shutdown order:
 ```mermaid
 flowchart LR
     A["DisableMulticast"] --> B["DisableAdmin"]
-    B --> C["Close listeners"]
-    C --> D["Stop yggcore.Core"]
-    D --> E["Close netstack"]
+  B --> D["Stop yggcore.Core"]
+  D --> E["Close netstack (aborts listeners)"]
 ```
 
-If `CoreStopTimeout` is set and the core does not stop within that time — `ErrCloseTimedOut` is returned.
+As a standalone module, `Close` waits for upstream `core.Stop()` to finish. The
+root `ratatoskr` package adds the optional total shutdown deadline used by embedded
+applications.
 
 ---
 
 ## Errors
 
-| Variable                | Description                                |
-|-------------------------|--------------------------------------------|
-| `ErrNotAvailable`       | Netstack is not initialized                |
-| `ErrCloseTimedOut`      | Core did not stop within `CoreStopTimeout` |
-| `ErrAlreadyEnabled`     | Component is already enabled               |
-| `ErrAdminDisabled`      | Admin socket is not active                 |
-| `ErrUnsupportedNetwork` | Unsupported network type (not tcp/udp)     |
-| `ErrPortOutOfRange`     | Port is out of the 0–65535 range           |
-| `ErrInvalidAddress`     | Invalid IP address                         |
+| Variable                     | Description                                |
+|------------------------------|--------------------------------------------|
+| `ErrNotAvailable`            | Netstack is not initialized                |
+| `ErrAlreadyEnabled`          | Component is already enabled               |
+| `ErrAdminDisabled`           | Admin socket is not active                 |
+| `ErrUnsupportedNetwork`      | Unsupported network type (not tcp/udp)     |
+| `ErrPortRequired`            | Address is missing a port                  |
+| `ErrPortOutOfRange`          | Port is out of the 0–65535 range           |
+| `ErrInvalidAddress`          | Invalid IP address                         |
+| `ErrIPv6Only`                | Only IPv6 addresses are supported          |
+| `ErrRSTQueueTooLarge`        | RSTQueueSize exceeds the maximum (65536)   |
+| `ErrInvalidAllowedPublicKey` | Malformed AllowedPublicKeys entry          |

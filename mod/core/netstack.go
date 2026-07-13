@@ -49,62 +49,63 @@ func newNetstack(ygg *yggcore.Core, log yggcore.Logger, rstQueueSize int, ifMTU 
 
 func (s *netstackObj) close() {
 	s.closeOnce.Do(func() {
-		if s.nic != nil {
-			s.nic.Close()
-		}
+		s.nic.Close()
 		s.stack.Destroy()
 	})
 }
 
 // //
 
-func parseAddress(address string) (tcpip.FullAddress, tcpip.NetworkProtocolNumber, error) {
+func parseAddress(address string) (tcpip.FullAddress, error) {
 	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
-		return tcpip.FullAddress{}, 0, fmt.Errorf("net.SplitHostPort: %w", err)
+		return tcpip.FullAddress{}, fmt.Errorf("net.SplitHostPort: %w", err)
 	}
 	if portStr == "" {
-		return tcpip.FullAddress{}, 0, ErrPortRequired
+		return tcpip.FullAddress{}, ErrPortRequired
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return tcpip.FullAddress{}, 0, fmt.Errorf("strconv.Atoi: %w", err)
+		return tcpip.FullAddress{}, fmt.Errorf("strconv.Atoi: %w", err)
 	}
 	if port < 0 || port > 65535 {
-		return tcpip.FullAddress{}, 0, fmt.Errorf("%w: %d", ErrPortOutOfRange, port)
+		return tcpip.FullAddress{}, fmt.Errorf("%w: %d", ErrPortOutOfRange, port)
 	}
 	addr := tcpip.Address{}
 	if host != "" {
 		ip := net.ParseIP(host)
 		if ip == nil {
-			return tcpip.FullAddress{}, 0, fmt.Errorf("%w %q", ErrInvalidAddress, host)
+			return tcpip.FullAddress{}, fmt.Errorf("%w %q", ErrInvalidAddress, host)
 		}
 		if ip.To4() != nil {
-			return tcpip.FullAddress{}, 0, fmt.Errorf("%w: %s", ErrIPv6Only, host)
+			return tcpip.FullAddress{}, fmt.Errorf("%w: %s", ErrIPv6Only, host)
 		}
 		addr = tcpip.AddrFromSlice(ip.To16())
 	}
-	return tcpip.FullAddress{NIC: 1, Addr: addr, Port: uint16(port)}, ipv6.ProtocolNumber, nil
+	return tcpip.FullAddress{NIC: 1, Addr: addr, Port: uint16(port)}, nil
 }
 
 // //
 
 // DialContext — tcp, tcp6, udp, udp6
 func (s *netstackObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	if ctx != nil {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+	// gonet dereferences ctx unconditionally (a select on ctx.Done() before the
+	// connect), so a nil ctx must be normalized to Background() to avoid a panic.
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	fa, pn, err := parseAddress(address)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	fa, err := parseAddress(address)
 	if err != nil {
 		return nil, err
 	}
 	switch network {
 	case "tcp", "tcp6":
-		return gonet.DialContextTCP(ctx, s.stack, fa, pn)
+		return gonet.DialContextTCP(ctx, s.stack, fa, ipv6.ProtocolNumber)
 	case "udp", "udp6":
-		return gonet.DialUDP(s.stack, nil, &fa, pn)
+		return gonet.DialUDP(s.stack, nil, &fa, ipv6.ProtocolNumber)
 	default:
 		return nil, fmt.Errorf("%w %q", ErrUnsupportedNetwork, network)
 	}
@@ -112,13 +113,13 @@ func (s *netstackObj) DialContext(ctx context.Context, network, address string) 
 
 // Listen — tcp, tcp6
 func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
-	fa, pn, err := parseAddress(address)
+	fa, err := parseAddress(address)
 	if err != nil {
 		return nil, err
 	}
 	switch network {
 	case "tcp", "tcp6":
-		return gonet.ListenTCP(s.stack, fa, pn)
+		return gonet.ListenTCP(s.stack, fa, ipv6.ProtocolNumber)
 	default:
 		return nil, fmt.Errorf("%w %q for Listen", ErrUnsupportedNetwork, network)
 	}
@@ -126,13 +127,13 @@ func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
 
 // ListenPacket — udp, udp6
 func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, error) {
-	fa, pn, err := parseAddress(address)
+	fa, err := parseAddress(address)
 	if err != nil {
 		return nil, err
 	}
 	switch network {
 	case "udp", "udp6":
-		return gonet.DialUDP(s.stack, &fa, nil, pn)
+		return gonet.DialUDP(s.stack, &fa, nil, ipv6.ProtocolNumber)
 	default:
 		return nil, fmt.Errorf("%w %q for ListenPacket", ErrUnsupportedNetwork, network)
 	}
@@ -140,8 +141,5 @@ func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, err
 
 // MTU returns the MTU of the NIC interface
 func (s *netstackObj) MTU() uint64 {
-	if s.nic == nil {
-		return 0
-	}
 	return uint64(s.nic.MTU())
 }

@@ -33,10 +33,10 @@ func run(ctx context.Context, cfg ConfigObj, timeout time.Duration) error {
 	defer cancel()
 	log := newLogger(cfg.Name)
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:             runCtx,
-		Config:          buildNodeConfig(cfg),
-		Logger:          log,
-		CoreStopTimeout: timeout,
+		Ctx:          runCtx,
+		Config:       buildNodeConfig(cfg),
+		Logger:       log,
+		CloseTimeout: timeout,
 	})
 	if err != nil {
 		return fmt.Errorf("start ratatoskr: %w", err)

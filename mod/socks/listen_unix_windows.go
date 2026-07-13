@@ -20,7 +20,7 @@ func listenUnix(path string, _ os.FileMode) (net.Listener, error) {
 }
 
 // removeUnixSocket is kept for test builds; stale cleanup is Unix-only.
-func removeUnixSocket(path string) error {
+func removeUnixSocket(path string, _ os.FileInfo) error {
 	return fmt.Errorf("%w: %s", ErrSocketRefusal, path)
 }
 

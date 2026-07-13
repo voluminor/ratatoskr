@@ -28,10 +28,7 @@ func validHumanText(s string, minRunes, maxRunes int) bool {
 	first := true
 	var last rune
 	for _, r := range s {
-		if !unicode.IsPrint(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-			return false
-		}
-		if unicode.IsSpace(r) && r != ' ' {
+		if !unicode.IsPrint(r) {
 			return false
 		}
 		if first && r == ' ' {

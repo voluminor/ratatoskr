@@ -3,6 +3,7 @@ package ratatoskr
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/json"
 	"errors"
 	"net"
 	"strings"
@@ -13,8 +14,10 @@ import (
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
 	"github.com/voluminor/ratatoskr/internal/common"
+	"github.com/voluminor/ratatoskr/mod/core"
 	"github.com/voluminor/ratatoskr/mod/ninfo"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
+	"github.com/voluminor/ratatoskr/mod/probe"
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/mod/sigils/inet"
 	"github.com/voluminor/ratatoskr/mod/socks"
@@ -23,11 +26,18 @@ import (
 
 // // // // // // // // // //
 
+var (
+	_ ninfo.SourceInterface = (core.Interface)(nil)
+	_ probe.SourceInterface = (core.Interface)(nil)
+)
+
+// //
+
 func newTestNode(t *testing.T) *Obj {
 	t.Helper()
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
-	node, err := New(ConfigObj{Config: cfg, CoreStopTimeout: 3 * time.Second})
+	node, err := New(ConfigObj{Config: cfg, CloseTimeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -105,6 +115,28 @@ func (e errCoreObj) RSTDropped() uint64 {
 	return 0
 }
 
+func (e errCoreObj) SetAdmin(yggcore.AddHandler) error {
+	return nil
+}
+
+func (e errCoreObj) SendLookup(ed25519.PublicKey) {}
+
+func (e errCoreObj) GetSelf() yggcore.SelfInfo {
+	return yggcore.SelfInfo{}
+}
+
+func (e errCoreObj) GetSessions() []yggcore.SessionInfo {
+	return nil
+}
+
+func (e errCoreObj) GetTree() []yggcore.TreeEntryInfo {
+	return nil
+}
+
+func (e errCoreObj) GetPaths() []yggcore.PathEntryInfo {
+	return nil
+}
+
 func (e errCoreObj) Close() error {
 	return e.err
 }
@@ -113,6 +145,26 @@ type blockingCoreObj struct {
 	errCoreObj
 	started chan struct{}
 	release chan struct{}
+}
+
+type orderedCloseCoreObj struct {
+	errCoreObj
+	handlerStarted chan struct{}
+	handlerRelease chan struct{}
+	coreStarted    chan struct{}
+}
+
+func (o *orderedCloseCoreObj) SetAdmin(admin yggcore.AddHandler) error {
+	return admin.AddHandler("getNodeInfo", "test", []string{"key"}, func(json.RawMessage) (interface{}, error) {
+		close(o.handlerStarted)
+		<-o.handlerRelease
+		return yggcore.GetNodeInfoResponse{"node": json.RawMessage(`{"name":"test"}`)}, nil
+	})
+}
+
+func (o *orderedCloseCoreObj) Close() error {
+	close(o.coreStarted)
+	return nil
 }
 
 func (b *blockingCoreObj) Close() error {
@@ -125,16 +177,26 @@ func (b *blockingCoreObj) Close() error {
 
 func TestNew_nilConfig(t *testing.T) {
 	// nil Config → random keys
-	node, err := New(ConfigObj{CoreStopTimeout: 3 * time.Second})
+	node, err := New(ConfigObj{CloseTimeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("New with nil config: %v", err)
 	}
 	_ = node.Close()
 }
 
+func TestNew_rejectsCyclicNodeInfo(t *testing.T) {
+	cfg := config.GenerateConfig()
+	cfg.AdminListen = "none"
+	cfg.NodeInfo = make(map[string]any)
+	cfg.NodeInfo["self"] = cfg.NodeInfo
+	if _, err := New(ConfigObj{Config: cfg}); !errors.Is(err, ErrInvalidNodeInfo) {
+		t.Fatalf("New error = %v, want ErrInvalidNodeInfo", err)
+	}
+}
+
 func TestNew_nilLogger(t *testing.T) {
 	// nil Logger uses the shared discard logger internally; must not panic.
-	node, err := New(ConfigObj{CoreStopTimeout: 3 * time.Second})
+	node, err := New(ConfigObj{CloseTimeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +220,7 @@ func TestNew_conflictingPeers(t *testing.T) {
 func TestNew_canceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := New(ConfigObj{Ctx: ctx, CoreStopTimeout: 3 * time.Second})
+	_, err := New(ConfigObj{Ctx: ctx, CloseTimeout: 3 * time.Second})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
@@ -168,9 +230,9 @@ func TestNew_acceptsRSTQueueSize(t *testing.T) {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
 	node, err := New(ConfigObj{
-		Config:          cfg,
-		RSTQueueSize:    1,
-		CoreStopTimeout: 3 * time.Second,
+		Config:       cfg,
+		RSTQueueSize: 1,
+		CloseTimeout: 3 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -188,9 +250,9 @@ func TestNew_doesNotMutateConfigNodeInfo(t *testing.T) {
 	}
 
 	node, err := New(ConfigObj{
-		Config:          cfg,
-		Sigils:          []sigils.Interface{inetSigil},
-		CoreStopTimeout: 3 * time.Second,
+		Config:       cfg,
+		Sigils:       []sigils.Interface{inetSigil},
+		CloseTimeout: 3 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -236,15 +298,154 @@ func TestClose_idempotentPreservesError(t *testing.T) {
 	}
 }
 
+func TestNew_rejectsNegativeCloseTimeout(t *testing.T) {
+	_, err := New(ConfigObj{CloseTimeout: -time.Second})
+	if !errors.Is(err, ErrInvalidCloseTimeout) {
+		t.Fatalf("New error = %v, want ErrInvalidCloseTimeout", err)
+	}
+}
+
+func TestClose_returnsOnConfiguredDeadline(t *testing.T) {
+	coreObj := &blockingCoreObj{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	node := &Obj{
+		core:         coreObj,
+		socks:        socks.NewDisabled(),
+		nodeInfo:     &ninfo.Obj{},
+		closeTimeout: 25 * time.Millisecond,
+		done:         make(chan struct{}),
+	}
+
+	started := time.Now()
+	err := node.Close()
+	elapsed := time.Since(started)
+	if !errors.Is(err, ErrCloseTimedOut) {
+		t.Fatalf("Close error = %v, want ErrCloseTimedOut", err)
+	}
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("Close exceeded bounded budget: %s", elapsed)
+	}
+	select {
+	case <-coreObj.started:
+	default:
+		t.Fatal("Close did not start core teardown")
+	}
+
+	secondStarted := time.Now()
+	if secondErr := node.Close(); !errors.Is(secondErr, ErrCloseTimedOut) {
+		t.Fatalf("second Close error = %v, want ErrCloseTimedOut", secondErr)
+	}
+	if elapsed := time.Since(secondStarted); elapsed > 25*time.Millisecond {
+		t.Fatalf("second Close did not return cached result: %s", elapsed)
+	}
+	close(coreObj.release)
+}
+
+func TestCloseStopsDependentsBeforeCore(t *testing.T) {
+	coreObj := &orderedCloseCoreObj{
+		handlerStarted: make(chan struct{}),
+		handlerRelease: make(chan struct{}),
+		coreStarted:    make(chan struct{}),
+	}
+	ni, err := ninfo.New(ninfo.ConfigObj{Source: coreObj, AskRetryPause: -1})
+	if err != nil {
+		t.Fatalf("ninfo.New: %v", err)
+	}
+	askDone := make(chan error, 1)
+	go func() {
+		_, askErr := ni.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
+		askDone <- askErr
+	}()
+	<-coreObj.handlerStarted
+
+	node := &Obj{
+		core:         coreObj,
+		socks:        socks.NewDisabled(),
+		nodeInfo:     ni,
+		closeTimeout: time.Second,
+		done:         make(chan struct{}),
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- node.Close() }()
+
+	select {
+	case <-coreObj.coreStarted:
+		close(coreObj.handlerRelease)
+		t.Fatal("core teardown started before ninfo left its captured handler")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(coreObj.handlerRelease)
+	select {
+	case err = <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after dependent teardown")
+	}
+	if askErr := <-askDone; askErr != nil {
+		t.Fatalf("accepted Ask did not finish cleanly: %v", askErr)
+	}
+}
+
+func TestCloseDeadlineStillStartsCoreAfterBlockedDependent(t *testing.T) {
+	coreObj := &orderedCloseCoreObj{
+		handlerStarted: make(chan struct{}),
+		handlerRelease: make(chan struct{}),
+		coreStarted:    make(chan struct{}),
+	}
+	ni, err := ninfo.New(ninfo.ConfigObj{Source: coreObj, AskRetryPause: -1})
+	if err != nil {
+		t.Fatalf("ninfo.New: %v", err)
+	}
+	askDone := make(chan error, 1)
+	go func() {
+		_, askErr := ni.Ask(context.Background(), make(ed25519.PublicKey, ed25519.PublicKeySize))
+		askDone <- askErr
+	}()
+	<-coreObj.handlerStarted
+
+	node := &Obj{
+		core:         coreObj,
+		socks:        socks.NewDisabled(),
+		nodeInfo:     ni,
+		closeTimeout: 25 * time.Millisecond,
+		done:         make(chan struct{}),
+	}
+	started := time.Now()
+	err = node.Close()
+	if !errors.Is(err, ErrCloseTimedOut) {
+		close(coreObj.handlerRelease)
+		t.Fatalf("Close error = %v, want ErrCloseTimedOut", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		close(coreObj.handlerRelease)
+		t.Fatalf("Close exceeded its deadline by too much: %s", elapsed)
+	}
+	select {
+	case <-coreObj.coreStarted:
+	case <-time.After(time.Second):
+		close(coreObj.handlerRelease)
+		t.Fatal("best-effort core teardown did not start after the deadline")
+	}
+
+	close(coreObj.handlerRelease)
+	if askErr := <-askDone; askErr != nil {
+		t.Fatalf("accepted Ask did not finish cleanly after timeout: %v", askErr)
+	}
+}
+
 func TestClose_contextShutdown(t *testing.T) {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
 
 	ctx, cancel := context.WithCancel(context.Background())
 	node, err := New(ConfigObj{
-		Ctx:             ctx,
-		Config:          cfg,
-		CoreStopTimeout: 3 * time.Second,
+		Ctx:          ctx,
+		Config:       cfg,
+		CloseTimeout: 3 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -440,6 +641,17 @@ func TestEnableSOCKS_lifecycle(t *testing.T) {
 	}
 }
 
+func TestEnableSOCKS_emptyAddr(t *testing.T) {
+	node := newTestNode(t)
+	err := node.EnableSOCKS(SOCKSConfigObj{})
+	if !errors.Is(err, socks.ErrInvalidAddress) {
+		t.Fatalf("expected socks.ErrInvalidAddress, got: %v", err)
+	}
+	if node.Snapshot().SOCKS.Enabled {
+		t.Fatal("SOCKS should stay disabled after empty address")
+	}
+}
+
 func TestEnableSOCKS_doubleEnable(t *testing.T) {
 	node := newTestNode(t)
 	if err := node.EnableSOCKS(SOCKSConfigObj{Addr: "127.0.0.1:0"}); err != nil {
@@ -464,11 +676,17 @@ func TestModuleHandles(t *testing.T) {
 		t.Fatal("socks handle should be disabled before EnableSOCKS")
 	}
 	socksHandle := node.socks
-	if err := node.EnableSOCKS(SOCKSConfigObj{Addr: "127.0.0.1:0"}); err != nil {
+	if err := node.EnableSOCKS(SOCKSConfigObj{
+		Addr:                          "127.0.0.1:0",
+		MaxAssociateTargetsPerSession: 3,
+	}); err != nil {
 		t.Fatalf("EnableSOCKS: %v", err)
 	}
 	if node.socks != socksHandle {
 		t.Fatal("socks handle should stay stable after EnableSOCKS")
+	}
+	if got := node.socks.MaxAssociateTargetsPerSession(); got != 3 {
+		t.Fatalf("SOCKS MaxAssociateTargetsPerSession = %d, want 3", got)
 	}
 	node.SetSOCKSMaxConnections(17)
 	if got := node.SOCKSMaxConnections(); got != 17 {
@@ -520,9 +738,9 @@ func TestNew_withPeerManager(t *testing.T) {
 		Logger:       common.DiscardLoggerObj{},
 	}
 	node, err := New(ConfigObj{
-		Config:          cfg,
-		Peers:           pmCfg,
-		CoreStopTimeout: 3 * time.Second,
+		Config:       cfg,
+		Peers:        pmCfg,
+		CloseTimeout: 3 * time.Second,
 	})
 	if err != nil {
 		t.Fatalf("New with peer manager: %v", err)
@@ -541,7 +759,7 @@ func BenchmarkNew(b *testing.B) {
 	for b.Loop() {
 		cfg := config.GenerateConfig()
 		cfg.AdminListen = "none"
-		node, err := New(ConfigObj{Config: cfg, CoreStopTimeout: time.Second})
+		node, err := New(ConfigObj{Config: cfg, CloseTimeout: time.Second})
 		if err != nil {
 			b.Fatalf("New: %v", err)
 		}
@@ -552,7 +770,7 @@ func BenchmarkNew(b *testing.B) {
 func BenchmarkSnapshot(b *testing.B) {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
-	node, err := New(ConfigObj{Config: cfg, CoreStopTimeout: time.Second})
+	node, err := New(ConfigObj{Config: cfg, CloseTimeout: time.Second})
 	if err != nil {
 		b.Fatalf("New: %v", err)
 	}
