@@ -6,12 +6,16 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	coremod "github.com/voluminor/ratatoskr/mod/core"
 	yggaddr "github.com/yggdrasil-network/yggdrasil-go/src/address"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
+	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
@@ -180,6 +184,40 @@ func TestMatchYggAddr_invalidKey(t *testing.T) {
 	}
 }
 
+func TestMatchYggAddr_routableSubnetHost(t *testing.T) {
+	key := genKey(t)
+	subnet := yggaddr.SubnetForKey(key)
+	if subnet == nil {
+		t.Fatal("SubnetForKey returned nil")
+	}
+	raw := [16]byte{}
+	copy(raw[:], subnet[:])
+	raw[15] = 42
+	if !matchYggAddr(key, net.IP(raw[:])) {
+		t.Fatal("expected a host inside the key's /64 subnet to match")
+	}
+}
+
+func TestYggLookupKeyCanonicalizesSubnetHost(t *testing.T) {
+	key := genKey(t)
+	subnet := yggaddr.SubnetForKey(key)
+	raw := [16]byte{}
+	copy(raw[:], subnet[:])
+	raw[15] = 42
+	partial, canonical, ok := yggLookupKey(netip.AddrFrom16(raw))
+	if !ok {
+		t.Fatal("routable subnet host was rejected")
+	}
+	if len(partial) != ed25519.PublicKeySize {
+		t.Fatalf("partial key length = %d", len(partial))
+	}
+	want := raw
+	clear(want[8:])
+	if canonical != netip.AddrFrom16(want) {
+		t.Fatalf("canonical subnet = %s, want %s", canonical, netip.AddrFrom16(want))
+	}
+}
+
 // // // // // // // // // //
 // resolveIPv6 context handling
 
@@ -206,6 +244,129 @@ func testYggIPv6(t *testing.T) string {
 	return net.IP(addr[:]).String()
 }
 
+type blockingResolveSourceObj struct {
+	started  chan struct{}
+	release  chan struct{}
+	once     sync.Once
+	lookups  atomic.Int64
+	peers    atomic.Int64
+	sessions atomic.Int64
+	paths    atomic.Int64
+}
+
+type countingResolveSourceObj struct {
+	lookups  atomic.Int64
+	peers    atomic.Int64
+	sessions atomic.Int64
+	paths    atomic.Int64
+	pathKey  ed25519.PublicKey
+}
+
+func (s *countingResolveSourceObj) SetAdmin(yggcore.AddHandler) error { return nil }
+func (s *countingResolveSourceObj) SendLookup(ed25519.PublicKey)      { s.lookups.Add(1) }
+func (s *countingResolveSourceObj) GetPeers() []yggcore.PeerInfo {
+	s.peers.Add(1)
+	return nil
+}
+func (s *countingResolveSourceObj) GetSessions() []yggcore.SessionInfo {
+	s.sessions.Add(1)
+	return nil
+}
+func (s *countingResolveSourceObj) GetPaths() []yggcore.PathEntryInfo {
+	s.paths.Add(1)
+	if s.pathKey == nil {
+		return nil
+	}
+	return []yggcore.PathEntryInfo{{Key: s.pathKey}}
+}
+
+func (s *blockingResolveSourceObj) SetAdmin(yggcore.AddHandler) error { return nil }
+func (s *blockingResolveSourceObj) SendLookup(ed25519.PublicKey)      { s.lookups.Add(1) }
+func (s *blockingResolveSourceObj) GetPeers() []yggcore.PeerInfo {
+	s.peers.Add(1)
+	s.once.Do(func() { close(s.started) })
+	<-s.release
+	return nil
+}
+func (s *blockingResolveSourceObj) GetSessions() []yggcore.SessionInfo {
+	s.sessions.Add(1)
+	return nil
+}
+func (s *blockingResolveSourceObj) GetPaths() []yggcore.PathEntryInfo {
+	s.paths.Add(1)
+	return nil
+}
+
+func TestResolveIPv6CoalescesConcurrentCanonicalAddress(t *testing.T) {
+	obj := newTestObj()
+	source := &blockingResolveSourceObj{started: make(chan struct{}), release: make(chan struct{})}
+	obj.source = source
+	obj.lookupInterval = time.Hour
+	obj.maxLookupTime = time.Hour
+	addr := testYggIPv6(t)
+
+	const callers = 32
+	start := make(chan struct{})
+	var entered sync.WaitGroup
+	entered.Add(callers)
+	results := make(chan error, callers)
+	for i := range callers {
+		go func(i int) {
+			entered.Done()
+			<-start
+			query := addr
+			if i%2 != 0 {
+				query = "[" + addr + "]:1234"
+			}
+			_, err := obj.resolveIPv6(context.Background(), query)
+			results <- err
+		}(i)
+	}
+	entered.Wait()
+	close(start)
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("resolve flight did not start")
+	}
+	time.Sleep(20 * time.Millisecond)
+	obj.askMu.Lock()
+	flights := len(obj.resolveFlights)
+	obj.askMu.Unlock()
+	if flights != 1 {
+		t.Fatalf("resolve flights = %d, want 1", flights)
+	}
+
+	close(source.release)
+	deadline := time.Now().Add(time.Second)
+	for source.lookups.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := source.lookups.Load(); got != 1 {
+		t.Fatalf("SendLookup calls = %d, want 1 shared call", got)
+	}
+	if err := obj.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range callers {
+		if err := <-results; !errors.Is(err, ErrClosed) {
+			t.Fatalf("waiter error = %v, want ErrClosed", err)
+		}
+	}
+}
+
+func TestResolveIPv6RejectsDistinctFlightBeyondCap(t *testing.T) {
+	obj := newTestObj()
+	obj.resolveFlights = make(map[netip.Addr]*resolveFlightObj)
+	for i := 1; i <= maxConcurrentResolves; i++ {
+		addr := netip.AddrFrom16([16]byte{0x02, byte(i >> 8), byte(i)})
+		obj.resolveFlights[addr] = &resolveFlightObj{done: make(chan struct{})}
+	}
+	if _, err := obj.resolveIPv6(context.Background(), testYggIPv6(t)); !errors.Is(err, ErrResolveBusy) {
+		t.Fatalf("resolve error = %v, want ErrResolveBusy", err)
+	}
+}
+
 func TestAskAddr_nilContextIPv6DoesNotPanic(t *testing.T) {
 	coreObj := newResolveCore(t)
 	obj := newTestObj()
@@ -226,6 +387,44 @@ func TestAskAddr_canceledIPv6ContextDoesNotTouchCore(t *testing.T) {
 	_, err := obj.AskAddr(ctx, testYggIPv6(t))
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+}
+
+func TestResolveIPv6PollingScansDirectSnapshotsOnce(t *testing.T) {
+	obj := newTestObj()
+	source := &countingResolveSourceObj{}
+	obj.source = source
+	obj.lookupInterval = time.Millisecond
+	obj.maxLookupTime = 20 * time.Millisecond
+	_, err := obj.resolveIPv6(context.Background(), testYggIPv6(t))
+	if !errors.Is(err, ErrUnresolvableAddr) {
+		t.Fatalf("resolve error = %v, want ErrUnresolvableAddr", err)
+	}
+	if got := source.peers.Load(); got != 1 {
+		t.Fatalf("GetPeers calls = %d, want 1", got)
+	}
+	if got := source.sessions.Load(); got != 1 {
+		t.Fatalf("GetSessions calls = %d, want 1", got)
+	}
+	if got := source.paths.Load(); got < 2 {
+		t.Fatalf("GetPaths calls = %d, want repeated polling", got)
+	}
+}
+
+func TestResolveIPv6FindsRoutableSubnetInPaths(t *testing.T) {
+	key := genKey(t)
+	subnet := yggaddr.SubnetForKey(key)
+	raw := [16]byte{}
+	copy(raw[:], subnet[:])
+	raw[15] = 99
+	obj := newTestObj()
+	obj.source = &countingResolveSourceObj{pathKey: key}
+	got, err := obj.resolveIPv6(context.Background(), netip.AddrFrom16(raw).String())
+	if err != nil {
+		t.Fatalf("resolve subnet: %v", err)
+	}
+	if !got.Equal(key) {
+		t.Fatal("resolved the wrong subnet key")
 	}
 }
 

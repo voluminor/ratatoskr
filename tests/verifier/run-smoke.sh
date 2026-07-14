@@ -186,8 +186,11 @@ case "${1:-smoke}" in
     node="${2:-node-a}"
     get_json "$node" "7070/debug/pprof/goroutine?debug=1"
     ;;
+  throughput)
+    exec /run-throughput.sh
+    ;;
   *)
-    echo "usage: run-smoke.sh [smoke|health NODE|pprof NODE]" >&2
+    echo "usage: run-smoke.sh [smoke|health NODE|pprof NODE|throughput]" >&2
     exit 2
     ;;
 esac

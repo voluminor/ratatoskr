@@ -398,26 +398,18 @@ func TestProxyTCP_idleTimeoutClosesIdleSession(t *testing.T) {
 
 // //
 
-func TestStartLocalTCP_echoRoundtrip(t *testing.T) {
+func TestNewLocalTCP_echoRoundtrip(t *testing.T) {
 	checkIPv6(t)
 	echo := echoTCPServer6(t)
 	localPort := freePort(t, "::1")
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
-		Mapped: echo,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { cancel(); mgr.Wait() }()
+	newRunningTestObj(t, node, 5*time.Second, ConfigObj{
+		LocalTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
+			Mapped: echo,
+		}},
+	})
 
 	addr := fmt.Sprintf("[::1]:%d", localPort)
 	conn := dialTCP6WithRetry(t, addr)
@@ -440,29 +432,21 @@ func TestStartLocalTCP_echoRoundtrip(t *testing.T) {
 	}
 }
 
-func TestStartLocalTCP_dialDoesNotBlockAcceptLoop(t *testing.T) {
+func TestNewLocalTCP_dialDoesNotBlockAcceptLoop(t *testing.T) {
 	checkIPv6(t)
 	localPort := freePort(t, "::1")
 	node := &blockingDialNodeObj{
 		mockNodeObj: mockNodeObj{addr: net.ParseIP("::1")},
 		started:     make(chan struct{}, 2),
 	}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{
+	newRunningTestObj(t, node, 5*time.Second, ConfigObj{
 		DialTimeout:       time.Second,
 		MaxTCPConnections: 2,
+		LocalTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
+			Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1},
+		}},
 	})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
-		Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { cancel(); mgr.Wait() }()
 
 	addr := fmt.Sprintf("[::1]:%d", localPort)
 	c1 := dialTCP6WithRetry(t, addr)
@@ -482,32 +466,33 @@ func TestStartLocalTCP_dialDoesNotBlockAcceptLoop(t *testing.T) {
 	}
 }
 
-func TestStartLocalTCP_maxConnectionsLimitsDialFanout(t *testing.T) {
+func TestNewLocalTCP_maxConnectionsIsSharedAcrossMappings(t *testing.T) {
 	checkIPv6(t)
-	localPort := freePort(t, "::1")
+	firstPort := freePort(t, "::1")
+	secondPort := freePort(t, "::1")
+	for secondPort == firstPort {
+		secondPort = freePort(t, "::1")
+	}
 	node := &blockingDialNodeObj{
 		mockNodeObj: mockNodeObj{addr: net.ParseIP("::1")},
 		started:     make(chan struct{}, 2),
 	}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{
+	newRunningTestObj(t, node, 5*time.Second, ConfigObj{
 		DialTimeout:       time.Second,
 		MaxTCPConnections: 1,
+		LocalTCP: []TCPMappingObj{
+			{
+				Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: firstPort},
+				Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1},
+			},
+			{
+				Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: secondPort},
+				Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 2},
+			},
+		},
 	})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
-		Mapped: &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { cancel(); mgr.Wait() }()
-
-	addr := fmt.Sprintf("[::1]:%d", localPort)
-	c1 := dialTCP6WithRetry(t, addr)
+	c1 := dialTCP6WithRetry(t, fmt.Sprintf("[::1]:%d", firstPort))
 	defer func() { _ = c1.Close() }()
 	select {
 	case <-node.started:
@@ -515,7 +500,7 @@ func TestStartLocalTCP_maxConnectionsLimitsDialFanout(t *testing.T) {
 		t.Fatal("first backend dial did not start")
 	}
 
-	c2 := dialTCP6WithRetry(t, addr)
+	c2 := dialTCP6WithRetry(t, fmt.Sprintf("[::1]:%d", secondPort))
 	defer func() { _ = c2.Close() }()
 	select {
 	case <-node.started:
@@ -524,24 +509,18 @@ func TestStartLocalTCP_maxConnectionsLimitsDialFanout(t *testing.T) {
 	}
 }
 
-func TestStartLocalTCP_cancelClosesActiveProxy(t *testing.T) {
+func TestCloseLocalTCP_closesActiveProxy(t *testing.T) {
 	checkIPv6(t)
 	echo := echoTCPServer6(t)
 	localPort := freePort(t, "::1")
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
-		Mapped: echo,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	mgr := newRunningTestObj(t, node, 5*time.Second, ConfigObj{
+		LocalTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
+			Mapped: echo,
+		}},
+	})
 
 	conn := dialTCP6WithRetry(t, fmt.Sprintf("[::1]:%d", localPort))
 	defer func() { _ = conn.Close() }()
@@ -556,13 +535,8 @@ func TestStartLocalTCP_cancelClosesActiveProxy(t *testing.T) {
 		t.Fatalf("read before cancel: %v", err)
 	}
 
-	cancel()
-	done := make(chan struct{})
-	go func() { mgr.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("mgr.Wait() timed out after context cancel")
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 
 	if err := conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond)); err != nil {
@@ -574,41 +548,30 @@ func TestStartLocalTCP_cancelClosesActiveProxy(t *testing.T) {
 	}
 }
 
-func TestStartLocalTCP_cancelStopsListener(t *testing.T) {
+func TestCloseLocalTCP_stopsListener(t *testing.T) {
 	checkIPv6(t)
 	echo := echoTCPServer6(t)
 	localPort := freePort(t, "::1")
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
-		Mapped: echo,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
+	mgr := newRunningTestObj(t, node, 5*time.Second, ConfigObj{
+		LocalTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: localPort},
+			Mapped: echo,
+		}},
+	})
 
 	// Wait for listener to start
 	addr := fmt.Sprintf("[::1]:%d", localPort)
 	c := dialTCP6WithRetry(t, addr)
 	_ = c.Close()
 
-	cancel()
-	done := make(chan struct{})
-	go func() { mgr.Wait(); close(done) }()
-	select {
-	case <-done:
-	case <-time.After(2 * time.Second):
-		t.Error("mgr.Wait() timed out after context cancel")
+	if err := mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
-func TestStartLocalTCP_bindErrorReturned(t *testing.T) {
+func TestNewLocalTCP_bindErrorReturned(t *testing.T) {
 	ln, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
@@ -617,71 +580,111 @@ func TestStartLocalTCP_bindErrorReturned(t *testing.T) {
 
 	addr := ln.Addr().(*net.TCPAddr)
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: addr.Port},
-		Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err = mgr.Start(context.Background()); err == nil {
-		t.Fatal("Start returned nil for occupied TCP listen address")
+	_, err = New(ConfigObj{
+		Logger:     noopLogObj{},
+		Node:       node,
+		UDPTimeout: 5 * time.Second,
+		LocalTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: addr.Port},
+			Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+	})
+	if err == nil {
+		t.Fatal("New returned nil for occupied TCP listen address")
 	}
 }
 
-func TestStartTCPOnlyDoesNotRequireUDPTimeout(t *testing.T) {
+func TestNew_bindFailureClosesEarlierListeners(t *testing.T) {
+	first := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: freePort(t, "127.0.0.1")}
+	occupied, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	_, err = New(ConfigObj{
+		Node: &mockNodeObj{},
+		LocalTCP: []TCPMappingObj{
+			{Listen: first, Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}},
+			{Listen: occupied.Addr().(*net.TCPAddr), Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 2}},
+		},
+	})
+	if err == nil {
+		t.Fatal("New succeeded despite an occupied second listener")
+	}
+
+	listener, err := net.ListenTCP("tcp", first)
+	if err != nil {
+		t.Fatalf("first listener leaked after rollback: %v", err)
+	}
+	_ = listener.Close()
+}
+
+func TestNew_udpBindFailureClosesEarlierTCPListener(t *testing.T) {
+	first := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: freePort(t, "127.0.0.1")}
+	occupied, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	_, err = New(ConfigObj{
+		Node:       &mockNodeObj{},
+		UDPTimeout: time.Second,
+		LocalTCP: []TCPMappingObj{{
+			Listen: first,
+			Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+		LocalUDP: []UDPMappingObj{{
+			Listen: occupied.LocalAddr().(*net.UDPAddr),
+			Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+	})
+	if err == nil {
+		t.Fatal("New succeeded despite an occupied UDP listener")
+	}
+
+	listener, err := net.ListenTCP("tcp", first)
+	if err != nil {
+		t.Fatalf("earlier TCP listener leaked after UDP rollback: %v", err)
+	}
+	_ = listener.Close()
+}
+
+func TestNewTCPOnlyDoesNotRequireUDPTimeout(t *testing.T) {
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 0, ConfigObj{})
-	if err := mgr.AddLocalTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("127.0.0.1")},
-		Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start TCP-only: %v", err)
-	}
-	cancel()
-	mgr.Wait()
+	newRunningTestObj(t, node, 0, ConfigObj{
+		LocalTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("127.0.0.1")},
+			Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+	})
 }
 
-func TestStart_invalidTCPMapping(t *testing.T) {
-	mgr := newTestManagerObj(&mockNodeObj{}, 0, ConfigObj{})
-	if err := mgr.AddLocalTCP(TCPMappingObj{Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}}); err != nil {
-		t.Fatal(err)
-	}
-	err := mgr.Start(context.Background())
+func TestNew_invalidTCPMapping(t *testing.T) {
+	_, err := New(ConfigObj{
+		Node:     &mockNodeObj{},
+		LocalTCP: []TCPMappingObj{{Mapped: &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}}},
+	})
 	if !errors.Is(err, ErrInvalidMapping) {
-		t.Fatalf("Start = %v, want ErrInvalidMapping", err)
+		t.Fatalf("New = %v, want ErrInvalidMapping", err)
 	}
 }
 
 // //
 
-func TestStartRemoteTCP_echoRoundtrip(t *testing.T) {
+func TestNewRemoteTCP_echoRoundtrip(t *testing.T) {
 	checkIPv6(t)
 	echo := echoTCPServer6(t)
 	remotePort := freePort(t, "::1")
 
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	if err := mgr.AddRemoteTCP(TCPMappingObj{
-		Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: remotePort},
-		Mapped: echo,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := mgr.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	defer func() { cancel(); mgr.Wait() }()
+	newRunningTestObj(t, node, 5*time.Second, ConfigObj{
+		RemoteTCP: []TCPMappingObj{{
+			Listen: &net.TCPAddr{IP: net.ParseIP("::1"), Port: remotePort},
+			Mapped: echo,
+		}},
+	})
 
 	addr := fmt.Sprintf("[::1]:%d", remotePort)
 	conn := dialTCP6WithRetry(t, addr)
@@ -706,26 +709,29 @@ func TestStartRemoteTCP_echoRoundtrip(t *testing.T) {
 
 // //
 
-func TestManagerLifecycle_singleUseAndClose(t *testing.T) {
-	mgr := newTestManagerObj(&mockNodeObj{}, time.Second, ConfigObj{})
-	var nilCtx context.Context
-	if err := mgr.Start(nilCtx); err != nil { //nolint:staticcheck // Verifies the documented nil-context contract.
-		t.Fatalf("Start: %v", err)
-	}
-	if err := mgr.Start(context.Background()); !errors.Is(err, ErrAlreadyStarted) {
-		t.Fatalf("second Start error = %v, want ErrAlreadyStarted", err)
-	}
-	if err := mgr.AddLocalTCP(TCPMappingObj{}); !errors.Is(err, ErrAlreadyStarted) {
-		t.Fatalf("AddLocalTCP after Start error = %v, want ErrAlreadyStarted", err)
-	}
+func TestClose_idempotent(t *testing.T) {
+	mgr := newRunningTestObj(t, &mockNodeObj{}, time.Second, ConfigObj{})
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("second Close: %v", err)
 	}
-	if err := mgr.AddLocalUDP(UDPMappingObj{}); !errors.Is(err, ErrClosed) {
-		t.Fatalf("AddLocalUDP after Close error = %v, want ErrClosed", err)
+}
+
+func TestClose_zeroValue(t *testing.T) {
+	var obj Obj
+	if err := obj.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err := obj.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
+
+func TestNew_requiresNode(t *testing.T) {
+	if _, err := New(ConfigObj{}); !errors.Is(err, ErrNodeRequired) {
+		t.Fatalf("New error = %v, want ErrNodeRequired", err)
 	}
 }
 

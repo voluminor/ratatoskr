@@ -30,9 +30,10 @@ const (
 	acceptRetryMinDelay     = 10 * time.Millisecond
 	acceptRetryMaxDelay     = time.Second
 
-	defaultMaxAssociateTargets             = 1024
-	defaultMaxAssociateTargetsPerSession   = 128
-	defaultMaxAssociateTargetsPerPrincipal = 128
+	defaultMaxAssociateTargets           = 1024
+	defaultMaxAssociateTargetsPerSession = 128
+	defaultMaxAssociateQueuedPackets     = 64
+	defaultMaxAssociateQueuedBytes       = 64 * 1024
 )
 
 func effectiveMaxConnections(n int) int {
@@ -55,6 +56,13 @@ func effectiveMaxAssociateTargetsPerSession(n int) int {
 	default:
 		return n
 	}
+}
+
+func effectiveAssociateQueueLimit(n, def int) int {
+	if n == 0 {
+		return def
+	}
+	return n
 }
 
 // effectiveDuration resolves a caller timeout: 0 → def (safe default),
@@ -96,25 +104,29 @@ func retryableAcceptError(err error) bool {
 
 // Obj — SOCKS5 proxy server over Yggdrasil
 type Obj struct {
-	listener                      net.Listener
-	addr                          string
-	isUnix                        bool
-	logger                        yggcore.Logger
-	maxConnections                atomic.Int64
-	dialTimeout                   time.Duration
-	tunnelIdleTimeout             time.Duration
-	maxAssociateTargetsPerSession int
-	limiter                       *common.DynamicLimitObj
-	associateLimiter              *common.DynamicLimitObj
-	associatePool                 *associateWorkerPoolObj
-	serveTasks                    *serverTaskGroupObj
-	associatePrincipalMu          sync.Mutex
-	associatePrincipals           map[string]int
-	mu                            sync.Mutex
-	serveWG                       *sync.WaitGroup
-	resolverCloser                io.Closer
-	associatePending              atomic.Int64
-	associateRejected             atomic.Int64
+	listener                        net.Listener
+	addr                            string
+	isUnix                          bool
+	logger                          yggcore.Logger
+	maxConnections                  atomic.Int64
+	dialTimeout                     time.Duration
+	tunnelIdleTimeout               time.Duration
+	maxAssociateTargetsPerSession   int
+	maxAssociateTargetsPerPrincipal int
+	maxAssociateQueuedPackets       int
+	maxAssociateQueuedBytes         int
+	limiter                         *common.DynamicLimitObj
+	associateLimiter                *common.DynamicLimitObj
+	associatePool                   *associateWorkerPoolObj
+	serveTasks                      *serverTaskGroupObj
+	associatePrincipalMu            sync.Mutex
+	associatePrincipals             map[string]int
+	mu                              sync.Mutex
+	serveWG                         *sync.WaitGroup
+	resolverCloser                  io.Closer
+	associatePending                atomic.Int64
+	associateRejected               atomic.Uint64
+	associatePacketDrops            atomic.Uint64
 }
 
 // SnapshotObj is a point-in-time view of server load and admission pressure.
@@ -122,7 +134,8 @@ type SnapshotObj struct {
 	ActiveConnections        int
 	ActiveAssociateTargets   int
 	PendingAssociateTargets  int64
-	RejectedAssociateTargets int64
+	RejectedAssociateTargets uint64
+	DroppedAssociatePackets  uint64
 }
 
 // serverTaskGroupObj implements socks5.GPool while retaining ownership of every
@@ -232,6 +245,7 @@ func (s *Obj) Snapshot() SnapshotObj {
 		ActiveAssociateTargets:   activeTargets,
 		PendingAssociateTargets:  s.associatePending.Load(),
 		RejectedAssociateTargets: s.associateRejected.Load(),
+		DroppedAssociatePackets:  s.associatePacketDrops.Load(),
 	}
 }
 
@@ -258,6 +272,14 @@ type ConfigObj struct {
 	// Maximum UDP ASSOCIATE targets per session; 0 -> safe default,
 	// <0 -> no per-session cap. The per-server safety cap still applies.
 	MaxAssociateTargetsPerSession int
+	// Maximum UDP ASSOCIATE targets shared by one authenticated user or source
+	// address; <=0 is unlimited. The server-wide cap still applies.
+	MaxAssociateTargetsPerPrincipal int
+	// Maximum queued UDP packets per established target; 0 -> 64, <0 -> unlimited.
+	MaxAssociateQueuedPacketsPerTarget int
+	// Maximum queued UDP payload bytes per established target; 0 -> 64 KiB,
+	// <0 -> unlimited. Packet and byte limits are applied together.
+	MaxAssociateQueuedBytesPerTarget int
 	// AllowSystemDNS opts direct mod/socks users into host DNS when Resolver is nil.
 	// The default is fail-closed so target names cannot leak outside Yggdrasil.
 	AllowSystemDNS bool
@@ -342,6 +364,43 @@ func (s *Obj) MaxAssociateTargetsPerSession() int {
 	return s.maxAssociateTargetsPerSession
 }
 
+// MaxAssociateTargetsPerPrincipal is the immutable per-principal cap set at Start.
+func (s *Obj) MaxAssociateTargetsPerPrincipal() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxAssociateTargetsPerPrincipal
+}
+
+// MaxAssociateQueuedPacketsPerTarget is the immutable per-target queue cap set at Start.
+func (s *Obj) MaxAssociateQueuedPacketsPerTarget() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxAssociateQueuedPackets
+}
+
+// MaxAssociateQueuedBytesPerTarget is the immutable per-target byte cap set at Start.
+func (s *Obj) MaxAssociateQueuedBytesPerTarget() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.maxAssociateQueuedBytes
+}
+
+func (s *Obj) associateSessionConfig() associateSessionConfigObj {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return associateSessionConfigObj{
+		serverLimiter:    s.associateLimiter,
+		workerPool:       s.associatePool,
+		isUnix:           s.isUnix,
+		maxTargets:       s.maxAssociateTargetsPerSession,
+		maxPrincipal:     s.maxAssociateTargetsPerPrincipal,
+		maxQueuedPackets: s.maxAssociateQueuedPackets,
+		maxQueuedBytes:   s.maxAssociateQueuedBytes,
+		dialTimeout:      s.dialTimeout,
+		idleTimeout:      s.tunnelIdleTimeout,
+	}
+}
+
 // //
 
 // Start opens the listener and launches the server goroutine.
@@ -364,6 +423,9 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	s.dialTimeout = effectiveDuration(cfg.DialTimeout, defaultDialTimeout)
 	s.tunnelIdleTimeout = effectiveDuration(cfg.TunnelIdleTimeout, defaultTunnelIdleTime)
 	s.maxAssociateTargetsPerSession = effectiveMaxAssociateTargetsPerSession(cfg.MaxAssociateTargetsPerSession)
+	s.maxAssociateTargetsPerPrincipal = cfg.MaxAssociateTargetsPerPrincipal
+	s.maxAssociateQueuedPackets = effectiveAssociateQueueLimit(cfg.MaxAssociateQueuedPacketsPerTarget, defaultMaxAssociateQueuedPackets)
+	s.maxAssociateQueuedBytes = effectiveAssociateQueueLimit(cfg.MaxAssociateQueuedBytesPerTarget, defaultMaxAssociateQueuedBytes)
 	s.associateLimiter = common.NewDynamicLimit(defaultMaxAssociateTargets)
 	s.associatePool = newAssociateWorkerPool()
 	s.serveTasks = &serverTaskGroupObj{}
@@ -726,7 +788,7 @@ type limitedConnObj struct {
 	once              sync.Once
 	owner             *limitedListenerObj
 	tunnelIdleTimeout time.Duration
-	tunnelDeadline    atomic.Int64
+	tunnelDeadline    common.DeadlineGateObj
 	tunnelStarted     atomic.Bool
 }
 

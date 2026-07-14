@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -22,7 +21,9 @@ import (
 // // // // // // // // // //
 
 const (
-	associatePacketBufferSize  = 64 * 1024
+	maxUDPDatagramPayloadSize  = 65507
+	maxSOCKSUDPHeaderSize      = 262
+	associatePacketBufferSize  = maxUDPDatagramPayloadSize + maxSOCKSUDPHeaderSize
 	associateTargetIdleTimeout = 30 * time.Second
 	associateWriteTimeout      = 10 * time.Second
 	associateWorkerCount       = 64
@@ -30,6 +31,7 @@ const (
 )
 
 var errAssociateInvalidTarget = errors.New("SOCKS UDP associate target is invalid")
+var errAssociateInvalidClientSpec = errors.New("SOCKS UDP associate client domain is unresolved")
 
 // associateBufferPool recycles the 64 KiB per-target relay buffers so targets
 // that open, go idle, and expire do not churn the allocator under load.
@@ -101,20 +103,24 @@ func (p *associateWorkerPoolObj) close() {
 
 // associateSessionObj owns one UDP relay created by a SOCKS UDP ASSOCIATE request.
 type associateSessionObj struct {
-	owner         *Obj
-	ctx           context.Context
-	cancel        context.CancelFunc
-	network       proxy.ContextDialer
-	resolver      socks5.NameResolver
-	relay         *net.UDPConn
-	clientSpec    *statute.AddrSpec
-	controlIP     net.IP
-	serverLimiter *common.DynamicLimitObj
-	workerPool    *associateWorkerPoolObj
-	principal     string
-	maxTargets    int
-	dialTimeout   time.Duration
-	idleTimeout   time.Duration
+	owner            *Obj
+	ctx              context.Context
+	cancel           context.CancelFunc
+	network          proxy.ContextDialer
+	resolver         socks5.NameResolver
+	relay            *net.UDPConn
+	clientSpec       *statute.AddrSpec
+	controlIP        net.IP
+	serverLimiter    *common.DynamicLimitObj
+	workerPool       *associateWorkerPoolObj
+	principal        string
+	isUnix           bool
+	maxTargets       int
+	maxPrincipal     int
+	maxQueuedPackets int
+	maxQueuedBytes   int
+	dialTimeout      time.Duration
+	idleTimeout      time.Duration
 
 	// clientUDP is owned by the single run() goroutine: set exactly once, then only
 	// read (including by the forward() goroutines it is published to). No lock needed.
@@ -125,9 +131,22 @@ type associateSessionObj struct {
 	pending   map[associateTargetKeyObj]struct{}
 	closed    bool
 	pendingWG sync.WaitGroup
+	targetWG  sync.WaitGroup
 
-	relayReadDeadline atomic.Int64
+	relayReadDeadline common.DeadlineGateObj
 	closeOnce         sync.Once
+}
+
+type associateSessionConfigObj struct {
+	serverLimiter    *common.DynamicLimitObj
+	workerPool       *associateWorkerPoolObj
+	isUnix           bool
+	maxTargets       int
+	maxPrincipal     int
+	maxQueuedPackets int
+	maxQueuedBytes   int
+	dialTimeout      time.Duration
+	idleTimeout      time.Duration
 }
 
 type associateTargetObj struct {
@@ -136,13 +155,110 @@ type associateTargetObj struct {
 	conn      net.Conn
 	header    []byte
 	principal string
+	out       *associatePacketQueueObj
 	closeOnce sync.Once
+}
+
+type associatePacketQueueObj struct {
+	mu         sync.Mutex
+	packets    [][]byte
+	head       int
+	bytes      int
+	maxPackets int
+	maxBytes   int
+	notify     chan struct{}
+	closed     bool
 }
 
 type associateTargetKeyObj struct {
 	kind byte
 	host string
 	port int
+}
+
+func newAssociatePacketQueue(maxPackets, maxBytes int) *associatePacketQueueObj {
+	return &associatePacketQueueObj{
+		maxPackets: maxPackets,
+		maxBytes:   maxBytes,
+		notify:     make(chan struct{}, 1),
+	}
+}
+
+func (q *associatePacketQueueObj) signal() {
+	select {
+	case q.notify <- struct{}{}:
+	default:
+	}
+}
+
+// enqueue copies payload only after both limits admit it. full distinguishes
+// overload from a target that is already closing.
+func (q *associatePacketQueueObj) enqueue(payload []byte) (ok, full bool) {
+	if q == nil {
+		return false, false
+	}
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return false, false
+	}
+	count := len(q.packets) - q.head
+	if (q.maxPackets >= 0 && count >= q.maxPackets) ||
+		(q.maxBytes >= 0 && q.bytes+len(payload) > q.maxBytes) {
+		q.mu.Unlock()
+		return false, true
+	}
+	packet := append([]byte(nil), payload...)
+	q.packets = append(q.packets, packet)
+	q.bytes += len(packet)
+	q.mu.Unlock()
+	q.signal()
+	return true, false
+}
+
+func (q *associatePacketQueueObj) pop(ctx context.Context) ([]byte, bool) {
+	for {
+		q.mu.Lock()
+		if q.head < len(q.packets) {
+			packet := q.packets[q.head]
+			q.packets[q.head] = nil
+			q.head++
+			q.bytes -= len(packet)
+			if q.head == len(q.packets) {
+				q.packets = q.packets[:0]
+				q.head = 0
+			} else if q.head >= 64 && q.head*2 >= len(q.packets) {
+				q.packets = append(q.packets[:0], q.packets[q.head:]...)
+				q.head = 0
+			}
+			q.mu.Unlock()
+			return packet, true
+		}
+		closed := q.closed
+		q.mu.Unlock()
+		if closed {
+			return nil, false
+		}
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case <-q.notify:
+		}
+	}
+}
+
+func (q *associatePacketQueueObj) close() {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	q.closed = true
+	clear(q.packets)
+	q.packets = nil
+	q.head = 0
+	q.bytes = 0
+	q.mu.Unlock()
+	q.signal()
 }
 
 // //
@@ -205,9 +321,13 @@ func (s *associateSessionObj) acquireTargetSlot() bool {
 	if s.owner == nil {
 		return true
 	}
+	limit := s.maxPrincipal
+	if limit <= 0 {
+		return true
+	}
 	s.owner.associatePrincipalMu.Lock()
 	active := s.owner.associatePrincipals[principal]
-	if active >= defaultMaxAssociateTargetsPerPrincipal {
+	if active >= limit {
 		s.owner.associatePrincipalMu.Unlock()
 		if s.serverLimiter != nil {
 			s.serverLimiter.Release()
@@ -227,7 +347,7 @@ func (s *associateSessionObj) releaseTargetSlot(principal string) {
 	if principal == "" {
 		principal = "unknown"
 	}
-	if s.owner != nil {
+	if s.owner != nil && s.maxPrincipal > 0 {
 		s.owner.associatePrincipalMu.Lock()
 		if active := s.owner.associatePrincipals[principal]; active <= 1 {
 			delete(s.owner.associatePrincipals, principal)
@@ -309,6 +429,16 @@ func associateSpecAllowsClient(spec *statute.AddrSpec, addr *net.UDPAddr) bool {
 	return spec.IP.Equal(addr.IP)
 }
 
+func validateAssociateClientSpec(spec *statute.AddrSpec) error {
+	if spec == nil || spec.FQDN == "" {
+		return nil
+	}
+	if len(spec.IP) == 0 || spec.IP.IsUnspecified() {
+		return fmt.Errorf("%w: %q", errAssociateInvalidClientSpec, spec.FQDN)
+	}
+	return nil
+}
+
 func associateTargetAddrType(addr statute.AddrSpec) byte {
 	if addr.AddrType != 0 {
 		return addr.AddrType
@@ -377,21 +507,26 @@ func newAssociateSession(owner *Obj, ctx context.Context, network proxy.ContextD
 		ctx = context.Background()
 	}
 	sessionCtx, cancel := context.WithCancel(ctx)
+	config := owner.associateSessionConfig()
 	return &associateSessionObj{
-		owner:         owner,
-		ctx:           sessionCtx,
-		cancel:        cancel,
-		network:       network,
-		resolver:      resolver,
-		relay:         relay,
-		clientSpec:    request.DestAddr,
-		serverLimiter: owner.associateLimiter,
-		workerPool:    owner.associatePool,
-		maxTargets:    owner.MaxAssociateTargetsPerSession(),
-		dialTimeout:   owner.DialTimeout(),
-		idleTimeout:   owner.TunnelIdleTimeout(),
-		targets:       make(map[associateTargetKeyObj]*associateTargetObj),
-		pending:       make(map[associateTargetKeyObj]struct{}),
+		owner:            owner,
+		ctx:              sessionCtx,
+		cancel:           cancel,
+		network:          network,
+		resolver:         resolver,
+		relay:            relay,
+		clientSpec:       request.DestAddr,
+		serverLimiter:    config.serverLimiter,
+		workerPool:       config.workerPool,
+		isUnix:           config.isUnix,
+		maxTargets:       config.maxTargets,
+		maxPrincipal:     config.maxPrincipal,
+		maxQueuedPackets: config.maxQueuedPackets,
+		maxQueuedBytes:   config.maxQueuedBytes,
+		dialTimeout:      config.dialTimeout,
+		idleTimeout:      config.idleTimeout,
+		targets:          make(map[associateTargetKeyObj]*associateTargetObj),
+		pending:          make(map[associateTargetKeyObj]struct{}),
 	}
 }
 
@@ -418,15 +553,7 @@ func (s *associateSessionObj) run() error {
 		if target == nil {
 			continue
 		}
-		// Bound the write to the ygg-side (gonet) target so a wedged userspace
-		// write cannot stall the whole session relay (head-of-line). On a gonet
-		// conn SetWriteDeadline is a cheap userspace op, not a syscall.
-		_ = target.conn.SetWriteDeadline(time.Now().Add(associateWriteTimeout))
-		if _, err = target.conn.Write(packet.Data); err != nil {
-			target.close()
-			continue
-		}
-		target.touch()
+		target.enqueue(packet.Data)
 	}
 }
 
@@ -456,6 +583,9 @@ func (s *associateSessionObj) route(packet statute.Datagram) (*associateTargetOb
 	}
 	if _, ok := s.pending[key]; ok {
 		s.targetMu.Unlock()
+		if s.owner != nil {
+			s.owner.associatePacketDrops.Add(1)
+		}
 		return nil, nil
 	}
 	if s.maxTargets >= 0 && len(s.targets)+len(s.pending) >= s.maxTargets {
@@ -485,12 +615,7 @@ func (s *associateSessionObj) route(packet statute.Datagram) (*associateTargetOb
 		if createErr != nil || target == nil {
 			return
 		}
-		_ = target.conn.SetWriteDeadline(time.Now().Add(associateWriteTimeout))
-		if _, createErr = target.conn.Write(packet.Data); createErr != nil {
-			target.close()
-			return
-		}
-		target.touch()
+		target.enqueue(packet.Data)
 	}) {
 		s.targetMu.Lock()
 		delete(s.pending, key)
@@ -522,14 +647,6 @@ func (s *associateSessionObj) acceptClient(addr *net.UDPAddr) bool {
 		return true
 	}
 	return udpAddrEqual(s.clientUDP, addr)
-}
-
-func (s *associateSessionObj) target(packet statute.Datagram) (*associateTargetObj, error) {
-	key, err := associateTargetKey(packet.DstAddr)
-	if err != nil {
-		return nil, err
-	}
-	return s.createTarget(packet, key)
 }
 
 func (s *associateSessionObj) createTarget(packet statute.Datagram, key associateTargetKeyObj) (*associateTargetObj, error) {
@@ -583,6 +700,7 @@ func (s *associateSessionObj) createTarget(packet statute.Datagram, key associat
 		conn:      conn,
 		header:    append([]byte(nil), packet.Header()...),
 		principal: s.principal,
+		out:       newAssociatePacketQueue(s.maxQueuedPackets, s.maxQueuedBytes),
 	}
 
 	// A concurrent close() may have snapshotted targets between dial start and now.
@@ -601,10 +719,18 @@ func (s *associateSessionObj) createTarget(packet statute.Datagram, key associat
 		s.releaseTargetSlot(s.principal)
 		return existing, nil
 	}
+	s.targetWG.Add(2)
 	s.targets[key] = target
 	s.targetMu.Unlock()
 
-	go target.forward()
+	go func() {
+		defer s.targetWG.Done()
+		target.forward()
+	}()
+	go func() {
+		defer s.targetWG.Done()
+		target.write()
+	}()
 	return target, nil
 }
 
@@ -665,6 +791,12 @@ func (t *associateTargetObj) forward() {
 		if err != nil {
 			return
 		}
+		if hlen+n > maxUDPDatagramPayloadSize {
+			if t.session.owner != nil {
+				t.session.owner.associatePacketDrops.Add(1)
+			}
+			continue
+		}
 		if _, err = t.session.relay.WriteToUDP(buf[:hlen+n], t.session.clientUDP); err != nil {
 			return
 		}
@@ -672,8 +804,37 @@ func (t *associateTargetObj) forward() {
 	}
 }
 
+func (t *associateTargetObj) enqueue(payload []byte) {
+	ok, full := t.out.enqueue(payload)
+	if ok {
+		return
+	}
+	if full && t.session.owner != nil {
+		t.session.owner.associatePacketDrops.Add(1)
+	}
+}
+
+func (t *associateTargetObj) write() {
+	defer func() {
+		t.close()
+		t.session.deleteTarget(t)
+	}()
+	for {
+		packet, ok := t.out.pop(t.session.ctx)
+		if !ok {
+			return
+		}
+		_ = t.conn.SetWriteDeadline(time.Now().Add(associateWriteTimeout))
+		if _, err := t.conn.Write(packet); err != nil {
+			return
+		}
+		t.touch()
+	}
+}
+
 func (t *associateTargetObj) close() {
 	t.closeOnce.Do(func() {
+		t.out.close()
 		_ = t.conn.Close()
 		t.session.releaseTargetSlot(t.principal)
 	})
@@ -682,6 +843,12 @@ func (t *associateTargetObj) close() {
 // //
 
 func (s *Obj) handleAssociate(ctx context.Context, writer io.Writer, request *socks5.Request, network proxy.ContextDialer, resolver socks5.NameResolver) error {
+	if err := validateAssociateClientSpec(request.DestAddr); err != nil {
+		if replyErr := socks5.SendReply(writer, statute.RepHostUnreachable, nil); replyErr != nil {
+			return fmt.Errorf("failed to send SOCKS UDP ASSOCIATE client-domain failure reply: %w", replyErr)
+		}
+		return err
+	}
 	relay, err := net.ListenUDP("udp", associateListenAddr(request.LocalAddr))
 	if err != nil {
 		if replyErr := socks5.SendReply(writer, statute.RepServerFailure, nil); replyErr != nil {
@@ -697,7 +864,7 @@ func (s *Obj) handleAssociate(ctx context.Context, writer io.Writer, request *so
 
 	session := newAssociateSession(s, ctx, network, resolver, relay, request)
 	session.controlIP = controlConnIP(writer)
-	session.principal = associatePrincipal(request, session.controlIP, s.IsUnix())
+	session.principal = associatePrincipal(request, session.controlIP, session.isUnix)
 	udpDone := make(chan error, 1)
 	controlDone := make(chan error, 1)
 	go func() {
@@ -712,6 +879,7 @@ func (s *Obj) handleAssociate(ctx context.Context, writer io.Writer, request *so
 		session.close()
 		<-udpDone
 		session.pendingWG.Wait()
+		session.targetWG.Wait()
 		return err
 	case err = <-udpDone:
 		session.close()
@@ -719,6 +887,7 @@ func (s *Obj) handleAssociate(ctx context.Context, writer io.Writer, request *so
 			<-controlDone
 		}
 		session.pendingWG.Wait()
+		session.targetWG.Wait()
 		return err
 	}
 }

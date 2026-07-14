@@ -14,9 +14,9 @@ on top of gVisor netstack — no TUN interface, root access, or external depende
 - **Userspace stack.** TCP/UDP over gVisor netstack, no OS privileges.
 - **Standard Go interfaces.** `DialContext`, `Listen`, `ListenPacket` — compatible with `net.Conn`,
   `net.Listener`, `http.Transport`, etc.
-- **`core.Interface` as a contract.** Packages `socks`, `peermgr`, and the root `ratatoskr` depend on
-  the interface, not on `core.Obj` implementation. You can plug in your own implementation for testing
-  or custom transports.
+- **Narrow module contracts.** The root package exposes `core.Interface`; `socks`, `peermgr`, and `forward` accept
+  smaller local interfaces containing only the operations they use. A `core.Obj` satisfies them structurally, while
+  standalone modules can use custom transports without importing the full core.
 
 ### ratatoskr vs yggstack
 
@@ -165,7 +165,7 @@ flowchart TB
 
 `ratatoskr.Obj` promotes the primary networking and peer methods directly (`DialContext`, `Listen`,
 `ListenPacket`, `Address`, `Subnet`, `PublicKey`, `MTU`, `AddPeer`, `RemovePeer`, `GetPeers`). Advanced node
-controls (multicast, admin, retry, stats) are reached via `Core()`. SOCKS5 proxy, peer manager, and ninfo are
+controls (multicast, admin, retry, diagnostics) are reached via `Core()`. SOCKS5 proxy, peer manager, and ninfo are
 optional components controlled through `Obj` methods.
 
 ---
@@ -188,7 +188,7 @@ flowchart LR
   SC --> Core["Start core"]
   Core --> NI["ninfo.New()"]
   NI --> PM{Peers set?}
-  PM -->|Yes| Start["peermgr.Start()"]
+  PM -->|Yes| Start["peermgr.New() starts manager"]
   PM -->|No| Ready["Obj ready"]
   Start --> Ready
   Ready -->|" Ctx != nil "| Watch["goroutine: <-Ctx.Done() → Close()"]
@@ -197,9 +197,11 @@ flowchart LR
 - If `cfg.Config == nil` — random keys are generated
 - If `cfg.Logger == nil` — logs are discarded (noop logger)
 - Cyclic or more than 64-level-deep `Config.NodeInfo` values are rejected with `ErrInvalidNodeInfo`
-- If `cfg.Sigils != nil` — NodeInfo is assembled from sigils; `Config.NodeInfo` is used as the base
+- If `cfg.Sigils != nil` — NodeInfo is assembled atomically from sigils; any assembly or parser error returns
+  `ErrInvalidSigils` and no node
 - If `cfg.Peers != nil` — peer manager is started; `cfg.Config.Peers` must be empty
 - If `cfg.Ctx != nil` — node shuts down automatically on context cancellation
+- If construction fails after core startup, rollback uses the same bounded `CloseTimeout` policy as `Close`
 
 After a successful `New` call, the primary networking and peer methods are available directly on `Obj`; advanced node
 controls live behind `Core()`:
@@ -222,12 +224,12 @@ controls live behind `Core()`:
 | `Core().EnableAdmin(addr)`    | Admin socket (unix/tcp)                   |
 | `Core().DisableAdmin()`       | Stop admin socket                         |
 | `Core().RetryPeers()`         | Reconnect disconnected peers              |
-| `Core().RSTDropped()`         | Dropped RST packet counter                |
 
-Warning: `Core().EnableAdmin` uses the upstream `yggdrasil-go` admin socket. That implementation calls `os.Exit(1)` on
-listen
-failures or Unix socket cleanup failures. Treat admin access as unsafe operational tooling: validate the bind address
-before enabling it and do not expose it to untrusted users.
+Warning: `Core().EnableAdmin` is a thin pass-through to the unsafe upstream admin socket. It has no authentication,
+deadlines, or request-size limit; handler registration can race with requests; stopping does not close accepted
+keepalive connections; and bind or Unix-socket cleanup failures can call `os.Exit(1)`. Use only a protected Unix socket
+or loopback endpoint for trusted operational access. See [mod/core/admin](mod/core/admin/README.md) for the complete
+limitations.
 
 For details on network operations, components, and NIC — see [mod/core/README.md](mod/core/README.md).
 
@@ -236,13 +238,15 @@ For details on network operations, components, and NIC — see [mod/core/README.
 ```go
 func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error
 func (o *Obj) DisableSOCKS() error
-func (o *Obj) SetSOCKSMaxConnections(n int)
+func (o *Obj) SetSOCKSMaxConnections(n int) error
 func (o *Obj) SOCKSMaxConnections() int
 ```
 
 `EnableSOCKS` starts the SOCKS5 proxy. The resolver is created automatically based on `cfg.Nameserver`.
 `DisableSOCKS` stops the proxy; idempotent.
 `SetSOCKSMaxConnections` / `SOCKSMaxConnections` adjust and read the connection limit at runtime.
+If `Close` starts concurrently with the setter, the update may have reached the SOCKS limiter before the method returns
+`ErrClosed`; this has no lasting effect because the proxy is already shutting down.
 
 ```mermaid
 stateDiagram-v2
@@ -270,7 +274,7 @@ return `nil` / `ErrPeerManagerNotEnabled`.
 | `PeerManagerActive()`   | Current active peers (copy); `nil` if manager is not used |
 | `PeerManagerOptimize()` | Force peer re-evaluation (blocks until completion)        |
 
-For details on selection, windowing, and peer validation —
+For details on selection, bounded batches, outage recovery, and peer validation —
 see [mod/peermgr/README.md](mod/peermgr/README.md).
 
 ### RetryPeers
@@ -290,7 +294,8 @@ func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, er
 ```
 
 Query a remote node's NodeInfo. `Ask` takes a public key, `AskAddr` takes an address string
-(64-char hex, `<hex>.pk.ygg`, `[ipv6]:port`, or bare IPv6). Returns parsed metadata,
+(64-char hex, `<hex>.pk.ygg`, `[ipv6]:port`, or bare IPv6). IPv6 accepts both node
+addresses and hosts inside routable Yggdrasil `/64` subnets. Returns parsed metadata,
 software info, and measured RTT.
 
 If the remote node uses `ratatoskr`, the response is automatically split into sigils — each
@@ -298,20 +303,29 @@ known sigil goes into `AskResultObj.Node.Sigils`, remaining keys go into `Extra`
 
 ```go
 result, err := node.AskAddr(ctx, "200:abcd::1")
+if err != nil && result == nil {
+    log.Fatal(err)
+}
 if err != nil {
-log.Fatal(err)
+    log.Printf("partial NodeInfo: %v", err)
 }
 fmt.Printf("RTT: %s, version: %s\n", result.RTT, result.Node.Version)
 if result.Software != nil {
-fmt.Printf("Software: %s %s\n", result.Software.Name, result.Software.Version)
+    fmt.Printf("Software: %s %s\n", result.Software.Name, result.Software.Version)
 }
 for name, sigil := range result.Node.Sigils {
-fmt.Printf("Sigil %s: %v\n", name, sigil.Params())
+    fmt.Printf("Sigil %s: %v\n", name, sigil.Params())
 }
 ```
 
-Internally, `ninfo` is always created during `New()`. If `ConfigObj.Sigils` is set, the sigils
-are imported into `ninfo` as parsers for responses. For details — see [mod/ninfo/README.md](mod/ninfo/README.md).
+`Ask` and `AskAddr` may return a non-nil partial result together with an error, including when `Close` wins a race with
+an otherwise completed query. Callers that can use partial metadata should inspect the result before handling the
+error. Networking methods deliberately return `nil` plus `ErrClosed` in the same race: handing a live connection or
+listener out after shutdown starts would leak a resource and violate the closed-node contract.
+
+Internally, `ninfo` is always created during `New()`. Custom, non-built-in sigils from `ConfigObj.Sigils` are appended
+to the immutable parser prototypes in `ConfigObj.NodeInfo.Sigils`. For details — see
+[mod/ninfo/README.md](mod/ninfo/README.md).
 
 ### Sigils (NodeInfo)
 
@@ -326,8 +340,9 @@ Sigils are typed data blocks for NodeInfo. Each sigil owns a set of keys in Node
 and can write/read them. When passed via `ConfigObj.Sigils`:
 
 1. `sigil_core.New()` assembles NodeInfo from the base `Config.NodeInfo` and the provided sigils
-2. The result is written to `Config.NodeInfo` before starting the core
-3. The same sigils are imported into `ninfo` as parsers for `Ask`/`AskAddr`
+2. Any sigil error aborts `New`; partially assembled NodeInfo is never published
+3. The result is written to `Config.NodeInfo` before starting the core
+4. Custom, non-built-in sigils become immutable parser prototypes for `Ask`/`AskAddr`
 
 ```go
 node, err := ratatoskr.New(ratatoskr.ConfigObj{
@@ -355,7 +370,6 @@ Collects full node state in a single call:
 ```mermaid
 flowchart LR
   Snapshot --> Addr["Address, Subnet, PublicKey, MTU"]
-  Snapshot --> RST["RSTDropped"]
   Snapshot --> Peers["GetPeers() → []PeerSnapshotObj"]
   Snapshot --> Active["PeerManagerActive() → []string"]
   Snapshot --> SOCKS["SOCKS connections, targets, pending and rejected work"]
@@ -378,7 +392,7 @@ or concurrent calls.
 
 ```mermaid
 flowchart TD
-  Close --> PM["peermgr.Stop()"]
+  Close --> PM["peermgr.Close()"]
   Close --> S1["socks.Close()"]
   Close --> S15["ninfo.Close()"]
   PM --> Gate{"dependents stopped<br/>or deadline reached"}
@@ -399,34 +413,37 @@ Collects errors observed before the deadline via `errors.Join`.
 
 Node creation parameters.
 
-| Field          | Type                 | Default | Description                                                                       |
-|----------------|----------------------|---------|-----------------------------------------------------------------------------------|
-| `Ctx`          | `context.Context`    | `nil`   | Parent context; on cancellation — automatic `Close()`. `nil` — manual control     |
-| `Config`       | `*config.NodeConfig` | `nil`   | Yggdrasil configuration. `nil` — random keys                                      |
-| `Logger`       | `yggcore.Logger`     | `nil`   | Logger. `nil` — logs are discarded                                                |
-| `CloseTimeout` | `time.Duration`      | `0`     | Total root shutdown budget. `0` — 10s; `<0` — invalid                             |
-| `RSTQueueSize` | `int`                | `0`     | RST deferred queue size. `0` — core default                                       |
-| `Peers`        | `*peermgr.ConfigObj` | `nil`   | Peer manager. `nil` — peers from `Config.Peers`. Non-nil + `Config.Peers` → error |
-| `Sigils`       | `[]sigils.Interface` | `nil`   | Sigils for NodeInfo. `nil` — not used. Combines with `Config.NodeInfo`            |
+| Field          | Type                 | Default | Description                                                                         |
+|----------------|----------------------|---------|-------------------------------------------------------------------------------------|
+| `Ctx`          | `context.Context`    | `nil`   | Parent context; on cancellation — automatic `Close()`. `nil` — manual control       |
+| `Config`       | `*config.NodeConfig` | `nil`   | Yggdrasil configuration. `nil` — random keys                                        |
+| `Logger`       | `yggcore.Logger`     | `nil`   | Logger. `nil` — logs are discarded                                                  |
+| `CloseTimeout` | `time.Duration`      | `0`     | Total root shutdown budget. `0` — 10s; `<0` — invalid                               |
+| `Peers`        | `*peermgr.ConfigObj` | `nil`   | Peer manager; `Node` is replaced by this core. Non-nil + `Config.Peers` → error     |
+| `NodeInfo`     | `*ninfo.ConfigObj`   | `nil`   | `Ask`/`AskAddr` timing and custom remote parsers; `Source` is replaced by this core |
+| `Sigils`       | `[]sigils.Interface` | `nil`   | Atomic local NodeInfo assembly; custom sigils also parse remote responses           |
 
 ### SOCKSConfigObj
 
 SOCKS5 proxy parameters.
 
-| Field                           | Type                         | Default  | Description                                                                                                         |
-|---------------------------------|------------------------------|----------|---------------------------------------------------------------------------------------------------------------------|
-| `Addr`                          | string                       | required | TCP `"127.0.0.1:1080"` or a Unix socket inside a private directory (`0700`)                                         |
-| `Nameserver`                    | string                       | `""`     | DNS on the Yggdrasil network. `"[ipv6]:port"`. Empty — `.pk.ygg` only                                               |
-| `Verbose`                       | bool                         | `false`  | Log each SOCKS connection                                                                                           |
-| `MaxConnections`                | int                          | `0`      | Max concurrent connections. `0` — safe default, `<0` — unlimited                                                    |
-| `HandshakeTimeout`              | `time.Duration`              | `0`      | SOCKS handshake timeout. `0` — safe default, `<0` — disabled                                                        |
-| `DialTimeout`                   | `time.Duration`              | `0`      | Outbound dial timeout. `0` — safe default, `<0` — disabled                                                          |
-| `TunnelIdleTimeout`             | `time.Duration`              | `0`      | Established tunnel idle timeout. `0` — safe default, `<0` — disabled                                                |
-| `MaxAssociateTargetsPerSession` | int                          | `0`      | UDP ASSOCIATE target cap per session. `0` — safe default, `<0` — no per-session cap; per-server cap still applies   |
-| `NameserverLookupTimeout`       | `time.Duration`              | `0`      | DNS lookup timeout. `0` — safe default, `<0` — no resolver-imposed deadline (Go DNS client's own ~5s still applies) |
-| `NameserverCacheTTL`            | `time.Duration`              | `0`      | Positive DNS cache TTL. `0` — safe default, `<0` — disabled                                                         |
-| `NameserverCacheMaxEntries`     | int                          | `0`      | Positive DNS cache cap. `0` — safe default, `<0` — disabled                                                         |
-| `Credentials`                   | `socks.CredentialsInterface` | `nil`    | Optional SOCKS5 username/password validator                                                                         |
+| Field                                | Type                         | Default  | Description                                                                                                         |
+|--------------------------------------|------------------------------|----------|---------------------------------------------------------------------------------------------------------------------|
+| `Addr`                               | string                       | required | TCP `"127.0.0.1:1080"` or a Unix socket inside a private directory (`0700`)                                         |
+| `Nameserver`                         | string                       | `""`     | DNS on the Yggdrasil network. `"[ipv6]:port"`. Empty — `.pk.ygg` only                                               |
+| `Verbose`                            | bool                         | `false`  | Log each SOCKS connection                                                                                           |
+| `MaxConnections`                     | int                          | `0`      | Max concurrent connections. `0` — safe default, `<0` — unlimited                                                    |
+| `HandshakeTimeout`                   | `time.Duration`              | `0`      | SOCKS handshake timeout. `0` — safe default, `<0` — disabled                                                        |
+| `DialTimeout`                        | `time.Duration`              | `0`      | Outbound dial timeout. `0` — safe default, `<0` — disabled                                                          |
+| `TunnelIdleTimeout`                  | `time.Duration`              | `0`      | Established tunnel idle timeout. `0` — safe default, `<0` — disabled                                                |
+| `MaxAssociateTargetsPerSession`      | int                          | `0`      | UDP ASSOCIATE target cap per session. `0` — safe default, `<0` — no per-session cap; per-server cap still applies   |
+| `MaxAssociateTargetsPerPrincipal`    | int                          | `0`      | Shared target cap per authenticated user or source IP. `<=0` — unlimited; per-server cap still applies              |
+| `MaxAssociateQueuedPacketsPerTarget` | int                          | `0`      | Per-target UDP queue packet cap. `0` — 64, `<0` — unlimited                                                         |
+| `MaxAssociateQueuedBytesPerTarget`   | int                          | `0`      | Per-target UDP payload-byte cap. `0` — 64 KiB, `<0` — unlimited                                                     |
+| `NameserverLookupTimeout`            | `time.Duration`              | `0`      | DNS lookup timeout. `0` — safe default, `<0` — no resolver-imposed deadline (Go DNS client's own ~5s still applies) |
+| `NameserverCacheTTL`                 | `time.Duration`              | `0`      | Positive DNS cache TTL. `0` — safe default, `<0` — disabled                                                         |
+| `NameserverCacheMaxEntries`          | int                          | `0`      | Positive DNS cache cap. `0` — safe default, `<0` — disabled                                                         |
+| `Credentials`                        | `socks.CredentialsInterface` | `nil`    | Optional SOCKS5 username/password validator                                                                         |
 
 ---
 
@@ -434,16 +451,16 @@ SOCKS5 proxy parameters.
 
 ### SnapshotObj
 
-| Field         | Type                | Description                             |
-|---------------|---------------------|-----------------------------------------|
-| `Address`     | `string`            | Node IPv6 address                       |
-| `Subnet`      | `string`            | `/64` subnet                            |
-| `PublicKey`   | `string`            | ed25519 public key (hex)                |
-| `MTU`         | `uint64`            | Stack MTU                               |
-| `RSTDropped`  | `uint64`            | Dropped RST packet counter              |
-| `Peers`       | `[]PeerSnapshotObj` | State of each peer                      |
-| `ActivePeers` | `[]string`          | Peers selected by manager (`omitempty`) |
-| `SOCKS`       | `SOCKSSnapshotObj`  | SOCKS5 proxy state                      |
+| Field           | Type                | Description                             |
+|-----------------|---------------------|-----------------------------------------|
+| `Address`       | `string`            | Node IPv6 address                       |
+| `Subnet`        | `string`            | `/64` subnet                            |
+| `PublicKey`     | `string`            | ed25519 public key (hex)                |
+| `MTU`           | `uint64`            | Stack MTU                               |
+| `Peers`         | `[]PeerSnapshotObj` | State of each peer                      |
+| `ActivePeers`   | `[]string`          | Peers selected by manager (`omitempty`) |
+| `SOCKS`         | `SOCKSSnapshotObj`  | SOCKS5 proxy state                      |
+| `CloseTimedOut` | `bool`              | A root shutdown budget expired          |
 
 ### PeerSnapshotObj
 
@@ -463,42 +480,53 @@ SOCKS5 proxy parameters.
 
 ### SOCKSSnapshotObj
 
-| Field               | Type   | Description               |
-|---------------------|--------|---------------------------|
-| `Enabled`           | `bool` | Proxy is running          |
-| `Addr`              | string | Address (`omitempty`)     |
-| `IsUnix`            | `bool` | Unix socket (`omitempty`) |
-| `ActiveConnections` | `int`  | Active connection count   |
+| Field                      | Type     | Description                                 |
+|----------------------------|----------|---------------------------------------------|
+| `Enabled`                  | `bool`   | Proxy is running                            |
+| `Addr`                     | string   | Address (`omitempty`)                       |
+| `IsUnix`                   | `bool`   | Unix socket (`omitempty`)                   |
+| `ActiveConnections`        | `int`    | Active connection count                     |
+| `ActiveAssociateTargets`   | `int`    | Established UDP ASSOCIATE targets           |
+| `PendingAssociateTargets`  | `int64`  | Target creations in progress                |
+| `RejectedAssociateTargets` | `uint64` | Target creations rejected by admission caps |
+| `DroppedAssociatePackets`  | `uint64` | Packets rejected by full per-target queues  |
 
 ---
 
 ## Errors
 
-| Variable                   | Description                                               |
-|----------------------------|-----------------------------------------------------------|
-| `ErrPeersConflict`         | `Config.Peers` and `Peers` manager are set simultaneously |
-| `ErrPeerManagerNotEnabled` | Peer manager method called but manager is not enabled     |
-| `ErrClosed`                | Method called after the node was closed                   |
+| Variable                   | Description                                                    |
+|----------------------------|----------------------------------------------------------------|
+| `ErrPeersConflict`         | `Config.Peers` and `Peers` manager are set simultaneously      |
+| `ErrPeerManagerNotEnabled` | Peer manager method called but manager is not enabled          |
+| `ErrClosed`                | An error-returning root facade method was called after `Close` |
+| `ErrCloseTimedOut`         | `Close`, or rollback during `New`, exceeded `CloseTimeout`     |
+| `ErrInvalidCloseTimeout`   | `CloseTimeout` is negative                                     |
+| `ErrInvalidNodeInfo`       | Caller NodeInfo cannot be cloned safely                        |
+| `ErrInvalidSigils`         | Local sigil assembly or custom parser configuration is invalid |
 
-Errors from `core.Interface` (`ErrNotAvailable`, etc.) are described in [mod/core/README.md](mod/core/README.md).
+Networking, peer, SOCKS, and NodeInfo methods on the root facade consistently return an error matching `ErrClosed`
+after shutdown. Low-level calls made through `Core()` keep the module-specific contract, including
+`core.ErrNotAvailable`.
+`New` preserves module validation sentinels, including errors returned by `peermgr`.
 
 ---
 
 ## Thread safety
 
-All public methods of `Obj` are safe for concurrent use.
+Public methods are safe for concurrent use except for the explicitly unsafe upstream admin hooks described below.
 
-| Method / group                           | Guarantee                                                     |
-|------------------------------------------|---------------------------------------------------------------|
-| `DialContext`, `Listen`, `ListenPacket`  | Thread-safe; netstack via `atomic.Pointer`                    |
-| `EnableSOCKS` / `DisableSOCKS`           | Mutex-protected                                               |
-| `Core().EnableMulticast` / `EnableAdmin` | Mutex-protected                                               |
-| `AddPeer` / `RemovePeer`                 | Delegate to `yggdrasil-go/core` (thread-safe)                 |
-| `PeerManagerActive`                      | Returns a copy; mutex-protected                               |
-| `PeerManagerOptimize`                    | Blocks; serialized internally                                 |
-| `Ask` / `AskAddr`                        | Thread-safe; network call in a goroutine, cancellable via ctx |
-| `Close`                                  | Idempotent (`sync.Once`)                                      |
-| `Snapshot`                               | Thread-safe; collects data from thread-safe methods           |
+| Method / group                           | Guarantee                                                                           |
+|------------------------------------------|-------------------------------------------------------------------------------------|
+| `DialContext`, `Listen`, `ListenPacket`  | Thread-safe; netstack via `atomic.Pointer`                                          |
+| `EnableSOCKS` / `DisableSOCKS`           | Mutex-protected                                                                     |
+| `Core().EnableMulticast` / `EnableAdmin` | Component lifecycle is locked; upstream handler registration can race with requests |
+| `AddPeer` / `RemovePeer`                 | Delegate to `yggdrasil-go/core` (thread-safe)                                       |
+| `PeerManagerActive`                      | Returns a copy; mutex-protected                                                     |
+| `PeerManagerOptimize`                    | Blocks; serialized internally                                                       |
+| `Ask` / `AskAddr`                        | Thread-safe; caller ctx cancels its wait on a shared flight                         |
+| `Close`                                  | Idempotent (`sync.Once`)                                                            |
+| `Snapshot`                               | Thread-safe; collects data from thread-safe methods                                 |
 
 ---
 
@@ -513,7 +541,7 @@ flowchart TD
   SC --> CORE["core.New() — Yggdrasil + netstack + NIC"]
   CORE --> NI["ninfo.New()"]
   NI --> PM{Peers set?}
-  PM -->|Yes| PMSTART["peermgr.New() + Start()"]
+  PM -->|Yes| PMSTART["peermgr.New()"]
   PM -->|No| READY
   PMSTART --> READY([Node ready])
   READY -->|optionally| SOCKS["EnableSOCKS()"]
@@ -527,7 +555,7 @@ flowchart TD
   PEERS --> READY
   ASK --> READY
   READY --> CLOSE["Close()"]
-  CLOSE --> S1["peermgr.Stop()"]
+  CLOSE --> S1["peermgr.Close()"]
   CLOSE --> S2["socks.Close()"]
   CLOSE --> S25["ninfo.Close()"]
   S1 --> GATE{"dependents stopped<br/>or deadline"}
@@ -652,14 +680,20 @@ return node.DialContext(ctx, network, addr)
 return (&net.Dialer{}).DialContext(ctx, network, addr)
 }
 
-srv, err := socks.New(socks.ConfigObj{
-Network: dialerFunc(dial),
-Addr:    "127.0.0.1:1080",
-Resolver: resolver.New(resolver.ConfigObj{
+nameResolver, err := resolver.New(resolver.ConfigObj{
 Dialer:     node,
 Nameserver: "[200:abcd::1]:53", // DNS over Yggdrasil
-}),
-Logger: logger,
+})
+if err != nil {
+return err
+}
+defer func () { _ = nameResolver.Close() }()
+srv, err := socks.New(socks.ConfigObj{
+Network:     dialerFunc(dial),
+Addr:        "127.0.0.1:1080",
+Resolver:    nameResolver,
+OwnResolver: true,
+Logger:      logger,
 })
 if err != nil {
 return err
@@ -701,8 +735,10 @@ Peers: []string{
 },
 ProbeTimeout:    10 * time.Second,
 RefreshInterval: 5 * time.Minute,
+ReprobeInterval: 30 * time.Minute,
 MaxPerProto:     1,
 BatchSize:       2,
+HealthInterval:  10 * time.Second,
 },
 })
 
@@ -734,45 +770,25 @@ log.Fatal(err)
 defer node.Core().DisableAdmin()
 ```
 
-`Core().EnableAdmin` delegates to the upstream `yggdrasil-go` admin socket. Upstream listen and Unix socket cleanup
-failures can terminate the process with `os.Exit(1)`.
-
-### slog logger adapter
-
-```go
-type slogAdapter struct{ l *slog.Logger }
-
-func (a slogAdapter) Infof(f string, v ...interface{})  { a.l.Info(fmt.Sprintf(f, v...)) }
-func (a slogAdapter) Infoln(v ...interface{})           { a.l.Info(fmt.Sprint(v...)) }
-func (a slogAdapter) Warnf(f string, v ...interface{})  { a.l.Warn(fmt.Sprintf(f, v...)) }
-func (a slogAdapter) Warnln(v ...interface{})           { a.l.Warn(fmt.Sprint(v...)) }
-func (a slogAdapter) Errorf(f string, v ...interface{}) { a.l.Error(fmt.Sprintf(f, v...)) }
-func (a slogAdapter) Errorln(v ...interface{})          { a.l.Error(fmt.Sprint(v...)) }
-func (a slogAdapter) Debugf(f string, v ...interface{}) { a.l.Debug(fmt.Sprintf(f, v...)) }
-func (a slogAdapter) Debugln(v ...interface{})          { a.l.Debug(fmt.Sprint(v...)) }
-func (a slogAdapter) Printf(f string, v ...interface{}) { a.l.Info(fmt.Sprintf(f, v...)) }
-func (a slogAdapter) Println(v ...interface{})          { a.l.Info(fmt.Sprint(v...)) }
-func (a slogAdapter) Traceln(v ...interface{})          {}
-
-node, _ := ratatoskr.New(ratatoskr.ConfigObj{
-Logger: slogAdapter{l: slog.Default()},
-})
-```
+`Core().EnableAdmin` delegates to the upstream admin socket through `mod/core/admin`. This interface is deliberately
+unsafe: handler registration can race with requests, accepted keepalive connections outlive `DisableAdmin`, and bind
+or Unix-socket cleanup failures can terminate the process with `os.Exit(1)`. See the
+[admin package warning](mod/core/admin/README.md).
 
 ---
 
 ## Modules
 
-| Module                                   | Description                                                  |
-|------------------------------------------|--------------------------------------------------------------|
-| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin        |
-| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: windowed probing, best-per-protocol selection  |
-| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                    |
-| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil          |
-| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil       |
-| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                    |
-| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)         |
-| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and parsing, parse sigil management |
+| Module                                   | Description                                                    |
+|------------------------------------------|----------------------------------------------------------------|
+| [`mod/core`](mod/core/README.md)         | Core: Yggdrasil node, netstack, NIC, multicast, admin          |
+| [`mod/peermgr`](mod/peermgr/README.md)   | Peer manager: bounded probing, outage recovery, peer selection |
+| [`mod/socks`](mod/socks/README.md)       | SOCKS5 proxy (TCP/Unix), connection limit                      |
+| [`mod/resolver`](mod/resolver/README.md) | Resolver: `.pk.ygg`, IP literals, DNS via Yggdrasil            |
+| [`mod/forward`](mod/forward/README.md)   | TCP/UDP forwarding between local network and Yggdrasil         |
+| [`mod/probe`](mod/probe/README.md)       | Topology exploration (BFS), route tracing                      |
+| [`mod/sigils`](mod/sigils/README.md)     | Typed NodeInfo blocks (info, services, public, inet)           |
+| [`mod/ninfo`](mod/ninfo/README.md)       | Remote NodeInfo querying and immutable custom parsing          |
 
 ---
 

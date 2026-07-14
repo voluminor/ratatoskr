@@ -1,7 +1,7 @@
 package gocmd
 
 import (
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 )
 
 // // // // // // // // // //

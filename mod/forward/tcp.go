@@ -21,11 +21,6 @@ var tcpCopyBufferPool = sync.Pool{
 	},
 }
 
-type tcpLimitObj struct {
-	max    int64
-	active atomic.Int64
-}
-
 type tcpStartObj struct {
 	mapping     TCPMappingObj
 	listener    net.Listener
@@ -33,27 +28,6 @@ type tcpStartObj struct {
 	acceptLabel string
 	dial        func(TCPMappingObj, context.Context) (net.Conn, error)
 	target      func(TCPMappingObj) string
-}
-
-func (l *tcpLimitObj) acquire() bool {
-	if l == nil || l.max <= 0 {
-		return true
-	}
-	for {
-		active := l.active.Load()
-		if active >= l.max {
-			return false
-		}
-		if l.active.CompareAndSwap(active, active+1) {
-			return true
-		}
-	}
-}
-
-func (l *tcpLimitObj) release() {
-	if l != nil && l.max > 0 {
-		l.active.Add(-1)
-	}
 }
 
 // ProxyTCPContext proxies TCP and unblocks both directions when ctx is cancelled.
@@ -178,7 +152,7 @@ func proxyTCP(c1, c2 net.Conn, closeTimeout, idleTimeout time.Duration) {
 	halfCloseActivity := make(chan struct{}, 1)
 	// Per-conn last-armed deadline; the shared gate re-arms only past the
 	// half-interval, cutting SetDeadline syscalls on the hot copy path.
-	var c1Deadline, c2Deadline atomic.Int64
+	var c1Deadline, c2Deadline common.DeadlineGateObj
 	activity := func() {
 		if idleTimeout > 0 {
 			now := time.Now()
@@ -211,10 +185,9 @@ func proxyTCP(c1, c2 net.Conn, closeTimeout, idleTimeout time.Duration) {
 	waitTCPFinalClose(errCh, closeTimeout)
 }
 
-func (m *ManagerObj) startTCPProxy(ctx context.Context, client net.Conn, limiter *tcpLimitObj, dial func(context.Context) (net.Conn, error), target string) {
+func (m *Obj) startTCPProxy(ctx context.Context, client net.Conn, limiter *admissionLimitObj, dial func(context.Context) (net.Conn, error), target string) {
 	defer m.wg.Done()
 	defer limiter.release()
-	defer m.stats.activeTCP.Add(-1)
 
 	dialCtx, cancel := dialTimeoutContext(ctx, m.dialTimeout)
 	remote, err := dial(dialCtx)
@@ -229,7 +202,7 @@ func (m *ManagerObj) startTCPProxy(ctx context.Context, client net.Conn, limiter
 	proxyTCPContext(ctx, client, remote, DefaultTCPCloseTimeout, m.tcpIdleTimeout)
 }
 
-func (m *ManagerObj) prepareTCP(
+func (m *Obj) prepareTCP(
 	mappings []TCPMappingObj,
 	listen func(TCPMappingObj) (net.Listener, string, error),
 	logMapping func(TCPMappingObj),
@@ -239,10 +212,6 @@ func (m *ManagerObj) prepareTCP(
 ) ([]tcpStartObj, error) {
 	starts := make([]tcpStartObj, 0, len(mappings))
 	for _, mapping := range mappings {
-		if err := validateTCPMapping(mapping); err != nil {
-			closeTCPStarts(starts)
-			return nil, err
-		}
 		listener, listenAddr, err := listen(mapping)
 		if err != nil {
 			closeTCPStarts(starts)
@@ -276,7 +245,7 @@ func validateTCPMapping(mapping TCPMappingObj) error {
 	return nil
 }
 
-func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
+func (m *Obj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 	for _, start := range starts {
 		m.wg.Add(1)
 		go func(st tcpStartObj) {
@@ -284,16 +253,21 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 			defer func() { _ = st.listener.Close() }()
 			st.logMapping(st.mapping)
 
-			limiter := m.newTCPLimit()
 			limitLog := intervalLogObj{}
+			acceptErrorLog := intervalLogObj{}
 			backoff := time.Duration(0)
 			errorStreak := ioErrorStreakObj{}
 
 			acceptCtx, acceptCancel := context.WithCancel(ctx)
-			defer acceptCancel()
+			watchDone := make(chan struct{})
 			go func() {
+				defer close(watchDone)
 				<-acceptCtx.Done()
 				_ = st.listener.Close()
+			}()
+			defer func() {
+				acceptCancel()
+				<-watchDone
 			}()
 
 			for {
@@ -302,7 +276,9 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 					if ctx.Err() != nil {
 						return
 					}
-					m.log.Errorf("[forward] %s TCP accept error: %s", st.acceptLabel, err)
+					if acceptErrorLog.allow(limitLogInterval) {
+						m.log.Errorf("[forward] %s TCP accept error: %s", st.acceptLabel, err)
+					}
 					if errorStreak.terminal(err) {
 						m.stats.terminalErrors.Add(1)
 						return
@@ -315,16 +291,15 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 				}
 				errorStreak.reset()
 				backoff = 0
-				if !limiter.acquire() {
+				if !m.tcpLimit.acquire() {
 					if limitLog.allow(limitLogInterval) {
-						m.log.Warnf("[forward] TCP connection limit reached (%d), dropping %s", limiter.max, c.RemoteAddr())
+						m.log.Warnf("[forward] TCP connection limit reached (%d), dropping %s", m.tcpLimit.max, c.RemoteAddr())
 					}
 					_ = c.Close()
 					continue
 				}
 				m.wg.Add(1)
-				m.stats.activeTCP.Add(1)
-				go m.startTCPProxy(ctx, c, limiter, func(dialCtx context.Context) (net.Conn, error) {
+				go m.startTCPProxy(ctx, c, &m.tcpLimit, func(dialCtx context.Context) (net.Conn, error) {
 					return st.dial(st.mapping, dialCtx)
 				}, st.target(st.mapping))
 			}
@@ -334,7 +309,7 @@ func (m *ManagerObj) runTCPStarts(ctx context.Context, starts []tcpStartObj) {
 
 // //
 
-func (m *ManagerObj) prepareLocalTCP() ([]tcpStartObj, error) {
+func (m *Obj) prepareLocalTCP() ([]tcpStartObj, error) {
 	return m.prepareTCP(m.localTCPs,
 		func(mp TCPMappingObj) (net.Listener, string, error) {
 			listener, err := net.ListenTCP("tcp", mp.Listen)
@@ -354,7 +329,7 @@ func (m *ManagerObj) prepareLocalTCP() ([]tcpStartObj, error) {
 	)
 }
 
-func (m *ManagerObj) prepareRemoteTCP() ([]tcpStartObj, error) {
+func (m *Obj) prepareRemoteTCP() ([]tcpStartObj, error) {
 	return m.prepareTCP(m.remoteTCPs,
 		func(mp TCPMappingObj) (net.Listener, string, error) {
 			addr := fmt.Sprintf("[%s]:%d", m.node.Address(), mp.Listen.Port)

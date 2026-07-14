@@ -1,12 +1,14 @@
 package ninfo
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"strings"
 	"time"
@@ -86,15 +88,10 @@ const maxLookupInterval = time.Second
 
 // //
 
-// resolveIPv6 maps a yggdrasil IPv6 to a public key. It first scans known peers,
-// sessions and paths; on a miss it triggers a network lookup and polls in the
-// caller's goroutine until a match appears, the caller context ends, or the
-// module closes. When the caller sets no deadline the poll is bounded by
-// MaxLookupTime so a lookup for an offline node cannot run forever.
+// resolveIPv6 maps a yggdrasil IPv6 to a public key. Concurrent callers for the
+// same canonical address share one lookup/poll flight; caller cancellation only
+// detaches that waiter and never cancels work used by the others.
 func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey, error) {
-	if obj.isClosed() {
-		return nil, ErrClosed
-	}
 	callerCtx := ensureCallerContext(ctx)
 	if err := callerCtx.Err(); err != nil {
 		return nil, err
@@ -103,24 +100,83 @@ func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey
 	if ip == nil {
 		return nil, ErrInvalidAddr
 	}
-
-	if key := obj.findKeyByIP(ip); key != nil {
-		return key, nil
+	canonical, ok := netip.AddrFromSlice(ip)
+	if !ok || !canonical.Is6() {
+		return nil, ErrInvalidAddr
 	}
-
-	// Derive partial key from IPv6 and trigger network lookup.
-	var yggIP yggaddr.Address
-	copy(yggIP[:], ip.To16())
-	if !yggIP.IsValid() {
+	canonical = canonical.Unmap()
+	partial, lookupAddr, ok := yggLookupKey(canonical)
+	if !ok {
 		return nil, fmt.Errorf("%w: not a yggdrasil address", ErrInvalidAddr)
 	}
-	partial := yggIP.GetKey()
+	canonical = lookupAddr
 
-	pollCtx := callerCtx
-	if _, ok := callerCtx.Deadline(); !ok && obj.maxLookupTime > 0 {
-		var cancel context.CancelFunc
-		pollCtx, cancel = context.WithTimeout(callerCtx, obj.maxLookupTime)
-		defer cancel()
+	obj.askMu.Lock()
+	if obj.closedLocked() {
+		obj.askMu.Unlock()
+		return nil, ErrClosed
+	}
+	if obj.resolveFlights == nil {
+		obj.resolveFlights = make(map[netip.Addr]*resolveFlightObj)
+	}
+	if flight := obj.resolveFlights[canonical]; flight != nil {
+		obj.askMu.Unlock()
+		return waitResolveFlight(callerCtx, flight)
+	}
+	if len(obj.resolveFlights) >= maxConcurrentResolves {
+		obj.askMu.Unlock()
+		return nil, ErrResolveBusy
+	}
+	flight := &resolveFlightObj{done: make(chan struct{})}
+	obj.resolveFlights[canonical] = flight
+	tasks := obj.tasks
+	obj.askMu.Unlock()
+	if !tasks.Go(func(context.Context) { obj.runResolveFlight(canonical, partial, flight) }) {
+		obj.finishResolveFlight(canonical, flight, ErrClosed)
+	}
+	return waitResolveFlight(callerCtx, flight)
+}
+
+func waitResolveFlight(ctx context.Context, flight *resolveFlightObj) (ed25519.PublicKey, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-flight.done:
+		if flight.err != nil {
+			return nil, flight.err
+		}
+		return append(ed25519.PublicKey(nil), flight.key...), nil
+	}
+}
+
+func (obj *Obj) finishResolveFlight(addr netip.Addr, flight *resolveFlightObj, err error) {
+	if err != nil {
+		flight.err = err
+	}
+	obj.askMu.Lock()
+	if obj.resolveFlights[addr] == flight {
+		delete(obj.resolveFlights, addr)
+	}
+	obj.askMu.Unlock()
+	close(flight.done)
+}
+
+func (obj *Obj) runResolveFlight(addr netip.Addr, partial ed25519.PublicKey, flight *resolveFlightObj) {
+	defer obj.finishResolveFlight(addr, flight, nil)
+
+	workCtx := obj.tasks.Context()
+	cancel := func() {}
+	if obj.maxLookupTime > 0 {
+		workCtx, cancel = context.WithTimeout(workCtx, obj.maxLookupTime)
+	}
+	defer cancel()
+	flight.key, flight.err = obj.resolveIPv6Flight(workCtx, addr, partial)
+}
+
+func (obj *Obj) resolveIPv6Flight(ctx context.Context, addr netip.Addr, partial ed25519.PublicKey) (ed25519.PublicKey, error) {
+	ip := net.IP(addr.AsSlice())
+	if key := obj.findKeyByIP(ip, true); key != nil {
+		return key, nil
 	}
 
 	lookupInterval := obj.lookupInterval
@@ -133,17 +189,18 @@ func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey
 	obj.source.SendLookup(partial)
 	for {
 		select {
-		case <-obj.ctx.Done():
+		case <-obj.tasks.Context().Done():
 			return nil, ErrClosed
-		case <-pollCtx.Done():
-			// A caller-supplied deadline surfaces as its own error; the internal
-			// MaxLookupTime bound surfaces as an unresolvable address.
-			if err := callerCtx.Err(); err != nil {
-				return nil, err
+		case <-ctx.Done():
+			if obj.tasks.Context().Err() != nil {
+				return nil, ErrClosed
 			}
 			return nil, ErrUnresolvableAddr
 		case <-timer.C:
-			if key := obj.findKeyByIP(ip); key != nil {
+			// Direct peers and sessions are stable during this short lookup and were
+			// scanned once above. DHT lookup results arrive in Paths, so only that
+			// changing snapshot belongs in the polling hot path.
+			if key := obj.findKeyByIP(ip, false); key != nil {
 				return key, nil
 			}
 			obj.source.SendLookup(partial)
@@ -160,15 +217,17 @@ func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey
 
 // //
 
-func (obj *Obj) findKeyByIP(ip net.IP) ed25519.PublicKey {
-	for _, p := range obj.source.GetPeers() {
-		if matchYggAddr(p.Key, ip) {
-			return p.Key
+func (obj *Obj) findKeyByIP(ip net.IP, includeDirect bool) ed25519.PublicKey {
+	if includeDirect {
+		for _, p := range obj.source.GetPeers() {
+			if matchYggAddr(p.Key, ip) {
+				return p.Key
+			}
 		}
-	}
-	for _, s := range obj.source.GetSessions() {
-		if matchYggAddr(s.Key, ip) {
-			return s.Key
+		for _, s := range obj.source.GetSessions() {
+			if matchYggAddr(s.Key, ip) {
+				return s.Key
+			}
 		}
 	}
 	for _, p := range obj.source.GetPaths() {
@@ -177,6 +236,26 @@ func (obj *Obj) findKeyByIP(ip net.IP) ed25519.PublicKey {
 		}
 	}
 	return nil
+}
+
+// yggLookupKey validates either a node address (200::/7) or a routable node
+// subnet address (300::/7). Subnet hosts are canonicalized to their /64 so all
+// literals inside the same routed subnet share one lookup flight.
+func yggLookupKey(addr netip.Addr) (ed25519.PublicKey, netip.Addr, bool) {
+	raw := addr.As16()
+	var nodeAddr yggaddr.Address
+	copy(nodeAddr[:], raw[:])
+	if nodeAddr.IsValid() {
+		return nodeAddr.GetKey(), addr, true
+	}
+	var subnet yggaddr.Subnet
+	copy(subnet[:], raw[:len(subnet)])
+	if !subnet.IsValid() {
+		return nil, netip.Addr{}, false
+	}
+	canonical := raw
+	clear(canonical[len(subnet):])
+	return subnet.GetKey(), netip.AddrFrom16(canonical), true
 }
 
 // //
@@ -193,9 +272,21 @@ func extractIPv6(addr string) net.IP {
 // //
 
 func matchYggAddr(key ed25519.PublicKey, target net.IP) bool {
-	a := yggaddr.AddrForKey(key)
-	if a == nil {
+	target16 := target.To16()
+	if target16 == nil {
 		return false
 	}
-	return net.IP(a[:]).Equal(target)
+	var nodeAddr yggaddr.Address
+	copy(nodeAddr[:], target16)
+	if nodeAddr.IsValid() {
+		derived := yggaddr.AddrForKey(key)
+		return derived != nil && bytes.Equal(derived[:], target16)
+	}
+	var subnet yggaddr.Subnet
+	copy(subnet[:], target16[:len(subnet)])
+	if !subnet.IsValid() {
+		return false
+	}
+	derived := yggaddr.SubnetForKey(key)
+	return derived != nil && bytes.Equal(derived[:], target16[:len(subnet)])
 }

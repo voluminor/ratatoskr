@@ -41,6 +41,8 @@ type serverObj struct {
 	wg          sync.WaitGroup
 	mutateToken string
 	debugOn     bool
+	throughput  *throughputRegistryObj
+	gomaxprocs  gomaxprocsControllerObj
 }
 
 func newServer(cfg ConfigObj, node *ratatoskr.Obj, log loggerObj, shutdown context.CancelFunc) *serverObj {
@@ -52,6 +54,7 @@ func newServer(cfg ConfigObj, node *ratatoskr.Obj, log loggerObj, shutdown conte
 		shutdown:    shutdown,
 		mutateToken: os.Getenv(envDiagToken),
 		debugOn:     cfg.DebugEnabled || os.Getenv(envDiagDebug) != "",
+		throughput:  &throughputRegistryObj{},
 	}
 }
 
@@ -91,6 +94,9 @@ func (s *serverObj) start(parent context.Context) error {
 	if err := s.startUDPEcho(ctx); err != nil {
 		return err
 	}
+	if err := s.startThroughputSinks(ctx); err != nil {
+		return err
+	}
 	s.startHTTP(ctx)
 	if s.debugOn {
 		s.startDebug(ctx)
@@ -114,6 +120,7 @@ func (s *serverObj) close() {
 		_ = s.debugServer.Shutdown(shutdownCtx)
 	}
 	s.wg.Wait()
+	s.gomaxprocs.restore()
 }
 
 func (s *serverObj) startHTTP(ctx context.Context) {
@@ -121,10 +128,14 @@ func (s *serverObj) startHTTP(ctx context.Context) {
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/snapshot", s.handleSnapshot)
 	mux.HandleFunc("/runtime", s.handleRuntime)
+	mux.HandleFunc("/runtime/gomaxprocs", s.handleGOMAXPROCS)
 	mux.HandleFunc("/check/tcp", s.handleTCPCheck)
 	mux.HandleFunc("/check/udp", s.handleUDPCheck)
 	mux.HandleFunc("/load/tcp", s.handleTCPLoad)
 	mux.HandleFunc("/load/udp", s.handleUDPLoad)
+	mux.HandleFunc("/throughput/start", s.handleThroughputStart)
+	mux.HandleFunc("/throughput/run", s.handleThroughputRun)
+	mux.HandleFunc("/throughput/finish", s.handleThroughputFinish)
 	mux.HandleFunc("/socks/enable", s.handleSOCKSEnable)
 	mux.HandleFunc("/socks/disable", s.handleSOCKSDisable)
 	mux.HandleFunc("/close", s.handleClose)

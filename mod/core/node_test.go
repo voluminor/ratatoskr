@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"strings"
 	"testing"
@@ -9,7 +10,6 @@ import (
 
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
-	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
@@ -95,6 +95,24 @@ func TestNewUsesConfiguredMTU(t *testing.T) {
 	}
 }
 
+func TestPublicKeyDoesNotExposeCoreStorage(t *testing.T) {
+	node, err := New(ConfigObj{Logger: noopLoggerObj{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = node.Close() })
+
+	first := node.PublicKey()
+	if len(first) == 0 {
+		t.Fatal("PublicKey returned an empty key")
+	}
+	want := append(ed25519.PublicKey(nil), first...)
+	first[0] ^= 0xff
+	if got := node.PublicKey(); !got.Equal(want) {
+		t.Fatal("mutating the returned public key changed core state")
+	}
+}
+
 func TestNewClampsLowMTU(t *testing.T) {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
@@ -108,44 +126,6 @@ func TestNewClampsLowMTU(t *testing.T) {
 
 	if got := node.MTU(); got != 1280 {
 		t.Fatalf("expected MTU clamp to 1280, got %d", got)
-	}
-}
-
-func TestNewUsesConfiguredRSTQueueSize(t *testing.T) {
-	cfg := config.GenerateConfig()
-	cfg.AdminListen = "none"
-
-	node, err := New(ConfigObj{Config: cfg, Logger: noopLoggerObj{}, RSTQueueSize: 7})
-	if err != nil {
-		t.Fatalf("unexpected new node error: %v", err)
-	}
-	t.Cleanup(func() { _ = node.Close() })
-
-	if node.rstQueueSize != 7 {
-		t.Fatalf("expected rstQueueSize 7, got %d", node.rstQueueSize)
-	}
-	ns := node.netstackPtr.Load()
-	if ns == nil || ns.nic == nil {
-		t.Fatal("expected netstack NIC")
-	}
-	if got := cap(ns.nic.rstPackets); got != 7 {
-		t.Fatalf("expected RST queue capacity 7, got %d", got)
-	}
-}
-
-func TestNewRejectsTooLargeRSTQueueSize(t *testing.T) {
-	cfg := config.GenerateConfig()
-	cfg.AdminListen = "none"
-
-	node, err := New(ConfigObj{Config: cfg, Logger: noopLoggerObj{}, RSTQueueSize: maxRSTQueue + 1})
-	if err == nil {
-		if node != nil {
-			_ = node.Close()
-		}
-		t.Fatal("expected RST queue size error")
-	}
-	if !errors.Is(err, ErrRSTQueueTooLarge) {
-		t.Fatalf("New error = %v, want ErrRSTQueueTooLarge", err)
 	}
 }
 
@@ -243,45 +223,5 @@ func TestNICAttachNilDetaches(t *testing.T) {
 	nic.Attach(nil)
 	if nic.IsAttached() {
 		t.Fatal("Attach(nil) should detach the NIC")
-	}
-}
-
-func newTestPacketBufferObj() *stack.PacketBuffer {
-	return stack.NewPacketBuffer(stack.PacketBufferOptions{
-		Payload: buffer.MakeWithData([]byte{1}),
-	})
-}
-
-func TestNICEnqueueRSTDropsWhenFull(t *testing.T) {
-	nic := &nicObj{
-		rstPackets: make(chan *stack.PacketBuffer, 1),
-		done:       make(chan struct{}),
-	}
-	first := newTestPacketBufferObj()
-	second := newTestPacketBufferObj()
-	nic.enqueueRST(first)
-	nic.enqueueRST(second)
-
-	if got := len(nic.rstPackets); got != 1 {
-		t.Fatalf("expected queue length 1, got %d", got)
-	}
-	if got := nic.rstDropped.Load(); got != 1 {
-		t.Fatalf("expected one dropped RST packet, got %d", got)
-	}
-	(<-nic.rstPackets).DecRef()
-}
-
-func TestNICEnqueueRSTDropsAfterClose(t *testing.T) {
-	nic := &nicObj{
-		rstPackets: make(chan *stack.PacketBuffer, 1),
-		rstClosed:  true,
-		done:       make(chan struct{}),
-	}
-	nic.enqueueRST(newTestPacketBufferObj())
-	if got := len(nic.rstPackets); got != 0 {
-		t.Fatalf("expected closed RST queue to stay empty, got %d", got)
-	}
-	if got := nic.rstDropped.Load(); got != 1 {
-		t.Fatalf("expected one dropped RST packet, got %d", got)
 	}
 }

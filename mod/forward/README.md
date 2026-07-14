@@ -1,216 +1,149 @@
 # mod/forward
 
-TCP/UDP port forwarding between local network and Yggdrasil.
-
-The module manages mappings in both directions: incoming traffic from local ports is forwarded to Yggdrasil, and vice
-versa —
-traffic from Yggdrasil is forwarded to local addresses.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Initialization](#initialization)
-- [Mappings](#mappings)
-    - [TCP](#tcp)
-    - [UDP](#udp)
-- [Start and Stop](#start-and-stop)
-- [TCP Proxying](#tcp-proxying)
-- [UDP Sessions](#udp-sessions)
-- [Settings](#settings)
-
----
+TCP and UDP port forwarding between the local network and Yggdrasil.
 
 ## Overview
 
-```mermaid
-flowchart LR
-  subgraph Local["Local Network"]
-        LT["TCP :8080"]
-        LU["UDP :5000"]
-    end
+The package supports four directions:
 
-    subgraph Manager["ManagerObj"]
-        direction TB
-        LocalTCP["localTCP"]
-        LocalUDP["localUDP"]
-        RemoteTCP["remoteTCP"]
-        RemoteUDP["remoteUDP"]
-    end
+| Configuration field | Listens on    | Connects to   |
+|---------------------|---------------|---------------|
+| `LocalTCP`          | Local TCP     | Yggdrasil TCP |
+| `RemoteTCP`         | Yggdrasil TCP | Local TCP     |
+| `LocalUDP`          | Local UDP     | Yggdrasil UDP |
+| `RemoteUDP`         | Yggdrasil UDP | Local UDP     |
 
-    subgraph Ygg["Yggdrasil"]
-        RT["TCP [200::1]:80"]
-        RU["UDP [200::1]:53"]
-    end
-
-    LT -->|" incoming "| LocalTCP
-    LocalTCP -->|" DialContext "| RT
-    RT -->|" incoming "| RemoteTCP
-    RemoteTCP -->|" net.Dial "| LT
-    LU -->|" incoming "| LocalUDP
-    LocalUDP -->|" DialContext "| RU
-    RU -->|" incoming "| RemoteUDP
-    RemoteUDP -->|" net.Dial "| LU
-```
-
-Four forwarding directions:
-
-| Direction  | Listens on    | Connects to   |
-|------------|---------------|---------------|
-| Local TCP  | Local TCP     | Yggdrasil TCP |
-| Remote TCP | Yggdrasil TCP | Local TCP     |
-| Local UDP  | Local UDP     | Yggdrasil UDP |
-| Remote UDP | Yggdrasil UDP | Local UDP     |
-
----
+`ConfigObj.Node` implements the package-local `NetworkInterface`: `DialContext`, `Listen`, `ListenPacket`, `Address`,
+and `MTU`. A `*core.Obj` satisfies this interface structurally; `mod/forward` does not import `mod/core`.
 
 ## Initialization
 
-```go
-mgr := forward.New(forward.ConfigObj{
-Logger:     logger,
-Node:       node,
-UDPTimeout: 30 * time.Second,
-})
-```
-
-`New` creates a manager. `UDPTimeout` is the inactivity timeout for UDP sessions. It must be positive whenever UDP
-mappings are configured; otherwise `Start()` returns `ErrInvalidSessionTimeout`.
-Optional limits can be supplied in the same `ConfigObj`:
+Mappings are immutable configuration. `New` deep-copies all mapping slices, addresses, and IP bytes, validates the
+complete configuration, binds every listener, and starts forwarding.
 
 ```go
-mgr := forward.New(forward.ConfigObj{
+obj, err := forward.New(forward.ConfigObj{
 Logger:            logger,
 Node:              node,
 UDPTimeout:        30 * time.Second,
-DialTimeout:       10 * time.Second,
 MaxTCPConnections: 2048,
 MaxUDPSessions:    2048,
-})
-```
-
----
-
-## Mappings
-
-Mappings are configured before calling `Start()`.
-
-### TCP
-
-```go
-mgr.AddLocalTCP(forward.TCPMappingObj{
+LocalTCP: []forward.TCPMappingObj{{
 Listen: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080},
 Mapped: &net.TCPAddr{IP: net.ParseIP("200::1"), Port: 80},
-})
-
-mgr.AddRemoteTCP(forward.TCPMappingObj{
-Listen: &net.TCPAddr{Port: 80}, // listen on Yggdrasil
-Mapped: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8080}, // forward locally
-})
-```
-
-### UDP
-
-```go
-mgr.AddLocalUDP(forward.UDPMappingObj{
-Listen: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5000},
-Mapped: &net.UDPAddr{IP: net.ParseIP("200::1"), Port: 53},
-})
-
-mgr.AddRemoteUDP(forward.UDPMappingObj{
+}},
+RemoteUDP: []forward.UDPMappingObj{{
 Listen: &net.UDPAddr{Port: 53},
 Mapped: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5353},
+}},
 })
-```
-
----
-
-## Start and Stop
-
-```go
-ctx, cancel := context.WithCancel(context.Background())
-
-if err := mgr.Start(ctx); err != nil { // starts goroutines for all mappings
-// invalid session timeout
+if err != nil {
+return err
 }
-// ...
-cancel() // stops all listeners
-mgr.Wait() // waits for all goroutines to finish
+defer obj.Close()
 ```
 
-`Start` launches one goroutine per mapping. Cancelling the context stops all listeners and terminates active
-connections. `Wait` also waits for active TCP proxy sessions started by the manager.
+Do not omit positive `MaxTCPConnections` and `MaxUDPSessions` on untrusted or publicly reachable listeners: zero means
+unlimited and permits one traffic source to consume all available process and backend resources.
 
----
+Construction is transactional. If any mapping is invalid or a listener cannot be bound, `New` closes every listener
+opened earlier in the same call and returns an error. Retry by fixing the cause and calling `New` again with the desired
+configuration; a failed constructor never returns a partial object.
 
-## TCP Proxying
+`UDPTimeout` must be positive whenever `LocalUDP` or `RemoteUDP` is non-empty. TCP-only and empty configurations do not
+require it.
 
-```go
-forward.ProxyTCP(c1, c2, 30*time.Second)
-```
+## Lifecycle
 
-Bidirectional TCP proxy between two connections. Two goroutines copy data in both directions. If an error occurs in one
-direction, both connections are closed. After a clean TCP half-close, `closeTimeout` is an idle timeout for the
-remaining
-direction: active response streams may run longer, but a silent peer is closed.
+`New` starts one listener loop per mapping. `Close` is terminal and idempotent: it cancels all forwarding work, closes
+listeners and active sessions, and waits for every owned goroutine. To restart or change mappings, create a new object.
+Custom `NetworkInterface` implementations must honor `DialContext` cancellation and return closable listeners and
+packet connections; otherwise no wrapper can guarantee bounded shutdown of their code.
 
-Manager-created TCP proxies use `ProxyTCPContext`, so context cancellation unblocks idle TCP tunnels. Backend dials are
-performed outside the accept loop and are bounded by `DialTimeout`.
+There is deliberately no separate builder or `Start` state. Callers assemble ordinary mapping slices before `New`, and
+the returned object is either fully running or not returned at all.
 
-```mermaid
-flowchart LR
-    C1["conn1"] -->|" io.Copy "| C2["conn2"]
-    C2 -->|" io.Copy "| C1
-```
+## Admission limits and security
 
----
+`MaxTCPConnections` and `MaxUDPSessions` are shared across every mapping in one object:
 
-## UDP Sessions
+- `0` means unlimited;
+- a positive value is the object-wide cap;
+- a negative value makes `New` return `ErrInvalidLimit`.
 
-UDP traffic is proxied through sessions. Each unique sender address gets a separate session with its own
-connection to the target address.
+> **Security warning:** both limits default to unlimited. On an untrusted or publicly reachable listener, an attacker
+> can create many TCP connections or UDP sessions and exhaust file descriptors, memory, goroutines, or backend capacity.
+> Set positive limits whenever the deployment does not provide a stricter trusted boundary. Because each limit is shared
+> by all mappings in the object, traffic to one mapping can consume the full budget and temporarily starve the others.
 
-```mermaid
-flowchart TB
-  Pkt["packet from client"] --> Lookup{"session exists?"}
-  Lookup -->|" yes "| Write["write → upstream"]
-  Lookup -->|" no "| Dial["async dial → pending session"]
-  Dial --> Reverse["goroutine: upstream → client"]
-  Dial -->|" ready "| Write
-  Cleanup["cleanup goroutine"] -->|" every timeout/4 "| Expire["removes inactive sessions"]
-```
+The limits cover active connections and sessions, not packet queues. Each UDP session queue and each mapping's reverse
+queue remains individually bounded even when admission is unlimited. Their aggregate memory is bounded only when
+`MaxUDPSessions` is positive, because every admitted session owns a separate queue.
 
-`RunUDPLoop` is the main UDP proxying loop. `ReverseProxyUDP` is the reverse channel: reads responses from upstream and
-sends them
-to the client.
+## TCP forwarding
 
-New sessions reserve a slot and dial asynchronously. Packets received before the upstream connection is ready are
-queued in the session buffer and are dropped only if that buffer is full or the session is cancelled.
-The buffer is sized by an approximate 64 KiB per-session byte budget, capped at 64 packets. Manager-created UDP
-mappings use a safe default session cap.
+`LocalTCP` listens with the host network and dials the mapped address through `Node.DialContext`. `RemoteTCP` listens
+through `Node.Listen` and dials the mapped address through the host network. Backend dials occur outside the accept
+loop,
+so one slow dial does not stop later accepts.
 
----
+The object-wide TCP admission counter is acquired before a backend dial. When the cap is exhausted, the accepted
+connection is closed without starting another dial.
 
-## Settings
+`ProxyTCP` and `ProxyTCPContext` are also available as standalone helpers. They copy in both directions and support TCP
+half-close. After one clean half-close, the fixed 30-second close timeout applies only to idle time in the remaining
+direction; an active response may continue longer.
 
-All tunables are immutable and set once through `ConfigObj` at `New()`. Except for the required `ConfigObj.UDPTimeout`,
-optional fields use the same convention: `0` means default, and negative values mean disabled or unlimited where that
-is meaningful.
+## UDP forwarding
 
-| `ConfigObj` field   | Description                                               | Default    |
-|---------------------|-----------------------------------------------------------|------------|
-| `UDPTimeout`        | UDP session inactivity timeout; `> 0` with UDP mappings   | required   |
-| `DialTimeout`       | Backend dial timeout; `0` default, `<0` disabled          | 10 seconds |
-| `TCPIdleTimeout`    | Established TCP idle timeout; `0` default, `<0` disabled  | 5 minutes  |
-| `MaxTCPConnections` | Max TCP sessions per mapping; `0` default, `<0` unlimited | 1024       |
-| `MaxUDPSessions`    | Max UDP sessions per mapping; `0` default, `<0` unlimited | 1024       |
-| `UDPMaxPacketSize`  | Max UDP payload bytes; `0` node MTU, `<0` max datagram    | node MTU   |
+Each unique sender address gets a separate UDP session and upstream connection. New sessions reserve admission before
+dialing. Packets that arrive while the dial is in progress enter a bounded per-session queue and are dropped when it is
+full. Responses from all sessions in one mapping pass through one bounded reverse queue and writer.
 
-The TCP half-close idle timeout is fixed at 30 seconds. UDP writes go to the kernel send buffer and carry no
-per-write deadline, so a single lock-free `net.PacketConn` is shared across all reverse sessions.
+The approximate per-session queue budget is 64 KiB and at most 64 packets. With a 65535-byte maximum packet size it
+becomes one packet. UDP remains intentionally lossy under per-session overload. The queue bounds cap memory for a fixed
+session count; total memory remains unbounded when `MaxUDPSessions` is unlimited.
 
-Mapping helpers remain available before `Start()`:
+`RunUDPLoop` and `ReverseProxyUDP` remain available for standalone use. `UDPLoopConfigObj.MaxSessions` follows the same
+limit contract: zero is unlimited and a negative value returns `ErrInvalidLimit`.
 
-| Method          | Description               |
-|-----------------|---------------------------|
-| `ClearLocal()`  | Clear all local mappings  |
-| `ClearRemote()` | Clear all remote mappings |
+## Configuration
+
+| `ConfigObj` field   | Description                                              | Default    |
+|---------------------|----------------------------------------------------------|------------|
+| `Node`              | Required forwarding network                              | required   |
+| `LocalTCP`          | Local-to-Yggdrasil TCP mappings                          | none       |
+| `RemoteTCP`         | Yggdrasil-to-local TCP mappings                          | none       |
+| `LocalUDP`          | Local-to-Yggdrasil UDP mappings                          | none       |
+| `RemoteUDP`         | Yggdrasil-to-local UDP mappings                          | none       |
+| `UDPTimeout`        | UDP session inactivity timeout; `>0` with UDP mappings   | required   |
+| `DialTimeout`       | Backend dial timeout; `0` default, `<0` disabled         | 10 seconds |
+| `TCPIdleTimeout`    | Established TCP idle timeout; `0` default, `<0` disabled | 5 minutes  |
+| `MaxTCPConnections` | Object-wide TCP session cap; `0` unlimited, `<0` invalid | unlimited  |
+| `MaxUDPSessions`    | Object-wide UDP session cap; `0` unlimited, `<0` invalid | unlimited  |
+| `UDPMaxPacketSize`  | Maximum UDP payload; `0` node MTU, `<0` max datagram     | node MTU   |
+| `UDPWriteTimeout`   | Reverse UDP write timeout; `0` default, `<0` disabled    | 5 seconds  |
+
+`UDPWriteTimeout < 0` disables the reverse write deadline. `UDPMaxPacketSize` is clamped to the maximum UDP datagram
+size.
+
+## Snapshot
+
+`Snapshot` returns lock-free counters without resetting them. It remains useful after `Close` as the final snapshot.
+
+| Field             | Description                                    |
+|-------------------|------------------------------------------------|
+| `ActiveTCP`       | Current object-owned TCP sessions              |
+| `ActiveUDP`       | Current object-owned UDP sessions              |
+| `SessionUDPDrops` | Packets rejected by a full or retiring session |
+| `ReverseUDPDrops` | Responses lost to queue pressure or write I/O  |
+| `TerminalErrors`  | Mapping loops stopped by a terminal I/O error  |
+
+## Errors
+
+| Variable                   | Description                                                  |
+|----------------------------|--------------------------------------------------------------|
+| `ErrInvalidLimit`          | `New`/`RunUDPLoop`: a TCP or UDP admission limit is negative |
+| `ErrInvalidSessionTimeout` | `New`: UDP mappings require a positive session timeout       |
+| `ErrNodeRequired`          | `New`: the forwarding network is nil                         |
+| `ErrInvalidMapping`        | `New`: a mapping has a nil listen or destination address     |

@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/voluminor/ratatoskr/internal/common"
+	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
+	"github.com/voluminor/ratatoskr/target"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 
@@ -28,7 +30,7 @@ import (
 // Obj — Yggdrasil node for embedding in applications.
 // Combines core (DialContext/Listen), resolver (.pk.ygg), and SOCKS5.
 // The primary networking and peer methods are exposed directly; the full node
-// contract (multicast, admin, retry, stats) is reachable via Core().
+// contract (multicast, admin, retry, diagnostics) is reachable via Core().
 type Obj struct {
 	// core is assigned once in New and read-only afterwards; use Close() to stop.
 	core core.Interface
@@ -51,6 +53,14 @@ func effectiveCloseTimeout(timeout time.Duration) time.Duration {
 		return defaultCloseTimeout
 	}
 	return timeout
+}
+
+func rollbackNewError(timeout time.Duration, cause error, before []common.NamedCloseObj, final common.NamedCloseObj) error {
+	closeErr, timedOut := common.CloseWithDeadline(effectiveCloseTimeout(timeout), before, final)
+	if timedOut {
+		closeErr = errors.Join(closeErr, fmt.Errorf("%w during New rollback after %s", ErrCloseTimedOut, effectiveCloseTimeout(timeout)))
+	}
+	return errors.Join(cause, closeErr)
 }
 
 // cloneCallerConfig insulates New from the caller's config: sigils add top-level
@@ -101,35 +111,45 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 
 	// Assemble NodeInfo from sigils
-	var sigilsObj *sigil_core.Obj
+	var customParsers []sigils.Interface
 	if cfg.Sigils != nil {
-		var errs []error
-		sigilsObj, errs = sigil_core.New(cfg.Config.NodeInfo, cfg.Sigils...)
-		for _, e := range errs {
-			cfg.Logger.Warnf("[ratatoskr] sigil: %v", e)
+		sigilsObj, sigilErrs := sigil_core.New(cfg.Config.NodeInfo, cfg.Sigils...)
+		if err := errors.Join(sigilErrs...); err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrInvalidSigils, err)
 		}
 		cfg.Config.NodeInfo = sigilsObj.NodeInfo()
+		for _, parser := range cfg.Sigils {
+			if parser == nil {
+				continue
+			}
+			if _, builtIn := target.Parse(parser.GetName()); !builtIn {
+				customParsers = append(customParsers, parser)
+			}
+		}
 	}
 
 	coreNode, err := core.New(core.ConfigObj{
-		Config:       cfg.Config,
-		Logger:       cfg.Logger,
-		RSTQueueSize: cfg.RSTQueueSize,
+		Config: cfg.Config,
+		Logger: cfg.Logger,
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	// ninfo — always created for Ask/AskAddr
-	ni, err := ninfo.New(ninfo.ConfigObj{Source: coreNode})
-	if err != nil {
-		_ = coreNode.Close()
-		return nil, fmt.Errorf("ninfo: %w", err)
+	niCfg := ninfo.ConfigObj{}
+	if cfg.NodeInfo != nil {
+		niCfg = *cfg.NodeInfo
 	}
-	if sigilsObj != nil {
-		if err := ni.ImportSigils(sigilsObj); err != nil {
-			cfg.Logger.Warnf("[ratatoskr] parse sigil: %v", err)
+	niCfg.Source = coreNode
+	niCfg.Sigils = append(slices.Clone(niCfg.Sigils), customParsers...)
+	ni, err := ninfo.New(niCfg)
+	if err != nil {
+		cause := fmt.Errorf("ninfo: %w", err)
+		if errors.Is(err, ninfo.ErrInvalidSigil) {
+			cause = fmt.Errorf("%w: %w", ErrInvalidSigils, cause)
 		}
+		return nil, rollbackNewError(cfg.CloseTimeout, cause, nil, common.NamedCloseObj{Name: "core", Close: coreNode.Close})
 	}
 
 	obj := &Obj{
@@ -143,20 +163,16 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 	if cfg.Peers != nil {
 		pCfg := *cfg.Peers
+		pCfg.Node = coreNode
 		if pCfg.Logger == nil {
 			pCfg.Logger = cfg.Logger
 		}
-		mgr, err := peermgr.New(coreNode, pCfg)
+		mgr, err := peermgr.New(pCfg)
 		if err != nil {
-			_ = ni.Close()
-			_ = coreNode.Close()
-			return nil, fmt.Errorf("peer manager: %w", err)
-		}
-		if err := mgr.Start(); err != nil {
-			_ = ni.Close()
-			_ = mgr.Stop()
-			_ = coreNode.Close()
-			return nil, fmt.Errorf("peer manager: %w", err)
+			cause := fmt.Errorf("peer manager: %w", err)
+			return nil, rollbackNewError(cfg.CloseTimeout, cause,
+				[]common.NamedCloseObj{{Name: "ninfo", Close: ni.Close}},
+				common.NamedCloseObj{Name: "core", Close: coreNode.Close})
 		}
 		obj.peerManager = mgr
 	}
@@ -187,23 +203,53 @@ func New(cfg ConfigObj) (*Obj, error) {
 // // // // // // // // // //
 
 // Core exposes the full underlying node contract (multicast, admin, retry peers,
-// stats). The primary methods below are promoted directly, so the embeddable
+// diagnostics). The primary methods below are promoted directly, so the embeddable
 // surface stays small and advanced controls live behind one accessor.
 func (o *Obj) Core() core.Interface { return o.core }
 
 // DialContext opens a connection to a Yggdrasil address; compatible with http.Transport.DialContext.
 func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return o.core.DialContext(ctx, network, address)
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
+	connection, err := o.core.DialContext(ctx, network, address)
+	if err != nil {
+		return nil, o.remapClosed(err)
+	}
+	if o.isClosed() {
+		return nil, errors.Join(ErrClosed, connection.Close())
+	}
+	return connection, nil
 }
 
 // Listen creates a TCP listener; closed automatically on Close().
 func (o *Obj) Listen(network, address string) (net.Listener, error) {
-	return o.core.Listen(network, address)
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
+	listener, err := o.core.Listen(network, address)
+	if err != nil {
+		return nil, o.remapClosed(err)
+	}
+	if o.isClosed() {
+		return nil, errors.Join(ErrClosed, listener.Close())
+	}
+	return listener, nil
 }
 
 // ListenPacket creates a UDP listener; closed automatically on Close().
 func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
-	return o.core.ListenPacket(network, address)
+	if o.isClosed() {
+		return nil, ErrClosed
+	}
+	connection, err := o.core.ListenPacket(network, address)
+	if err != nil {
+		return nil, o.remapClosed(err)
+	}
+	if o.isClosed() {
+		return nil, errors.Join(ErrClosed, connection.Close())
+	}
+	return connection, nil
 }
 
 // Address — node IPv6 address in the 200::/7 range.
@@ -219,10 +265,20 @@ func (o *Obj) PublicKey() ed25519.PublicKey { return o.core.PublicKey() }
 func (o *Obj) MTU() uint64 { return o.core.MTU() }
 
 // AddPeer adds a peer; URI: "tcp://...", "quic://...", etc.
-func (o *Obj) AddPeer(uri string) error { return o.core.AddPeer(uri) }
+func (o *Obj) AddPeer(uri string) error {
+	if o.isClosed() {
+		return ErrClosed
+	}
+	return o.remapClosed(o.core.AddPeer(uri))
+}
 
 // RemovePeer removes a previously added peer.
-func (o *Obj) RemovePeer(uri string) error { return o.core.RemovePeer(uri) }
+func (o *Obj) RemovePeer(uri string) error {
+	if o.isClosed() {
+		return ErrClosed
+	}
+	return o.remapClosed(o.core.RemovePeer(uri))
+}
 
 // GetPeers returns all peers (connected and configured).
 func (o *Obj) GetPeers() []yggcore.PeerInfo { return o.core.GetPeers() }
@@ -236,6 +292,13 @@ func (o *Obj) isClosed() bool {
 	default:
 		return false
 	}
+}
+
+func (o *Obj) remapClosed(err error) error {
+	if o.isClosed() {
+		return errors.Join(ErrClosed, err)
+	}
+	return err
 }
 
 // //
@@ -260,20 +323,26 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 		CacheTTL:        cfg.NameserverCacheTTL,
 		CacheMaxEntries: cfg.NameserverCacheMaxEntries,
 	}
-	nameResolver := resolver.New(resolverCfg)
-	err := server.Start(socks.ConfigObj{
-		Network:                       network,
-		Addr:                          cfg.Addr,
-		Resolver:                      nameResolver,
-		OwnResolver:                   true,
-		Verbose:                       cfg.Verbose,
-		Logger:                        logger,
-		MaxConnections:                cfg.MaxConnections,
-		HandshakeTimeout:              cfg.HandshakeTimeout,
-		DialTimeout:                   cfg.DialTimeout,
-		TunnelIdleTimeout:             cfg.TunnelIdleTimeout,
-		MaxAssociateTargetsPerSession: cfg.MaxAssociateTargetsPerSession,
-		Credentials:                   cfg.Credentials,
+	nameResolver, err := resolver.New(resolverCfg)
+	if err != nil {
+		return err
+	}
+	err = server.Start(socks.ConfigObj{
+		Network:                            network,
+		Addr:                               cfg.Addr,
+		Resolver:                           nameResolver,
+		OwnResolver:                        true,
+		Verbose:                            cfg.Verbose,
+		Logger:                             logger,
+		MaxConnections:                     cfg.MaxConnections,
+		HandshakeTimeout:                   cfg.HandshakeTimeout,
+		DialTimeout:                        cfg.DialTimeout,
+		TunnelIdleTimeout:                  cfg.TunnelIdleTimeout,
+		MaxAssociateTargetsPerSession:      cfg.MaxAssociateTargetsPerSession,
+		MaxAssociateTargetsPerPrincipal:    cfg.MaxAssociateTargetsPerPrincipal,
+		MaxAssociateQueuedPacketsPerTarget: cfg.MaxAssociateQueuedPacketsPerTarget,
+		MaxAssociateQueuedBytesPerTarget:   cfg.MaxAssociateQueuedBytesPerTarget,
+		Credentials:                        cfg.Credentials,
 	})
 	if err != nil {
 		return errors.Join(err, nameResolver.Close())
@@ -291,15 +360,24 @@ func (o *Obj) DisableSOCKS() error {
 	if o.isClosed() {
 		return ErrClosed
 	}
-	return o.socks.Close()
+	err := o.socks.Close()
+	if o.isClosed() {
+		return errors.Join(ErrClosed, err)
+	}
+	return err
 }
 
-// SetSOCKSMaxConnections adjusts the SOCKS5 connection limit at runtime.
-func (o *Obj) SetSOCKSMaxConnections(n int) {
+// SetSOCKSMaxConnections adjusts the SOCKS5 connection limit at runtime. If
+// Close races the update, the limit may change before ErrClosed is returned.
+func (o *Obj) SetSOCKSMaxConnections(n int) error {
 	if o.isClosed() {
-		return
+		return ErrClosed
 	}
 	o.socks.SetMaxConnections(n)
+	if o.isClosed() {
+		return ErrClosed
+	}
+	return nil
 }
 
 // SOCKSMaxConnections reports the current SOCKS5 connection limit.
@@ -319,44 +397,44 @@ func (o *Obj) PeerManagerActive() []string {
 
 // PeerManagerOptimize triggers an unscheduled peer re-evaluation
 func (o *Obj) PeerManagerOptimize() error {
+	if o.isClosed() {
+		return ErrClosed
+	}
 	if o.peerManager == nil {
 		return ErrPeerManagerNotEnabled
 	}
-	return o.peerManager.Optimize()
+	return o.remapClosed(o.peerManager.Optimize())
 }
 
 // Ask queries a remote node's NodeInfo by public key.
-// Returns parsed metadata, build info, and measured RTT
+// Returns parsed metadata, build info, and measured RTT. A partial result may
+// accompany an error, including ErrClosed when shutdown races completion.
 func (o *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*ninfo.AskResultObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
 	}
 	result, err := o.nodeInfo.Ask(ctx, key)
-	if errors.Is(err, ninfo.ErrClosed) {
-		return nil, ErrClosed
+	if errors.Is(err, ninfo.ErrClosed) || o.isClosed() {
+		return result, errors.Join(ErrClosed, err)
 	}
 	return result, err
 }
 
 // AskAddr queries a remote node's NodeInfo by address string.
 // Supported formats: "<hex>.pk.ygg", "[ip6]:port", "ip6", raw 64-char hex
+// A partial result may accompany an error.
 func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
 	}
 	result, err := o.nodeInfo.AskAddr(ctx, addr)
-	if errors.Is(err, ninfo.ErrClosed) {
-		return nil, ErrClosed
+	if errors.Is(err, ninfo.ErrClosed) || o.isClosed() {
+		return result, errors.Join(ErrClosed, err)
 	}
 	return result, err
 }
 
 // //
-
-type closeResultObj struct {
-	name string
-	err  error
-}
 
 // Close stops all components; safe to call multiple times. The total wait is
 // bounded by ConfigObj.CloseTimeout. A component that does not return before the
@@ -369,68 +447,24 @@ func (o *Obj) Close() error {
 		// with Close is guaranteed to be observed and torn down (no leak).
 		close(o.done)
 
-		dependents := []struct {
-			name string
-			fn   func() error
-		}{
-			{name: "ninfo", fn: o.nodeInfo.Close},
-			{name: "socks", fn: o.socks.Close},
+		dependents := []common.NamedCloseObj{
+			{Name: "ninfo", Close: o.nodeInfo.Close},
+			{Name: "socks", Close: o.socks.Close},
 		}
 		if o.peerManager != nil {
-			dependents = append(dependents, struct {
-				name string
-				fn   func() error
-			}{name: "peermgr", fn: o.peerManager.Stop})
+			dependents = append(dependents, common.NamedCloseObj{Name: "peermgr", Close: o.peerManager.Close})
 		}
-
-		results := make(chan closeResultObj, len(dependents))
-		for _, closer := range dependents {
-			go func() {
-				results <- closeResultObj{name: closer.name, err: closer.fn()}
-			}()
-		}
-
-		timer := time.NewTimer(effectiveCloseTimeout(o.closeTimeout))
-		defer timer.Stop()
-		errs := make([]error, 0, len(dependents)+2)
-		startCore := func() <-chan closeResultObj {
-			result := make(chan closeResultObj, 1)
-			go func() {
-				result <- closeResultObj{name: "core", err: o.core.Close()}
-			}()
-			return result
-		}
-		timeout := func() {
+		closeErr, timedOut := common.CloseWithDeadline(
+			effectiveCloseTimeout(o.closeTimeout),
+			dependents,
+			common.NamedCloseObj{Name: "core", Close: o.core.Close},
+		)
+		if timedOut {
 			o.closeTimedOut.Store(true)
-			errs = append(errs, fmt.Errorf("%w after %s", ErrCloseTimedOut, effectiveCloseTimeout(o.closeTimeout)))
-			o.closeErr = errors.Join(errs...)
+			o.closeErr = errors.Join(closeErr, fmt.Errorf("%w after %s", ErrCloseTimedOut, effectiveCloseTimeout(o.closeTimeout)))
+			return
 		}
-
-		for range dependents {
-			select {
-			case result := <-results:
-				if result.err != nil {
-					errs = append(errs, fmt.Errorf("%s: %w", result.name, result.err))
-				}
-			case <-timer.C:
-				// The graceful dependency order exhausted its budget. Still attempt the
-				// upstream teardown so a broken dependent cannot prevent best-effort
-				// resource release after Close returns.
-				_ = startCore()
-				timeout()
-				return
-			}
-		}
-
-		select {
-		case result := <-startCore():
-			if result.err != nil {
-				errs = append(errs, fmt.Errorf("%s: %w", result.name, result.err))
-			}
-			o.closeErr = errors.Join(errs...)
-		case <-timer.C:
-			timeout()
-		}
+		o.closeErr = closeErr
 	})
 	return o.closeErr
 }

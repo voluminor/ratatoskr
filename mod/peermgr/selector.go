@@ -1,6 +1,7 @@
 package peermgr
 
 import (
+	"cmp"
 	"sort"
 	"time"
 
@@ -47,10 +48,27 @@ func preferPeerInfo(candidate, current yggcore.PeerInfo) bool {
 	if candidate.Up != current.Up {
 		return candidate.Up
 	}
-	if candidate.Up && candidate.Latency < current.Latency {
-		return true
+	if candidate.Up {
+		return compareLatency(candidate.Latency, current.Latency) < 0
 	}
 	return false
+}
+
+func compareLatency(a, b time.Duration) int {
+	if (a > 0) != (b > 0) {
+		if a > 0 {
+			return -1
+		}
+		return 1
+	}
+	return cmp.Compare(a, b)
+}
+
+func comparePeerResults(a, b peerResultObj) int {
+	if c := compareLatency(a.Latency, b.Latency); c != 0 {
+		return c
+	}
+	return cmp.Compare(normalizePeerURI(a.URI), normalizePeerURI(b.URI))
 }
 
 // selectBest — top-N peers per protocol among Up==true, sorted by latency
@@ -70,7 +88,7 @@ func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
 	var selected []peerResultObj
 	for _, group := range groups {
 		sort.Slice(group, func(i, j int) bool {
-			return group[i].Latency < group[j].Latency
+			return comparePeerResults(group[i], group[j]) < 0
 		})
 		n := maxPerProto
 		if n > len(group) {

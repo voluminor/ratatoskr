@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/things-go/go-socks5"
 	"github.com/things-go/go-socks5/statute"
 	"github.com/voluminor/ratatoskr/internal/common"
 )
@@ -36,6 +37,24 @@ func (noopLogObj) Errorln(...interface{})        {}
 func (noopLogObj) Debugf(string, ...interface{}) {}
 func (noopLogObj) Debugln(...interface{})        {}
 func (noopLogObj) Traceln(...interface{})        {}
+
+// //
+
+// target is a synchronous test helper. Production routes cache misses through
+// the bounded associate worker pool.
+func (s *associateSessionObj) target(packet statute.Datagram) (*associateTargetObj, error) {
+	if s.maxQueuedPackets == 0 {
+		s.maxQueuedPackets = defaultMaxAssociateQueuedPackets
+	}
+	if s.maxQueuedBytes == 0 {
+		s.maxQueuedBytes = defaultMaxAssociateQueuedBytes
+	}
+	key, err := associateTargetKey(packet.DstAddr)
+	if err != nil {
+		return nil, err
+	}
+	return s.createTarget(packet, key)
+}
 
 // //
 
@@ -78,6 +97,77 @@ func (d *gateDialerObj) DialContext(_ context.Context, _, _ string) (net.Conn, e
 type closeTrackConnObj struct {
 	closed atomic.Bool
 }
+
+type blockingWriteConnObj struct {
+	started chan struct{}
+	release chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+	writes  atomic.Int64
+}
+
+type datagramSequenceConnObj struct {
+	reads  chan []byte
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newDatagramSequenceConnObj() *datagramSequenceConnObj {
+	return &datagramSequenceConnObj{reads: make(chan []byte, 2), closed: make(chan struct{})}
+}
+
+func (c *datagramSequenceConnObj) Read(p []byte) (int, error) {
+	select {
+	case payload := <-c.reads:
+		return copy(p, payload), nil
+	case <-c.closed:
+		return 0, net.ErrClosed
+	}
+}
+
+func (c *datagramSequenceConnObj) Write(p []byte) (int, error) { return len(p), nil }
+func (c *datagramSequenceConnObj) Close() error {
+	c.once.Do(func() { close(c.closed) })
+	return nil
+}
+func (c *datagramSequenceConnObj) LocalAddr() net.Addr              { return &net.UDPAddr{} }
+func (c *datagramSequenceConnObj) RemoteAddr() net.Addr             { return &net.UDPAddr{} }
+func (c *datagramSequenceConnObj) SetDeadline(time.Time) error      { return nil }
+func (c *datagramSequenceConnObj) SetReadDeadline(time.Time) error  { return nil }
+func (c *datagramSequenceConnObj) SetWriteDeadline(time.Time) error { return nil }
+
+func newBlockingWriteConnObj() *blockingWriteConnObj {
+	return &blockingWriteConnObj{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+		closed:  make(chan struct{}),
+	}
+}
+
+func (c *blockingWriteConnObj) Read([]byte) (int, error) { <-c.closed; return 0, net.ErrClosed }
+func (c *blockingWriteConnObj) Write(p []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	select {
+	case <-c.release:
+		c.writes.Add(1)
+		return len(p), nil
+	case <-c.closed:
+		return 0, net.ErrClosed
+	}
+}
+func (c *blockingWriteConnObj) Close() error {
+	select {
+	case <-c.closed:
+	default:
+		close(c.closed)
+	}
+	return nil
+}
+func (c *blockingWriteConnObj) LocalAddr() net.Addr              { return nil }
+func (c *blockingWriteConnObj) RemoteAddr() net.Addr             { return nil }
+func (c *blockingWriteConnObj) SetDeadline(time.Time) error      { return nil }
+func (c *blockingWriteConnObj) SetReadDeadline(time.Time) error  { return nil }
+func (c *blockingWriteConnObj) SetWriteDeadline(time.Time) error { return nil }
 
 func (c *closeTrackConnObj) Read([]byte) (int, error)         { return 0, io.EOF }
 func (c *closeTrackConnObj) Write(p []byte) (int, error)      { return len(p), nil }
@@ -611,6 +701,113 @@ func TestMaxAssociateTargetsPerSession_normalization(t *testing.T) {
 	}
 }
 
+func TestAssociateQueueLimitNormalization(t *testing.T) {
+	tests := []struct {
+		name        string
+		packets     int
+		bytes       int
+		wantPackets int
+		wantBytes   int
+	}{
+		{name: "defaults", wantPackets: defaultMaxAssociateQueuedPackets, wantBytes: defaultMaxAssociateQueuedBytes},
+		{name: "custom", packets: 7, bytes: 1234, wantPackets: 7, wantBytes: 1234},
+		{name: "unlimited", packets: -1, bytes: -1, wantPackets: -1, wantBytes: -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := tcpCfg()
+			cfg.MaxAssociateQueuedPacketsPerTarget = tt.packets
+			cfg.MaxAssociateQueuedBytesPerTarget = tt.bytes
+			s := newSocks(t, cfg)
+			defer func() { _ = s.Close() }()
+			if got := s.MaxAssociateQueuedPacketsPerTarget(); got != tt.wantPackets {
+				t.Fatalf("packet cap = %d, want %d", got, tt.wantPackets)
+			}
+			if got := s.MaxAssociateQueuedBytesPerTarget(); got != tt.wantBytes {
+				t.Fatalf("byte cap = %d, want %d", got, tt.wantBytes)
+			}
+		})
+	}
+}
+
+func TestAssociatePacketQueueBoundsPacketsAndBytes(t *testing.T) {
+	q := newAssociatePacketQueue(2, 5)
+	if ok, _ := q.enqueue([]byte("abc")); !ok {
+		t.Fatal("first packet rejected")
+	}
+	if ok, _ := q.enqueue([]byte("de")); !ok {
+		t.Fatal("second packet rejected")
+	}
+	if ok, full := q.enqueue([]byte("f")); ok || !full {
+		t.Fatalf("over-limit enqueue = (%v, %v), want (false, true)", ok, full)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first, ok := q.pop(ctx)
+	if !ok || string(first) != "abc" {
+		t.Fatalf("first pop = %q, %v", first, ok)
+	}
+	if ok, _ = q.enqueue([]byte("fgh")); !ok {
+		t.Fatal("byte budget was not released after pop")
+	}
+	q.close()
+	if ok, full := q.enqueue([]byte("closed")); ok || full {
+		t.Fatalf("closed enqueue = (%v, %v), want (false, false)", ok, full)
+	}
+}
+
+func TestAssociateTargetCountsQueueFullDrop(t *testing.T) {
+	owner := &Obj{}
+	target := &associateTargetObj{
+		session: &associateSessionObj{owner: owner},
+		out:     newAssociatePacketQueue(1, 1024),
+	}
+	target.enqueue([]byte("first"))
+	target.enqueue([]byte("dropped"))
+	if got := owner.Snapshot().DroppedAssociatePackets; got != 1 {
+		t.Fatalf("DroppedAssociatePackets = %d, want 1", got)
+	}
+	target.out.close()
+}
+
+func TestAssociateTargetWriterIsolatesEstablishedTargets(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &associateSessionObj{ctx: ctx, cancel: cancel}
+	slowConn := newBlockingWriteConnObj()
+	fastConn, fastPeer := net.Pipe()
+	defer func() { _ = fastPeer.Close() }()
+	slow := &associateTargetObj{session: session, conn: slowConn, out: newAssociatePacketQueue(4, 1024)}
+	fast := &associateTargetObj{session: session, conn: fastConn, out: newAssociatePacketQueue(4, 1024)}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); slow.write() }()
+	go func() { defer wg.Done(); fast.write() }()
+	slow.enqueue([]byte("slow"))
+	select {
+	case <-slowConn.started:
+	case <-time.After(time.Second):
+		t.Fatal("slow target did not enter Write")
+	}
+
+	fast.enqueue([]byte("fast"))
+	if err := fastPeer.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(fastPeer, buf); err != nil {
+		t.Fatalf("fast target blocked behind slow target: %v", err)
+	}
+	if string(buf) != "fast" {
+		t.Fatalf("fast payload = %q", buf)
+	}
+
+	close(slowConn.release)
+	cancel()
+	wg.Wait()
+}
+
 func TestClose_unblocksWhenConnectionLimitFull(t *testing.T) {
 	cfg := tcpCfgOnFreePort(t)
 	cfg.MaxConnections = 1
@@ -862,22 +1059,19 @@ func TestTunnelIdleTimeout_closesIdleTunnel(t *testing.T) {
 func TestTunnelIdleTimeout_disabledClearsStaleDeadline(t *testing.T) {
 	conn := &limitedConnObj{
 		Conn:              &deadlineRecorderConnObj{},
-		tunnelIdleTimeout: 0,
+		tunnelIdleTimeout: time.Minute,
 	}
-	conn.tunnelDeadline.Store(time.Now().Add(time.Minute).UnixNano())
-
+	conn.refreshActivityDeadline()
+	conn.tunnelIdleTimeout = 0
 	conn.refreshActivityDeadline()
 
 	recorder := conn.Conn.(*deadlineRecorderConnObj)
 	deadlines, lastDeadline := recorder.snapshotDeadline()
-	if deadlines != 1 {
-		t.Fatalf("expected stale deadline to be cleared once, got %d clears", deadlines)
+	if deadlines != 2 {
+		t.Fatalf("expected one arm and one clear, got %d deadline changes", deadlines)
 	}
 	if !lastDeadline.IsZero() {
 		t.Fatalf("expected zero deadline, got %s", lastDeadline)
-	}
-	if got := conn.tunnelDeadline.Load(); got != 0 {
-		t.Fatalf("expected tunnel deadline state to be reset, got %d", got)
 	}
 }
 
@@ -1190,6 +1384,87 @@ func TestAssociate_invalidDomainTargetDoesNotResolveOrAcquireSlot(t *testing.T) 
 	}
 	if got := limiter.Active(); got != 0 {
 		t.Fatalf("server associate targets = %d, want 0", got)
+	}
+}
+
+func TestAssociate_unresolvedClientDomainIsRejected(t *testing.T) {
+	request := &socks5.Request{
+		DestAddr:  &statute.AddrSpec{FQDN: "client.example", Port: 1234, AddrType: statute.ATYPDomain},
+		LocalAddr: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)},
+		Reader:    bytes.NewReader(nil),
+	}
+	var reply bytes.Buffer
+	err := (&Obj{}).handleAssociate(context.Background(), &reply, request, mockDialerObj{}, nil)
+	if err == nil {
+		t.Fatal("unresolved client domain was accepted")
+	}
+	parsed, parseErr := statute.ParseReply(&reply)
+	if parseErr != nil {
+		t.Fatalf("ParseReply: %v", parseErr)
+	}
+	if parsed.Response != statute.RepHostUnreachable {
+		t.Fatalf("associate reply = %d, want RepHostUnreachable", parsed.Response)
+	}
+}
+
+func TestAssociate_oversizedReverseDatagramDoesNotCloseTarget(t *testing.T) {
+	relay, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = relay.Close() }()
+	client, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = client.Close() }()
+	if err = client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	upstream := newDatagramSequenceConnObj()
+	owner := &Obj{}
+	session := &associateSessionObj{
+		owner:     owner,
+		ctx:       ctx,
+		cancel:    cancel,
+		relay:     relay,
+		clientUDP: client.LocalAddr().(*net.UDPAddr),
+		targets:   make(map[associateTargetKeyObj]*associateTargetObj),
+	}
+	header := []byte{0, 0, 0, statute.ATYPIPv4, 127, 0, 0, 1, 0, 53}
+	target := &associateTargetObj{
+		session: session,
+		conn:    upstream,
+		header:  header,
+		out:     newAssociatePacketQueue(1, 1),
+	}
+	done := make(chan struct{})
+	go func() {
+		target.forward()
+		close(done)
+	}()
+
+	upstream.reads <- make([]byte, 65507)
+	upstream.reads <- []byte("small")
+	buf := make([]byte, 128)
+	n, _, err := client.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatalf("small response after oversized datagram: %v", err)
+	}
+	if want := append(append([]byte(nil), header...), []byte("small")...); !bytes.Equal(buf[:n], want) {
+		t.Fatalf("reverse datagram = %x, want %x", buf[:n], want)
+	}
+	if got := owner.associatePacketDrops.Load(); got != 1 {
+		t.Fatalf("associate packet drops = %d, want 1", got)
+	}
+	target.close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("target forward did not stop")
 	}
 }
 
@@ -2041,6 +2316,12 @@ func TestAssociate_pendingDialDoesNotBlockExistingTarget(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("slow dial did not start")
 	}
+	if target, err := session.route(slowPacket); err != nil || target != nil {
+		t.Fatalf("route duplicate pending target = (%v, %v)", target, err)
+	}
+	if got := owner.associatePacketDrops.Load(); got != 1 {
+		t.Fatalf("pending-target packet drops = %d, want 1", got)
+	}
 
 	start := time.Now()
 	target, err := session.route(existingPacket)
@@ -2054,12 +2335,60 @@ func TestAssociate_pendingDialDoesNotBlockExistingTarget(t *testing.T) {
 	session.pendingWG.Wait()
 }
 
+func TestAssociate_principalLimitDefaultsToUnlimited(t *testing.T) {
+	owner := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets)}
+	session := &associateSessionObj{owner: owner, serverLimiter: owner.associateLimiter, principal: "unix"}
+	for range defaultMaxAssociateTargets {
+		if !session.acquireTargetSlot() {
+			t.Fatal("default principal policy constrained the server-wide capacity")
+		}
+	}
+	if session.acquireTargetSlot() {
+		t.Fatal("server-wide cap was bypassed")
+	}
+	for range defaultMaxAssociateTargets {
+		session.releaseTargetSlot(session.principal)
+	}
+}
+
+func TestAssociateSessionCopiesImmutableGenerationConfig(t *testing.T) {
+	owner := &Obj{
+		isUnix:                          true,
+		associateLimiter:                common.NewDynamicLimit(7),
+		associatePool:                   newAssociateWorkerPool(),
+		maxAssociateTargetsPerSession:   3,
+		maxAssociateTargetsPerPrincipal: 4,
+		maxAssociateQueuedPackets:       5,
+		maxAssociateQueuedBytes:         6,
+		dialTimeout:                     7 * time.Second,
+		tunnelIdleTimeout:               8 * time.Second,
+	}
+	request := &socks5.Request{DestAddr: &statute.AddrSpec{}}
+	session := newAssociateSession(owner, context.Background(), mockDialerObj{}, nil, nil, request)
+	defer session.cancel()
+
+	owner.mu.Lock()
+	owner.maxAssociateTargetsPerSession = 30
+	owner.maxAssociateTargetsPerPrincipal = 40
+	owner.maxAssociateQueuedPackets = 50
+	owner.maxAssociateQueuedBytes = 60
+	owner.dialTimeout = time.Minute
+	owner.tunnelIdleTimeout = time.Minute
+	owner.mu.Unlock()
+	if !session.isUnix || session.maxTargets != 3 || session.maxPrincipal != 4 ||
+		session.maxQueuedPackets != 5 || session.maxQueuedBytes != 6 ||
+		session.dialTimeout != 7*time.Second || session.idleTimeout != 8*time.Second {
+		t.Fatalf("session did not retain its generation config: %+v", session)
+	}
+}
+
 func TestAssociate_principalLimitIsIndependent(t *testing.T) {
 	limiter := common.NewDynamicLimit(defaultMaxAssociateTargets)
-	owner := &Obj{}
-	a := &associateSessionObj{owner: owner, serverLimiter: limiter, principal: "test:principal-a"}
-	b := &associateSessionObj{owner: owner, serverLimiter: limiter, principal: "test:principal-b"}
-	for range defaultMaxAssociateTargetsPerPrincipal {
+	const principalLimit = 128
+	owner := &Obj{maxAssociateTargetsPerPrincipal: principalLimit}
+	a := &associateSessionObj{owner: owner, serverLimiter: limiter, principal: "test:principal-a", maxPrincipal: principalLimit}
+	b := &associateSessionObj{owner: owner, serverLimiter: limiter, principal: "test:principal-b", maxPrincipal: principalLimit}
+	for range principalLimit {
 		if !a.acquireTargetSlot() {
 			t.Fatal("principal A reached its limit too early")
 		}
@@ -2071,17 +2400,18 @@ func TestAssociate_principalLimitIsIndependent(t *testing.T) {
 		t.Fatal("principal B must retain an independent quota")
 	}
 	b.releaseTargetSlot(b.principal)
-	for range defaultMaxAssociateTargetsPerPrincipal {
+	for range principalLimit {
 		a.releaseTargetSlot(a.principal)
 	}
 }
 
 func TestAssociate_serverLimitsAreIndependent(t *testing.T) {
-	ownerA := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets)}
-	ownerB := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets)}
-	a := &associateSessionObj{owner: ownerA, serverLimiter: ownerA.associateLimiter, principal: "unix"}
-	b := &associateSessionObj{owner: ownerB, serverLimiter: ownerB.associateLimiter, principal: "unix"}
-	for range defaultMaxAssociateTargetsPerPrincipal {
+	const principalLimit = 128
+	ownerA := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets), maxAssociateTargetsPerPrincipal: principalLimit}
+	ownerB := &Obj{associateLimiter: common.NewDynamicLimit(defaultMaxAssociateTargets), maxAssociateTargetsPerPrincipal: principalLimit}
+	a := &associateSessionObj{owner: ownerA, serverLimiter: ownerA.associateLimiter, principal: "unix", maxPrincipal: principalLimit}
+	b := &associateSessionObj{owner: ownerB, serverLimiter: ownerB.associateLimiter, principal: "unix", maxPrincipal: principalLimit}
+	for range principalLimit {
 		if !a.acquireTargetSlot() {
 			t.Fatal("server A reached its principal limit too early")
 		}
@@ -2093,7 +2423,7 @@ func TestAssociate_serverLimitsAreIndependent(t *testing.T) {
 		t.Fatal("server B was affected by server A's principal quota")
 	}
 	b.releaseTargetSlot(b.principal)
-	for range defaultMaxAssociateTargetsPerPrincipal {
+	for range principalLimit {
 		a.releaseTargetSlot(a.principal)
 	}
 }

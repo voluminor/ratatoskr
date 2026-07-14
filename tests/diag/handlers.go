@@ -4,7 +4,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"runtime"
 	"time"
 
 	"github.com/voluminor/ratatoskr"
@@ -18,30 +17,16 @@ const maxBodyBytes = 64 * 1024
 
 // healthObj is the small readiness response used by scripts and humans.
 type healthObj struct {
-	Status      string `json:"status"`
-	Name        string `json:"name"`
-	Address     string `json:"address"`
-	PublicKey   string `json:"public_key"`
-	MTU         uint64 `json:"mtu"`
-	TCPEchoAddr string `json:"tcp_echo_addr"`
-	UDPEchoAddr string `json:"udp_echo_addr"`
-	Uptime      string `json:"uptime"`
-}
-
-// runtimeObj captures runtime counters that are useful before opening pprof.
-type runtimeObj struct {
-	Goroutines int               `json:"goroutines"`
-	Mem        runtime.MemStats  `json:"mem"`
-	Uptime     string            `json:"uptime"`
-	Config     runtimeConfigObj  `json:"config"`
-	Extra      map[string]uint64 `json:"extra,omitempty"`
-}
-
-// runtimeConfigObj exposes the diagnostic ports without echoing full config.
-type runtimeConfigObj struct {
-	HTTPListen  string `json:"http_listen"`
-	DebugListen string `json:"debug_listen"`
-	SOCKSListen string `json:"socks_listen"`
+	Status            string `json:"status"`
+	Name              string `json:"name"`
+	Address           string `json:"address"`
+	PublicKey         string `json:"public_key"`
+	MTU               uint64 `json:"mtu"`
+	TCPEchoAddr       string `json:"tcp_echo_addr"`
+	UDPEchoAddr       string `json:"udp_echo_addr"`
+	TCPThroughputAddr string `json:"tcp_throughput_addr"`
+	UDPThroughputAddr string `json:"udp_throughput_addr"`
+	Uptime            string `json:"uptime"`
 }
 
 // statusObj is a generic small response for imperative endpoints.
@@ -68,35 +53,22 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 func (s *serverObj) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	pk := s.node.PublicKey()
 	resp := healthObj{
-		Status:      "ok",
-		Name:        s.cfg.Name,
-		Address:     s.node.Address().String(),
-		PublicKey:   hex.EncodeToString(pk),
-		MTU:         s.node.MTU(),
-		TCPEchoAddr: s.yggAddress(s.cfg.TCPEchoPort),
-		UDPEchoAddr: s.yggAddress(s.cfg.UDPEchoPort),
-		Uptime:      time.Since(s.startedAt).String(),
+		Status:            "ok",
+		Name:              s.cfg.Name,
+		Address:           s.node.Address().String(),
+		PublicKey:         hex.EncodeToString(pk),
+		MTU:               s.node.MTU(),
+		TCPEchoAddr:       s.yggAddress(s.cfg.TCPEchoPort),
+		UDPEchoAddr:       s.yggAddress(s.cfg.UDPEchoPort),
+		TCPThroughputAddr: s.yggAddress(s.cfg.TCPThroughputPort),
+		UDPThroughputAddr: s.yggAddress(s.cfg.UDPThroughputPort),
+		Uptime:            time.Since(s.startedAt).String(),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func (s *serverObj) handleSnapshot(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, s.node.Snapshot())
-}
-
-func (s *serverObj) handleRuntime(w http.ResponseWriter, _ *http.Request) {
-	var mem runtime.MemStats
-	runtime.ReadMemStats(&mem)
-	writeJSON(w, http.StatusOK, runtimeObj{
-		Goroutines: runtime.NumGoroutine(),
-		Mem:        mem,
-		Uptime:     time.Since(s.startedAt).String(),
-		Config: runtimeConfigObj{
-			HTTPListen:  s.cfg.HTTPListen,
-			DebugListen: s.cfg.DebugListen,
-			SOCKSListen: s.cfg.SOCKSListen,
-		},
-	})
 }
 
 func (s *serverObj) handleSOCKSEnable(w http.ResponseWriter, r *http.Request) {

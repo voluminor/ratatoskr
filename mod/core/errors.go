@@ -13,7 +13,6 @@ var (
 	ErrPortOutOfRange     = errors.New("core: port out of range 0-65535")
 	ErrInvalidAddress     = errors.New("core: invalid IP address")
 	ErrIPv6Only           = errors.New("core: IPv6 address required")
-	ErrRSTQueueTooLarge   = errors.New("core: RST queue size too large")
 	ErrInvalidNodeInfo    = errors.New("core: invalid NodeInfo")
 
 	ErrInvalidAllowedPublicKey = errors.New("core: invalid AllowedPublicKey")

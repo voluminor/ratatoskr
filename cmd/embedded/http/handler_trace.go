@@ -5,8 +5,8 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/voluminor/ratatoskr/mod/probe"
@@ -146,10 +146,8 @@ func newTraceHandler(tr *probe.Obj) http.Handler {
 // 30s timeout — BFS can take a while on large networks.
 func newTreeHandler(tr *probe.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var depth int
-		var concurrency int
-		fmt.Sscanf(r.URL.Query().Get("depth"), "%d", &depth)
-		fmt.Sscanf(r.URL.Query().Get("concurrency"), "%d", &concurrency)
+		depth, _ := strconv.Atoi(r.URL.Query().Get("depth"))
+		concurrency, _ := strconv.Atoi(r.URL.Query().Get("concurrency"))
 
 		if depth <= 0 || depth > 65535 {
 			data, _ := json.Marshal(map[string]string{"error": "depth must be between 1 and 65535"})

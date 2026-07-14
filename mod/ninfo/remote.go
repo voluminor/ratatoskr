@@ -75,7 +75,7 @@ func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskRe
 
 	result := &AskResultObj{
 		RTT:  rtt,
-		Node: Parse(nodeInfo, obj.sigilSlice()...),
+		Node: Parse(nodeInfo, obj.sigils...),
 	}
 
 	result.Software = extractSoftware(result.Node.Extra)

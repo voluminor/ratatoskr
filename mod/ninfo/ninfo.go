@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/voluminor/ratatoskr/mod/sigils"
-	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
@@ -21,18 +21,15 @@ import (
 type Obj struct {
 	source         SourceInterface
 	nodeInfo       yggcore.AddHandlerFunc
-	ctx            context.Context
-	cancel         context.CancelFunc
-	closeOnce      sync.Once
+	tasks          *common.TaskGroupObj
 	maxAskTime     time.Duration
 	askRetryPause  time.Duration
 	lookupInterval time.Duration
 	maxLookupTime  time.Duration
-	sigilsMu       sync.RWMutex
-	sigils         map[string]sigils.Interface
+	sigils         []sigils.Interface
 	askMu          sync.Mutex
 	askFlights     map[[ed25519.PublicKeySize]byte]*askFlightObj
-	askWG          sync.WaitGroup
+	resolveFlights map[netip.Addr]*resolveFlightObj
 	closed         bool
 }
 
@@ -43,19 +40,30 @@ type askFlightObj struct {
 	err  error
 }
 
+type resolveFlightObj struct {
+	done chan struct{}
+	key  ed25519.PublicKey
+	err  error
+}
+
 type ConfigObj struct {
 	// Source is the running core.
 	Source SourceInterface
 
-	// Timing for remote NodeInfo queries; 0 → the internal default for each field.
-	// MaxAskTime bounds a full Ask when the caller sets no deadline; AskRetryPause
-	// is the wait between Ask attempts (<0 disables retries); LookupInterval is the
-	// initial address-lookup poll interval; MaxLookupTime bounds an address lookup
-	// when the caller sets no deadline.
+	// Timing for shared remote NodeInfo flights; 0 → the internal default.
+	// MaxAskTime stops new retries after its deadline; one synchronous upstream
+	// handler already in progress may finish later. MaxLookupTime bounds lookup
+	// flights independently of caller cancellation; <0 disables the corresponding
+	// deadline. AskRetryPause is the wait between attempts (<0 disables retries).
+	// LookupInterval is the initial address-lookup poll interval (<0 is invalid).
 	MaxAskTime     time.Duration
 	AskRetryPause  time.Duration
 	LookupInterval time.Duration
 	MaxLookupTime  time.Duration
+
+	// Sigils are trusted custom parsers used for remote NodeInfo. New validates
+	// their names and stores one clone; the registry is immutable afterwards.
+	Sigils []sigils.Interface
 }
 
 // SourceInterface is the core access needed by remote NodeInfo lookups.
@@ -73,6 +81,7 @@ const (
 	defaultLookupInterval = 100 * time.Millisecond
 	defaultMaxLookupTime  = 30 * time.Second
 	maxConcurrentAsks     = 64
+	maxConcurrentResolves = 64
 )
 
 // //
@@ -87,10 +96,17 @@ func orDefaultDuration(v, def time.Duration) time.Duration {
 // // // // // // // // // //
 
 // New creates an ninfo module.
-// Captures getNodeInfo via core.SetAdmin.
+// Captures getNodeInfo through the configured source.
 func New(cfg ConfigObj) (*Obj, error) {
+	if cfg.LookupInterval < 0 {
+		return nil, fmt.Errorf("%w: got %s", ErrInvalidLookupInterval, cfg.LookupInterval)
+	}
 	if cfg.Source == nil {
-		return nil, ErrCoreRequired
+		return nil, ErrSourceRequired
+	}
+	customSigils, err := cloneConfiguredSigils(cfg.Sigils)
+	if err != nil {
+		return nil, err
 	}
 
 	capture := common.NewAdminCapture()
@@ -102,21 +118,58 @@ func New(cfg ConfigObj) (*Obj, error) {
 	if nodeInfo == nil {
 		return nil, ErrNodeInfoNotCaptured
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-
 	obj := &Obj{
 		source:         cfg.Source,
 		nodeInfo:       nodeInfo,
-		ctx:            ctx,
-		cancel:         cancel,
+		tasks:          common.NewTaskGroup(context.Background()),
 		maxAskTime:     orDefaultDuration(cfg.MaxAskTime, defaultMaxAskTime),
 		askRetryPause:  orDefaultDuration(cfg.AskRetryPause, defaultAskRetryPause),
 		lookupInterval: orDefaultDuration(cfg.LookupInterval, defaultLookupInterval),
 		maxLookupTime:  orDefaultDuration(cfg.MaxLookupTime, defaultMaxLookupTime),
-		sigils:         make(map[string]sigils.Interface),
+		sigils:         customSigils,
 		askFlights:     make(map[[ed25519.PublicKeySize]byte]*askFlightObj),
+		resolveFlights: make(map[netip.Addr]*resolveFlightObj),
 	}
 	return obj, nil
+}
+
+func cloneConfiguredSigils(configured []sigils.Interface) ([]sigils.Interface, error) {
+	if len(configured) == 0 {
+		return nil, nil
+	}
+	cloned := make([]sigils.Interface, 0, len(configured))
+	seen := make(map[string]struct{}, len(configured))
+	var errs []error
+	for _, parser := range configured {
+		if parser == nil {
+			errs = append(errs, fmt.Errorf("%w: nil parser", ErrInvalidSigil))
+			continue
+		}
+		name := parser.GetName()
+		if !sigils.ValidateName(name) {
+			errs = append(errs, fmt.Errorf("%w: invalid name %q", ErrInvalidSigil, name))
+			continue
+		}
+		if reservedSigilName(name) {
+			errs = append(errs, fmt.Errorf("%w: name %q is reserved", ErrInvalidSigil, name))
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			errs = append(errs, fmt.Errorf("%w: duplicate name %q", ErrInvalidSigil, name))
+			continue
+		}
+		clone := parser.Clone()
+		if clone == nil {
+			errs = append(errs, fmt.Errorf("%w: parser %q returned a nil clone", ErrInvalidSigil, name))
+			continue
+		}
+		seen[name] = struct{}{}
+		cloned = append(cloned, clone)
+	}
+	if err := errors.Join(errs...); err != nil {
+		return nil, err
+	}
+	return cloned, nil
 }
 
 // Close releases resources held by the module.
@@ -124,15 +177,14 @@ func New(cfg ConfigObj) (*Obj, error) {
 // captured handler. Standalone Close intentionally waits for accepted work; the
 // root ratatoskr object bounds its aggregate shutdown with ConfigObj.CloseTimeout.
 func (obj *Obj) Close() error {
-	obj.closeOnce.Do(func() {
-		obj.askMu.Lock()
-		obj.closed = true
-		if obj.cancel != nil {
-			obj.cancel()
-		}
-		obj.askMu.Unlock()
-		obj.askWG.Wait()
-	})
+	obj.askMu.Lock()
+	obj.closed = true
+	tasks := obj.tasks
+	obj.askMu.Unlock()
+	if tasks == nil {
+		return nil
+	}
+	tasks.Wait()
 	return nil
 }
 
@@ -154,15 +206,14 @@ func (obj *Obj) isClosed() bool {
 
 func (obj *Obj) closedLocked() bool {
 	// A zero-value Obj (never went through New) has no context; treat as closed.
-	return obj.closed || obj.ctx == nil
+	return obj.closed || obj.tasks == nil
 }
 
-// Ask queries a remote node's NodeInfo by its public key.
-// The captured getNodeInfo handler is called synchronously in the caller's
-// goroutine and retried after askRetryPause until the caller context expires or
-// the module is closed. The underlying Yggdrasil handler has its own hard 6 s
-// timeout per attempt, which often fires before routing converges on a freshly
-// started node, so retrying is what lets the address eventually resolve.
+// Ask queries a remote node's NodeInfo by its public key. Concurrent callers for
+// the same key share one detached flight. Canceling a caller only stops that
+// caller's wait; the flight remains available to other waiters. MaxAskTime stops
+// retries, but one synchronous upstream call may finish after it. Distinct flights
+// are capped internally.
 func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
@@ -196,9 +247,11 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, 
 	}
 	flight := &askFlightObj{done: make(chan struct{})}
 	obj.askFlights[ka] = flight
-	obj.askWG.Add(1)
+	tasks := obj.tasks
 	obj.askMu.Unlock()
-	go obj.runAskFlight(ka, flight)
+	if !tasks.Go(func(context.Context) { obj.runAskFlight(ka, flight) }) {
+		obj.finishAskFlight(ka, flight, ErrClosed)
+	}
 	return obj.waitAskFlight(ctx, flight)
 }
 
@@ -214,18 +267,22 @@ func (obj *Obj) waitAskFlight(ctx context.Context, flight *askFlightObj) (*AskRe
 	}
 }
 
-func (obj *Obj) runAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightObj) {
-	defer obj.askWG.Done()
-	defer func() {
-		obj.askMu.Lock()
-		if obj.askFlights[key] == flight {
-			delete(obj.askFlights, key)
-		}
-		obj.askMu.Unlock()
-		close(flight.done)
-	}()
+func (obj *Obj) finishAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightObj, err error) {
+	if err != nil {
+		flight.err = err
+	}
+	obj.askMu.Lock()
+	if obj.askFlights[key] == flight {
+		delete(obj.askFlights, key)
+	}
+	obj.askMu.Unlock()
+	close(flight.done)
+}
 
-	workCtx := obj.ctx
+func (obj *Obj) runAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightObj) {
+	defer obj.finishAskFlight(key, flight, nil)
+
+	workCtx := obj.tasks.Context()
 	cancel := func() {}
 	if obj.maxAskTime > 0 {
 		workCtx, cancel = context.WithTimeout(workCtx, obj.maxAskTime)
@@ -234,6 +291,16 @@ func (obj *Obj) runAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightO
 	retryPause := obj.askRetryPause
 	var lastErr error
 	for {
+		if err := workCtx.Err(); err != nil {
+			if errors.Is(err, context.Canceled) && obj.isClosed() {
+				flight.err = ErrClosed
+			} else if lastErr != nil {
+				flight.err = lastErr
+			} else {
+				flight.err = err
+			}
+			return
+		}
 		start := time.Now()
 		raw, err := obj.callNodeInfo(key)
 		if err == nil {
@@ -272,105 +339,4 @@ func (obj *Obj) AskAddr(ctx context.Context, addr string) (*AskResultObj, error)
 		return nil, err
 	}
 	return obj.Ask(ctx, key)
-}
-
-// // // // // // // // // //
-
-// AddSigil registers third-party sigils used by Ask/AskAddr to decode remote
-// NodeInfo. Accepts one or many sigils; each self-names via GetName(). Nil,
-// invalid-name, reserved, duplicate, or non-cloneable sigils are rejected; the
-// collected failures are returned joined (nil if all succeed).
-func (obj *Obj) AddSigil(sigs ...sigils.Interface) error {
-	var errs []error
-	obj.sigilsMu.Lock()
-	defer obj.sigilsMu.Unlock()
-	for _, si := range sigs {
-		if si == nil {
-			errs = append(errs, fmt.Errorf("sigil is nil"))
-			continue
-		}
-		name := si.GetName()
-		if !sigils.ValidateName(name) {
-			errs = append(errs, fmt.Errorf("sigil[%s] is invalid", name))
-			continue
-		}
-		if reservedSigilName(name) {
-			errs = append(errs, fmt.Errorf("sigil[%s] is reserved", name))
-			continue
-		}
-		if _, ok := obj.sigils[name]; ok {
-			errs = append(errs, fmt.Errorf("duplicated sigil[%s]", name))
-			continue
-		}
-		// Store a clone so a caller mutating its own sigil after registration cannot
-		// alter parse state; a sigil that cannot clone itself is rejected.
-		clone := si.Clone()
-		if clone == nil {
-			errs = append(errs, fmt.Errorf("sigil[%s] Clone returned nil", name))
-			continue
-		}
-		obj.sigils[name] = clone
-	}
-	return errors.Join(errs...)
-}
-
-// GetSigil returns a clone of the registered sigil, or nil if none is registered.
-func (obj *Obj) GetSigil(name string) sigils.Interface {
-	obj.sigilsMu.RLock()
-	defer obj.sigilsMu.RUnlock()
-	if sg := obj.sigils[name]; sg != nil {
-		return sg.Clone()
-	}
-	return nil
-}
-
-// DelSigil removes a registered sigil by name.
-func (obj *Obj) DelSigil(name string) error {
-	obj.sigilsMu.Lock()
-	defer obj.sigilsMu.Unlock()
-	if _, ok := obj.sigils[name]; !ok {
-		return fmt.Errorf("sigil[%s] not found", name)
-	}
-	delete(obj.sigils, name)
-	return nil
-}
-
-// ImportSigils registers all non-reserved sigils assembled in a sigil_core.Obj.
-func (obj *Obj) ImportSigils(src *sigil_core.Obj) error {
-	obj.sigilsMu.Lock()
-	defer obj.sigilsMu.Unlock()
-	var errs []error
-	if src == nil {
-		return fmt.Errorf("sigil source is nil")
-	}
-	for name, si := range src.Sigils() {
-		if si == nil {
-			errs = append(errs, fmt.Errorf("sigil[%s] is nil", name))
-			continue
-		}
-		if reservedSigilName(name) {
-			continue
-		}
-		if _, exists := obj.sigils[name]; exists {
-			errs = append(errs, fmt.Errorf("sigil[%s] already exists", name))
-			continue
-		}
-		obj.sigils[name] = si
-	}
-	return errors.Join(errs...)
-}
-
-// //
-
-func (obj *Obj) sigilSlice() []sigils.Interface {
-	obj.sigilsMu.RLock()
-	defer obj.sigilsMu.RUnlock()
-	if len(obj.sigils) == 0 {
-		return nil
-	}
-	out := make([]sigils.Interface, 0, len(obj.sigils))
-	for _, si := range obj.sigils {
-		out = append(out, si)
-	}
-	return out
 }

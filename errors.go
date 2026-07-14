@@ -11,4 +11,5 @@ var (
 	ErrCloseTimedOut         = errors.New("ratatoskr: close timed out")
 	ErrInvalidCloseTimeout   = errors.New("ratatoskr: close timeout must not be negative")
 	ErrInvalidNodeInfo       = errors.New("ratatoskr: invalid NodeInfo")
+	ErrInvalidSigils         = errors.New("ratatoskr: invalid sigil configuration")
 )

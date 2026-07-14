@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -25,17 +26,14 @@ type Obj struct {
 	remotePeers      yggcore.AddHandlerFunc
 	remoteSem        chan struct{}
 	remoteMu         sync.RWMutex
-	remoteWG         sync.WaitGroup
-	closeOnce        sync.Once
-	closeDone        chan struct{}
+	tasks            *common.TaskGroupObj
 	closed           bool
-	ctx              context.Context
-	cancel           context.CancelFunc
 	remoteFlights    map[[ed25519.PublicKeySize]byte]*remoteFlightObj
 	maxTotalNodes    int
 	pollInterval     time.Duration
 	lookupRetryEvery time.Duration
 	maxDuration      time.Duration
+	remoteTimeout    time.Duration
 }
 
 // SourceInterface is the core access needed by topology probing.
@@ -61,7 +59,8 @@ const (
 	DefaultMaxTotalNodes   = 4096
 	DefaultMaxConcurrency  = 256
 
-	defaultMaxDuration = 5 * time.Minute
+	defaultMaxDuration   = 5 * time.Minute
+	defaultRemoteTimeout = 30 * time.Second
 )
 
 // //
@@ -131,6 +130,8 @@ func (o *Obj) boundedContext(ctx context.Context) (context.Context, context.Canc
 
 // ConfigObj tunes a probe. Zero values fall back to internal defaults.
 type ConfigObj struct {
+	// Source provides the Yggdrasil topology and captured admin handlers.
+	Source SourceInterface
 	// Logger receives probe events; nil → logs are discarded.
 	Logger yggcore.Logger
 	// MaxTotalNodes caps how many nodes the tree crawl visits; 0 → default.
@@ -142,6 +143,9 @@ type ConfigObj struct {
 	// MaxDuration bounds a probe when the caller sets no ctx deadline;
 	// 0 → default, <0 → unbounded.
 	MaxDuration time.Duration
+	// RemoteTimeout bounds one debug_remoteGetPeers wait; 0 → 30s, <0 → no
+	// probe-imposed timeout. The underlying call remains owned until it returns.
+	RemoteTimeout time.Duration
 }
 
 func orDefaultInt(v, def int) int {
@@ -160,13 +164,13 @@ func orDefaultDuration(v, def time.Duration) time.Duration {
 
 // //
 
-// New creates a probe module over the given core source. cfg tunes crawl timing,
-// the total-node cap, and the logger. Captures debug_remoteGetPeers via
-// core.SetAdmin. The per-node peer cap and hops wait are fixed package constants
+// New creates a probe module. cfg tunes crawl timing, the total-node cap, and
+// the logger. It captures debug_remoteGetPeers through ConfigObj.Source. The
+// per-node peer cap and hops wait are fixed package constants
 // (topology data comes from untrusted remote nodes), not caller knobs.
-func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
-	if source == nil {
-		return nil, ErrCoreRequired
+func New(cfg ConfigObj) (*Obj, error) {
+	if cfg.Source == nil {
+		return nil, ErrSourceRequired
 	}
 	logger := common.NormalizeLogger(cfg.Logger)
 	if cfg.MaxTotalNodes < 0 {
@@ -180,7 +184,7 @@ func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
 	}
 
 	capture := common.NewAdminCapture()
-	if err := source.SetAdmin(capture); err != nil {
+	if err := cfg.Source.SetAdmin(capture); err != nil {
 		return nil, fmt.Errorf("probe: capture admin handlers: %w", err)
 	}
 
@@ -189,49 +193,41 @@ func New(source SourceInterface, cfg ConfigObj) (*Obj, error) {
 		return nil, ErrRemotePeersNotCaptured
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
 	return &Obj{
-		source:           source,
+		source:           cfg.Source,
 		logger:           logger,
 		remotePeers:      remotePeers,
 		remoteSem:        make(chan struct{}, DefaultMaxConcurrency),
 		remoteFlights:    make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
-		ctx:              ctx,
-		cancel:           cancel,
+		tasks:            common.NewTaskGroup(context.Background()),
 		maxTotalNodes:    orDefaultInt(cfg.MaxTotalNodes, DefaultMaxTotalNodes),
 		pollInterval:     orDefaultDuration(cfg.PollInterval, defaultPollInterval),
 		lookupRetryEvery: orDefaultDuration(cfg.LookupRetryEvery, defaultLookupRetryEvery),
 		maxDuration:      orDefaultDuration(cfg.MaxDuration, defaultMaxDuration),
+		remoteTimeout:    orDefaultDuration(cfg.RemoteTimeout, defaultRemoteTimeout),
 	}, nil
 }
 
 // //
 
 func (o *Obj) startClose() <-chan struct{} {
-	o.closeOnce.Do(func() {
-		o.remoteMu.Lock()
-		o.closed = true
-		if o.cancel != nil {
-			o.cancel()
-		}
-		o.closeDone = make(chan struct{})
-		done := o.closeDone
-		o.remoteMu.Unlock()
-		go func() {
-			o.remoteWG.Wait()
-			close(done)
-		}()
-	})
-	o.remoteMu.RLock()
-	done := o.closeDone
-	o.remoteMu.RUnlock()
-	return done
+	o.remoteMu.Lock()
+	o.closed = true
+	tasks := o.tasks
+	o.remoteMu.Unlock()
+	if tasks == nil {
+		done := make(chan struct{})
+		close(done)
+		return done
+	}
+	return tasks.Stop()
 }
 
 // Close cancels queued work and waits for every accepted remote call. It is the
 // safe standalone teardown and deliberately has no implicit timeout.
-func (o *Obj) Close() {
+func (o *Obj) Close() error {
 	<-o.startClose()
+	return nil
 }
 
 // CloseContext initiates the same teardown as Close but bounds only the caller's
@@ -257,7 +253,7 @@ func (o *Obj) CloseContext(ctx context.Context) error {
 
 func (o *Obj) isClosed() bool {
 	o.remoteMu.RLock()
-	closed := o.closed
+	closed := o.closed || o.tasks == nil
 	o.remoteMu.RUnlock()
 	return closed
 }
@@ -358,15 +354,21 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 		currentLevel = nextLevel
 		truncated = levelTruncated
 		total += len(currentLevel)
-		if err != nil {
-			return &TreeResultObj{Root: root, Total: total, Truncated: truncated, Limit: o.maxTotalNodes}, err
-		}
 		if progress != nil && len(currentLevel) > 0 {
 			select {
 			case progress <- TreeProgressObj{Depth: int(depth) + 1, Found: len(currentLevel), Total: total, Truncated: truncated, Limit: o.maxTotalNodes}:
 			case <-ctx.Done():
 				return &TreeResultObj{Root: root, Total: total, Truncated: truncated, Limit: o.maxTotalNodes}, ctx.Err()
 			}
+		}
+		if err != nil {
+			if progress != nil && errors.Is(err, ErrProbeBusy) {
+				select {
+				case progress <- TreeProgressObj{Done: true, Total: total, Truncated: truncated, Limit: o.maxTotalNodes}:
+				case <-ctx.Done():
+				}
+			}
+			return &TreeResultObj{Root: root, Total: total, Truncated: truncated, Limit: o.maxTotalNodes}, err
 		}
 	}
 
@@ -426,8 +428,13 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 
 	var nextLevel []*NodeObj
 	truncated := false
+	busy := false
 	for range nodes {
 		r := <-results
+		if errors.Is(r.err, ErrProbeBusy) {
+			busy = true
+			continue
+		}
 		children, childTruncated := o.applyPeerResult(r, nodeByKey, visited, nextDepth, remaining-len(nextLevel))
 		nextLevel = append(nextLevel, children...)
 		if childTruncated {
@@ -442,6 +449,9 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 	}
 	if err := ctx.Err(); err != nil {
 		return nextLevel, truncated, err
+	}
+	if busy {
+		return nextLevel, truncated, ErrProbeBusy
 	}
 	return nextLevel, truncated, nil
 }
@@ -459,7 +469,7 @@ func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeyS
 		parent.Unreachable = true
 		return nil, false
 	}
-	peers := clonePeerKeys(r.peers)
+	peers := r.peers
 	slices.SortFunc(peers, compareKeys)
 	children := make([]*NodeObj, 0, len(peers))
 	for _, peerKey := range peers {

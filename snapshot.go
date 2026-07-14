@@ -33,7 +33,8 @@ type SOCKSSnapshotObj struct {
 	ActiveConnections        int    `json:"active_connections"`
 	ActiveAssociateTargets   int    `json:"active_associate_targets"`
 	PendingAssociateTargets  int64  `json:"pending_associate_targets"`
-	RejectedAssociateTargets int64  `json:"rejected_associate_targets"`
+	RejectedAssociateTargets uint64 `json:"rejected_associate_targets"`
+	DroppedAssociatePackets  uint64 `json:"dropped_associate_packets"`
 }
 
 // SnapshotObj — full node state at the time of the call
@@ -42,7 +43,6 @@ type SnapshotObj struct {
 	Subnet        string            `json:"subnet"`
 	PublicKey     string            `json:"public_key"`
 	MTU           uint64            `json:"mtu"`
-	RSTDropped    uint64            `json:"rst_dropped"`
 	Peers         []PeerSnapshotObj `json:"peers"`
 	ActivePeers   []string          `json:"active_peers,omitempty"`
 	SOCKS         SOCKSSnapshotObj  `json:"socks"`
@@ -78,7 +78,6 @@ func peerSnapshots(peers []yggcore.PeerInfo) []PeerSnapshotObj {
 func (o *Obj) Snapshot() SnapshotObj {
 	snap := SnapshotObj{}
 	snap.MTU = o.core.MTU()
-	snap.RSTDropped = o.core.RSTDropped()
 	snap.CloseTimedOut = o.closeTimedOut.Load()
 	if addr := o.core.Address(); addr != nil {
 		snap.Address = addr.String()
@@ -107,6 +106,7 @@ func (o *Obj) Snapshot() SnapshotObj {
 		ActiveAssociateTargets:   socksStats.ActiveAssociateTargets,
 		PendingAssociateTargets:  socksStats.PendingAssociateTargets,
 		RejectedAssociateTargets: socksStats.RejectedAssociateTargets,
+		DroppedAssociatePackets:  socksStats.DroppedAssociatePackets,
 	}
 
 	return snap

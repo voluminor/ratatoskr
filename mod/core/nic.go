@@ -13,7 +13,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
-	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
 
 // // // // // // // // // //
@@ -33,29 +32,22 @@ type nicObj struct {
 	ipv6rwc    *ipv6rwc.ReadWriteCloser
 	dispatcher atomic.Pointer[stack.NetworkDispatcher]
 	mtu        atomic.Uint32
-	rstPackets chan *stack.PacketBuffer
-	rstDropped atomic.Uint64
 	done       chan struct{}
 	readDone   chan struct{}
-	rstDone    chan struct{}
-	rstMu      sync.Mutex
-	rstClosed  bool
 	closeOnce  sync.Once
 	logger     yggcore.Logger
 }
 
-func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int, ifMTU uint64) (*nicObj, tcpip.Error) {
+func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Error) {
 	rwc := ipv6rwc.NewReadWriteCloser(ygg)
 	mtu := normalizeMTU(ifMTU, rwc.MaxMTU())
 	rwc.SetMTU(mtu)
 	nic := &nicObj{
-		ns:         s,
-		ipv6rwc:    rwc,
-		rstPackets: make(chan *stack.PacketBuffer, rstQueueSize),
-		done:       make(chan struct{}),
-		readDone:   make(chan struct{}),
-		rstDone:    make(chan struct{}),
-		logger:     s.logger,
+		ns:       s,
+		ipv6rwc:  rwc,
+		done:     make(chan struct{}),
+		readDone: make(chan struct{}),
+		logger:   s.logger,
 	}
 	nic.mtu.Store(uint32(mtu))
 	if err := s.stack.CreateNIC(1, nic); err != nil {
@@ -79,39 +71,10 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int, ifMTU uint64) 
 			pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
 				Payload: buffer.MakeWithData(readBuf[:rx]),
 			})
-			// DeliverNetworkPacket can synchronously emit a zero-payload TCP RST
-			// (e.g. for a closed port) via WritePackets on this same goroutine;
-			// such RSTs are deferred to the RST queue so ipv6rwc.Write cannot
-			// block here and stall inbound dispatch. Data-bearing writes come
-			// from other goroutines and may block safely, so only these are.
 			if d := nic.dispatcher.Load(); d != nil {
 				(*d).DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
 			}
 			pkb.DecRef()
-		}
-	}()
-
-	// Deferred RST writes keep inline packet dispatch from blocking on ipv6rwc.Write.
-	go func() {
-		defer close(nic.rstDone)
-		for {
-			select {
-			case <-nic.done:
-				nic.rstMu.Lock()
-				defer nic.rstMu.Unlock()
-				nic.rstClosed = true
-				for {
-					select {
-					case pkt := <-nic.rstPackets:
-						pkt.DecRef()
-					default:
-						return
-					}
-				}
-			case pkt := <-nic.rstPackets:
-				_ = nic.writePacket(pkt)
-				pkt.DecRef()
-			}
 		}
 	}()
 
@@ -209,43 +172,11 @@ func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 
 func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
 	for i, pkt := range list.AsSlice() {
-		// TCP RST with no payload — enqueue for deferred sending
-		if pkt.Data().Size() == 0 &&
-			pkt.Network().TransportProtocol() == tcp.ProtocolNumber {
-			tcpHdr := header.TCP(pkt.TransportHeader().Slice())
-			if (tcpHdr.Flags() & header.TCPFlagRst) == header.TCPFlagRst {
-				pkt.IncRef()
-				e.enqueueRST(pkt)
-				continue
-			}
-		}
 		if err := e.writePacket(pkt); err != nil {
 			return i, err
 		}
 	}
 	return list.Len(), nil
-}
-
-// enqueueRST accepts ownership of pkt and drops it when the deferred queue is
-// full. Drop-newest (not evict-oldest) is deliberate: an RST is a payload-free,
-// one-shot notification with no freshness gradient, so dropping the newest under
-// overflow loses nothing an initiator's retransmit or the peer's idle timeout will
-// not recover, and it keeps enqueue a single non-blocking send under rstMu with a
-// clean rstClosed check (no receive-then-send race with the drain on Close).
-func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
-	e.rstMu.Lock()
-	defer e.rstMu.Unlock()
-	if e.rstClosed {
-		pkt.DecRef()
-		e.rstDropped.Add(1)
-		return
-	}
-	select {
-	case e.rstPackets <- pkt:
-	default:
-		pkt.DecRef()
-		e.rstDropped.Add(1)
-	}
 }
 
 // //
@@ -259,7 +190,6 @@ func (e *nicObj) Close() {
 		close(e.done)
 		_ = e.ipv6rwc.Close()
 		<-e.readDone
-		<-e.rstDone
 	})
 }
 

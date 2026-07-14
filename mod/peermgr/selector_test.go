@@ -169,6 +169,28 @@ func TestSelectBest_sortsByLatency(t *testing.T) {
 	}
 }
 
+func TestSelectBest_placesUnknownLatencyAfterMeasured(t *testing.T) {
+	results := []peerResultObj{
+		{URI: "tls://unknown:1", Proto: "tls", Up: true, Latency: 0},
+		{URI: "tls://measured:1", Proto: "tls", Up: true, Latency: 5 * time.Millisecond},
+	}
+	selected := selectBest(results, 1)
+	if len(selected) != 1 || selected[0].URI != "tls://measured:1" {
+		t.Fatalf("selected = %v, want measured peer", selected)
+	}
+}
+
+func TestSelectBestBreaksLatencyTiesByNormalizedURI(t *testing.T) {
+	results := []peerResultObj{
+		{URI: "tls://b:1", Proto: "tls", Up: true, Latency: 5 * time.Millisecond},
+		{URI: "tls://a:1", Proto: "tls", Up: true, Latency: 5 * time.Millisecond},
+	}
+	selected := selectBest(results, 1)
+	if len(selected) != 1 || selected[0].URI != "tls://a:1" {
+		t.Fatalf("selected = %v, want stable URI tie-break", selected)
+	}
+}
+
 func TestSelectBest_onlyUpPeers(t *testing.T) {
 	results := []peerResultObj{
 		{URI: "tls://a:1", Proto: "tls", Up: false},

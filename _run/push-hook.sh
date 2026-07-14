@@ -23,11 +23,17 @@ root_path="$(cd "$run_dir/.." && pwd)"
   done
 
   echo "==> Running tests with race detector..."
-  go test -race -v ./...
+  go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+    [ -n "$dir" ] || continue
+    go -C "$dir" test -race -v ./...
+  done
 
   echo ""
   echo "==> Running benchmarks..."
-  go test -bench=. -run=NONE -benchmem -v ./...
+  go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+    [ -n "$dir" ] || continue
+    go -C "$dir" test -bench=. -run=NONE -benchmem -v ./...
+  done
 )
 
 echo ""

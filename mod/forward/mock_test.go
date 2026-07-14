@@ -2,13 +2,9 @@ package forward
 
 import (
 	"context"
-	"crypto/ed25519"
 	"net"
 	"testing"
 	"time"
-
-	"github.com/voluminor/ratatoskr/mod/core"
-	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
@@ -39,22 +35,12 @@ func (m *mockNodeObj) Address() net.IP {
 	return net.ParseIP("127.0.0.1")
 }
 
-func (m *mockNodeObj) Subnet() net.IPNet            { return net.IPNet{} }
-func (m *mockNodeObj) PublicKey() ed25519.PublicKey { return nil }
 func (m *mockNodeObj) MTU() uint64 {
 	if m.mtu > 0 {
 		return m.mtu
 	}
 	return 65535
 }
-func (m *mockNodeObj) AddPeer(_ string) error       { return nil }
-func (m *mockNodeObj) RemovePeer(_ string) error    { return nil }
-func (m *mockNodeObj) GetPeers() []yggcore.PeerInfo { return nil }
-func (m *mockNodeObj) EnableMulticast() error       { return nil }
-func (m *mockNodeObj) DisableMulticast() error      { return nil }
-func (m *mockNodeObj) EnableAdmin(_ string) error   { return nil }
-func (m *mockNodeObj) DisableAdmin() error          { return nil }
-func (m *mockNodeObj) Close() error                 { return nil }
 
 // //
 
@@ -75,11 +61,30 @@ func (noopLogObj) Traceln(...interface{})        {}
 
 // //
 
-func newTestManagerObj(node core.NetworkInterface, timeout time.Duration, cfg ConfigObj) *ManagerObj {
+func newBareTestObj(node NetworkInterface, timeout time.Duration, cfg ConfigObj) *Obj {
 	cfg.Logger = noopLogObj{}
 	cfg.Node = node
 	cfg.UDPTimeout = timeout
-	return New(cfg)
+	obj := &Obj{}
+	obj.applyConfig(cfg)
+	return obj
+}
+
+func newRunningTestObj(t *testing.T, node NetworkInterface, timeout time.Duration, cfg ConfigObj) *Obj {
+	t.Helper()
+	cfg.Logger = noopLogObj{}
+	cfg.Node = node
+	cfg.UDPTimeout = timeout
+	obj, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := obj.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return obj
 }
 
 // //

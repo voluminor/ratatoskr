@@ -35,15 +35,10 @@ type MulticastInterface interface {
 	DisableMulticast() error
 }
 
-// AdminInterface controls the optional admin socket.
+// AdminInterface controls the optional unsafe upstream admin socket.
 type AdminInterface interface {
 	EnableAdmin(addr string) error
 	DisableAdmin() error
-}
-
-// StatsInterface exposes node counters.
-type StatsInterface interface {
-	RSTDropped() uint64
 }
 
 // DiagnosticInterface exposes topology and NodeInfo hooks used by probe/ninfo.
@@ -64,7 +59,6 @@ type Interface interface {
 	PeerInterface
 	AdminInterface
 	MulticastInterface
-	StatsInterface
 	DiagnosticInterface
 	Close() error
 }

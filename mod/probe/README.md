@@ -60,21 +60,31 @@ flowchart TB
 ## Initialization
 
 ```go
-p, err := probe.New(coreNode, probe.ConfigObj{Logger: logger})
-defer p.Close()
+p, err := probe.New(probe.ConfigObj{Source: coreNode, Logger: logger})
+defer func() { _ = p.Close() }()
 ```
 
-`ConfigObj` tunes the logger, crawl timing (`PollInterval`, `LookupRetryEvery`, `MaxDuration`) and the total-node cap
-(`MaxTotalNodes`); zero values fall back to internal defaults. The per-node peer cap and hops-wait timeout stay fixed
+`Source` is mandatory and provides the narrow `SourceInterface` used by the module. The rest of `ConfigObj` tunes the
+logger, crawl timing (`PollInterval`, `LookupRetryEvery`, `MaxDuration`, `RemoteTimeout`) and the
+total-node cap (`MaxTotalNodes`); zero values fall back to internal defaults. `RemoteTimeout` defaults to 30 seconds
+and a negative value disables the probe-imposed wait timeout. The per-node peer cap and hops-wait timeout stay fixed
 package constants — topology data comes from untrusted remote nodes, so those bounds are not caller knobs.
 
-`New` intercepts the `debug_remoteGetPeers` handler from `core.ProbeSourceInterface` via a fake admin socket. This
-allows querying
-remote nodes without a real admin socket.
+`New` intercepts the `debug_remoteGetPeers` handler from `ConfigObj.Source` through the narrow `SourceInterface`. This
+allows querying remote nodes without a real admin socket.
 
 `Close` rejects new work and waits for every already accepted remote query to finish. This is the standalone-module
 contract: accepted work is not abandoned. If the caller needs a bounded wait, use `CloseContext(ctx)`. Its context
 bounds only the caller's wait; shutdown continues and a later `Close` or `CloseContext` can still observe completion.
+
+A same-node flight is published before it waits for the global 256-call semaphore, so saturation cannot queue many
+identical upstream calls. The module accepts at most 256 distinct flights at once; an additional distinct key returns
+`ErrProbeBusy`, while callers for an already accepted key still join its flight. An accepted flight belongs to the
+module lifecycle: cancellation of the caller that created it only detaches that caller and cannot poison other
+waiters. Once the handler starts, the module owns its slot until the upstream call actually returns. `RemoteTimeout`
+releases callers with `ErrRemoteCallTimedOut`, but deliberately does not release the slot or forget the flight early:
+the upstream handler has no cancellation API, and pretending it ended would exceed the real concurrency cap. `Close`
+waits for it.
 
 Each `Tree` call reads a fresh topology snapshot. There is intentionally no cross-call result cache: mesh peer sets can
 change between calls, while the remote call itself is cheap compared with traversal and network latency. A traversal
@@ -110,6 +120,8 @@ flowchart LR
   stays reachable with its peer set truncated to the cap
 - Traversal stops at `ConfigObj.MaxTotalNodes` (0 → `DefaultMaxTotalNodes`); `TreeResultObj.Truncated` reports this
   condition
+- If distinct-flight admission is saturated, `Tree` returns the successfully built partial result together with
+  `ErrProbeBusy`. Busy parents are not marked `Unreachable`, and `Truncated` remains reserved for `MaxTotalNodes`
 - Duplicates are filtered by public key
 
 ### TreeChan
@@ -131,6 +143,9 @@ Truncated bool // true if MaxTotalNodes stopped traversal
 Limit     int  // configured MaxTotalNodes
 }
 ```
+
+On `ErrProbeBusy`, `TreeChan` follows the same partial-result contract and sends a final `Done` progress value before
+returning when the caller context still permits it.
 
 ---
 
@@ -186,6 +201,8 @@ flowchart TB
 - If the path exists but hops are missing — performs `Lookup` and polls with `HopsWaitTimeout`
 - If neither is found — full cycle with repeated `Lookup` every `LookupRetryEvery`
 - RTT is populated for intermediate nodes via remote calls
+- If RTT enrichment reaches the distinct-flight cap, returns the partial route
+  together with `ErrProbeBusy`; unavailable RTT fields remain zero
 
 ---
 
@@ -217,6 +234,7 @@ cheap to re-instantiate and its inputs come from untrusted remote nodes:
 | `DefaultMaxConcurrency`  | Maximum concurrent remote peer queries                  | `256`   |
 | poll interval            | Core polling interval in `Trace`                        | `200ms` |
 | lookup retry             | `SendLookup` retry interval in `Trace`                  | `1s`    |
+| remote timeout           | Caller wait for one `debug_remoteGetPeers` call         | `30s`   |
 | hops wait timeout        | Hops wait timeout when tree path is already found       | `2s`    |
 | max duration             | Internal wall-clock cap for `Tree` without ctx deadline | `5m`    |
 
@@ -264,17 +282,22 @@ Hops     []HopObj  // route via pathfinder
 
 ## Errors
 
-| Variable                    | Description                                    |
-|-----------------------------|------------------------------------------------|
-| `ErrCoreRequired`           | Core not provided to `New`                     |
-| `ErrRemotePeersNotCaptured` | `debug_remoteGetPeers` handler not intercepted |
-| `ErrMaxDepthRequired`       | `maxDepth` must be > 0                         |
-| `ErrInvalidKeyLength`       | Public key is not 32 bytes                     |
-| `ErrKeyNotInTree`           | Key not found in spanning tree                 |
-| `ErrNoActivePath`           | No active route in pathfinder                  |
-| `ErrRemotePeersDisabled`    | `debug_remoteGetPeers` is unavailable          |
-| `ErrRemoteResponseTooLarge` | Remote peer message exceeds the size cap       |
-| `ErrTreeEmpty`              | Spanning tree entries are empty                |
-| `ErrNoRoot`                 | No self-rooted node in tree                    |
-| `ErrLookupTimedOut`         | Route lookup timed out                         |
-| `ErrClosed`                 | Probe closed; remote calls are rejected        |
+| Variable                     | Description                                            |
+|------------------------------|--------------------------------------------------------|
+| `ErrSourceRequired`          | Source not provided in `ConfigObj`                     |
+| `ErrRemotePeersNotCaptured`  | `debug_remoteGetPeers` handler not intercepted         |
+| `ErrMaxDepthRequired`        | `maxDepth` must be > 0                                 |
+| `ErrInvalidKeyLength`        | Public key is not 32 bytes                             |
+| `ErrKeyNotInTree`            | Key not found in spanning tree                         |
+| `ErrNoActivePath`            | No active route in pathfinder                          |
+| `ErrRemotePeersDisabled`     | `debug_remoteGetPeers` is unavailable                  |
+| `ErrRemoteResponseTooLarge`  | Remote peer message exceeds the size cap               |
+| `ErrRemoteCallTimedOut`      | A remote peer query exceeded `RemoteTimeout`           |
+| `ErrTreeEmpty`               | Spanning tree entries are empty                        |
+| `ErrNoRoot`                  | No self-rooted node in tree                            |
+| `ErrLookupTimedOut`          | Route lookup timed out                                 |
+| `ErrClosed`                  | Probe closed; remote calls are rejected                |
+| `ErrInvalidMaxTotalNodes`    | `MaxTotalNodes` is negative                            |
+| `ErrInvalidPollInterval`     | `PollInterval` is negative                             |
+| `ErrInvalidLookupRetryEvery` | `LookupRetryEvery` is negative                         |
+| `ErrProbeBusy`               | 256 distinct remote query flights are already accepted |

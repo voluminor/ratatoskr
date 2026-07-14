@@ -35,7 +35,6 @@ const (
 type Obj struct {
 	resolver        *net.Resolver
 	hasDNS          bool
-	dnsErr          error
 	lookupTimeout   time.Duration
 	cacheTTL        time.Duration
 	cacheMaxEntries int
@@ -128,7 +127,12 @@ func isYggdrasilIP(ip net.IP) bool {
 	}
 	var addr address.Address
 	copy(addr[:], raw)
-	return addr.IsValid()
+	if addr.IsValid() {
+		return true
+	}
+	var subnet address.Subnet
+	copy(subnet[:], raw)
+	return subnet.IsValid()
 }
 
 func firstYggdrasilIP(addrs []net.IP) net.IP {
@@ -147,7 +151,7 @@ func safeContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-func (r *Obj) lookupContext(ctx context.Context) (context.Context, context.CancelFunc) {
+func (r *Obj) lookupContext() (context.Context, context.CancelFunc) {
 	baseCtx := r.ctx
 	if baseCtx == nil {
 		baseCtx = context.Background()
@@ -333,11 +337,11 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 	r.lookupWG.Add(1)
 	r.lookupMu.Unlock()
 
-	go r.runLookupFlight(ctx, key, name, flight)
+	go r.runLookupFlight(key, name, flight)
 	return r.waitLookupFlight(waitCtx, flight)
 }
 
-func (r *Obj) runLookupFlight(ctx context.Context, key, name string, flight *lookupFlightObj) {
+func (r *Obj) runLookupFlight(key, name string, flight *lookupFlightObj) {
 	defer r.lookupWG.Done()
 	defer func() {
 		r.lookupMu.Lock()
@@ -354,7 +358,7 @@ func (r *Obj) runLookupFlight(ctx context.Context, key, name string, flight *loo
 		flight.err = err
 		return
 	}
-	lookupCtx, cancel := r.lookupContext(ctx)
+	lookupCtx, cancel := r.lookupContext()
 	defer cancel()
 	addrs, err := r.resolver.LookupIP(lookupCtx, "ip6", name)
 	finished := time.Now()
@@ -383,8 +387,11 @@ func (r *Obj) runLookupFlight(ctx context.Context, key, name string, flight *loo
 
 // //
 
-// New creates a resolver; empty Nameserver = only .pk.ygg and literals.
-func New(cfg ConfigObj) *Obj {
+// New creates a resolver; an empty Nameserver enables only .pk.ygg and literals.
+func New(cfg ConfigObj) (*Obj, error) {
+	if cfg.Nameserver != "" && cfg.Dialer == nil {
+		return nil, ErrDialerRequired
+	}
 	cacheTTL := effectiveCacheTTL(cfg.CacheTTL)
 	cacheMaxEntries := effectiveCacheMaxEntries(cfg.CacheMaxEntries)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -402,10 +409,6 @@ func New(cfg ConfigObj) *Obj {
 		if cacheTTL > 0 && cacheMaxEntries > 0 {
 			r.cache = make(map[string]cacheEntryObj)
 		}
-		dialer := cfg.Dialer
-		if dialer == nil {
-			r.dnsErr = ErrDialerRequired
-		}
 		host, port, err := net.SplitHostPort(cfg.Nameserver)
 		if err != nil {
 			host = cfg.Nameserver
@@ -413,10 +416,10 @@ func New(cfg ConfigObj) *Obj {
 		}
 		dnsAddr := net.JoinHostPort(host, port)
 		r.resolver.Dial = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, network, dnsAddr)
+			return cfg.Dialer.DialContext(ctx, network, dnsAddr)
 		}
 	}
-	return r
+	return r, nil
 }
 
 // Close cancels active DNS work and waits for admitted single-flight lookups.
@@ -464,9 +467,6 @@ func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP
 	// DNS — only if nameserver is configured
 	if !r.hasDNS {
 		return ctx, nil, fmt.Errorf("%w: cannot resolve %q", ErrNoNameserver, name)
-	}
-	if r.dnsErr != nil {
-		return ctx, nil, r.dnsErr
 	}
 	// lookupDNS already serves cache hits, so no redundant pre-check here.
 	// The caller ctx is returned unchanged: the exported signature is part of

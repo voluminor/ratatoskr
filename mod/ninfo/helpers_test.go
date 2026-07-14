@@ -80,8 +80,7 @@ func newMockSigil(name string, keys ...string) *mockSigilObj {
 	return &mockSigilObj{name: name, params: keys, data: data}
 }
 
-// cloneCountingSigilObj counts Clone calls so tests can assert that ImportSigils
-// relies solely on the single clone performed by sigil_core.Sigils.
+// cloneCountingSigilObj counts Clone calls across construction and parsing.
 type cloneCountingSigilObj struct {
 	*mockSigilObj
 	clones *atomic.Int64

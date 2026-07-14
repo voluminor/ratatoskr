@@ -28,8 +28,10 @@ write_config() {
   "socks_max_connections": 2,
   "tcp_echo_port": 80,
   "udp_echo_port": 18081,
+  "tcp_throughput_port": 19080,
+  "udp_throughput_port": 19081,
   "results_dir": "/data/results",
-  "core_stop_timeout": "10s"
+  "close_timeout": "10s"
 }
 EOF
 }

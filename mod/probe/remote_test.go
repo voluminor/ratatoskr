@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,57 @@ import (
 
 // // // // // // // // // //
 // parseRemotePeersResponse
+
+func newRemoteTestObj(handler yggcore.AddHandlerFunc) *Obj {
+	return &Obj{
+		logger:        noopLoggerObj{},
+		tasks:         common.NewTaskGroup(context.Background()),
+		remoteSem:     make(chan struct{}, DefaultMaxConcurrency),
+		remoteFlights: make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
+		remotePeers:   handler,
+	}
+}
+
+type observedContextObj struct {
+	context.Context
+	observed chan<- struct{}
+	once     sync.Once
+}
+
+type constructorSourceObj struct {
+	treeSourceObj
+}
+
+func (s *constructorSourceObj) SetAdmin(add yggcore.AddHandler) error {
+	return add.AddHandler("debug_remoteGetPeers", "", nil, func(json.RawMessage) (interface{}, error) {
+		return yggcore.DebugGetPeersResponse{}, nil
+	})
+}
+
+func (c *observedContextObj) Err() error {
+	err := c.Context.Err()
+	c.once.Do(func() { c.observed <- struct{}{} })
+	return err
+}
+
+func TestNewRequiresSource(t *testing.T) {
+	if _, err := New(ConfigObj{}); !errors.Is(err, ErrSourceRequired) {
+		t.Fatalf("New error = %v, want ErrSourceRequired", err)
+	}
+}
+
+func TestNewReturnsCloser(t *testing.T) {
+	obj, err := New(ConfigObj{Source: &constructorSourceObj{}})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err = obj.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if err = obj.Close(); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+}
 
 func TestParseRemotePeersResponse_valid(t *testing.T) {
 	keys := genKeyN(t, 2)
@@ -157,15 +209,12 @@ func TestCallRemotePeers_detachedCallSurvivesCallerCancel(t *testing.T) {
 	inner, _ := json.Marshal(struct {
 		Keys []string `json:"keys"`
 	}{Keys: []string{hex.EncodeToString(peer)}})
-	obj := &Obj{
-		logger: noopLoggerObj{},
-		remotePeers: func(json.RawMessage) (interface{}, error) {
-			close(started)
-			<-release
-			defer close(finished)
-			return yggcore.DebugGetPeersResponse{"node": json.RawMessage(inner)}, nil
-		},
-	}
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		close(started)
+		<-release
+		defer close(finished)
+		return yggcore.DebugGetPeersResponse{"node": json.RawMessage(inner)}, nil
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -195,14 +244,11 @@ func TestCallRemotePeers_closeWaitsForDetachedCall(t *testing.T) {
 	key := genKey(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	obj := &Obj{
-		logger: noopLoggerObj{},
-		remotePeers: func(json.RawMessage) (interface{}, error) {
-			close(started)
-			<-release
-			return yggcore.DebugGetPeersResponse{}, nil
-		},
-	}
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		close(started)
+		<-release
+		return yggcore.DebugGetPeersResponse{}, nil
+	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	errCh := make(chan error, 1)
@@ -224,7 +270,7 @@ func TestCallRemotePeers_closeWaitsForDetachedCall(t *testing.T) {
 
 	closed := make(chan struct{})
 	go func() {
-		obj.Close()
+		_ = obj.Close()
 		close(closed)
 	}()
 	select {
@@ -245,14 +291,11 @@ func TestCloseContextTimesOutWithoutAbandoningAcceptedCall(t *testing.T) {
 	key := genKey(t)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	obj := &Obj{
-		logger: noopLoggerObj{},
-		remotePeers: func(json.RawMessage) (interface{}, error) {
-			close(started)
-			<-release
-			return yggcore.DebugGetPeersResponse{}, nil
-		},
-	}
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		close(started)
+		<-release
+		return yggcore.DebugGetPeersResponse{}, nil
+	})
 
 	callerCtx, cancelCaller := context.WithCancel(context.Background())
 	callerDone := make(chan error, 1)
@@ -281,7 +324,7 @@ func TestCloseContextTimesOutWithoutAbandoningAcceptedCall(t *testing.T) {
 
 	closed := make(chan struct{})
 	go func() {
-		obj.Close()
+		_ = obj.Close()
 		close(closed)
 	}()
 	select {
@@ -300,11 +343,31 @@ func TestCloseContextTimesOutWithoutAbandoningAcceptedCall(t *testing.T) {
 
 func TestCloseContextReturnsSuccessWhenAlreadyClosed(t *testing.T) {
 	obj := &Obj{}
-	obj.Close()
+	_ = obj.Close()
+	if obj.tasks != nil {
+		t.Fatal("zero-value Close should not initialize lifecycle state")
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := obj.CloseContext(ctx); err != nil {
 		t.Fatalf("CloseContext after completed Close = %v, want nil", err)
+	}
+}
+
+func TestCallRemotePeersWithoutLifecycleReturnsClosed(t *testing.T) {
+	obj := &Obj{
+		logger:    noopLoggerObj{},
+		remoteSem: make(chan struct{}, 1),
+		remotePeers: func(json.RawMessage) (interface{}, error) {
+			return yggcore.DebugGetPeersResponse{}, nil
+		},
+	}
+	_, _, err := obj.callRemotePeers(context.Background(), genKey(t))
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("call error = %v, want ErrClosed", err)
+	}
+	if obj.tasks != nil || obj.remoteFlights != nil {
+		t.Fatal("call should not repair missing lifecycle state")
 	}
 }
 
@@ -315,7 +378,7 @@ func TestCallRemotePeers_sameKeySingleFlight(t *testing.T) {
 	var calls atomic.Int64
 	obj := &Obj{
 		logger:        noopLoggerObj{},
-		ctx:           context.Background(),
+		tasks:         common.NewTaskGroup(context.Background()),
 		remoteSem:     make(chan struct{}, 4),
 		remoteFlights: make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
 		remotePeers: func(json.RawMessage) (interface{}, error) {
@@ -333,22 +396,196 @@ func TestCallRemotePeers_sameKeySingleFlight(t *testing.T) {
 		firstDone <- err
 	}()
 	<-started
+	obj.remoteMu.RLock()
+	flight := obj.remoteFlights[toKeyArray(key)]
+	obj.remoteMu.RUnlock()
+	if flight == nil {
+		t.Fatal("in-flight call was not published")
+	}
+	secondBaseCtx, secondCancel := context.WithCancel(context.Background())
+	secondObserved := make(chan struct{}, 1)
 	secondDone := make(chan error, 1)
 	go func() {
-		_, _, err := obj.callRemotePeers(context.Background(), key)
+		secondCtx := &observedContextObj{Context: secondBaseCtx, observed: secondObserved}
+		_, _, err := obj.callRemotePeers(secondCtx, key)
 		secondDone <- err
 	}()
-	time.Sleep(20 * time.Millisecond)
+	<-secondObserved
+	secondCancel()
+	if err := <-secondDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("second caller error = %v, want context.Canceled", err)
+	}
 	cancel()
 	if err := <-firstDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("first caller error = %v", err)
 	}
 	close(release)
-	if err := <-secondDone; err != nil {
-		t.Fatalf("second caller: %v", err)
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if _, _, err := waitRemoteFlight(waitCtx, flight); err != nil {
+		t.Fatalf("shared flight: %v", err)
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("underlying calls = %d, want 1", got)
+	}
+	_ = obj.Close()
+}
+
+func TestCallRemotePeers_sameKeySingleFlightWhileSemaphoreSaturated(t *testing.T) {
+	key := genKey(t)
+	sem := make(chan struct{}, 1)
+	sem <- struct{}{}
+	var calls atomic.Int64
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		calls.Add(1)
+		return yggcore.DebugGetPeersResponse{}, nil
+	})
+	obj.remoteSem = sem
+
+	const callers = 32
+
+	baseCtx, cancel := context.WithCancel(context.Background())
+	observed := make(chan struct{}, callers)
+	results := make(chan error, callers)
+	start := make(chan struct{})
+	for range callers {
+		go func() {
+			<-start
+			ctx := &observedContextObj{Context: baseCtx, observed: observed}
+			_, _, err := obj.callRemotePeers(ctx, key)
+			results <- err
+		}()
+	}
+	close(start)
+	for range callers {
+		<-observed
+	}
+	cancel()
+	for range callers {
+		if err := <-results; !errors.Is(err, context.Canceled) {
+			t.Fatalf("caller error = %v, want context.Canceled", err)
+		}
+	}
+	obj.remoteMu.RLock()
+	flights := len(obj.remoteFlights)
+	flight := obj.remoteFlights[toKeyArray(key)]
+	obj.remoteMu.RUnlock()
+	if flights != 1 || flight == nil {
+		t.Fatalf("published flights = %d, want one flight for the requested key", flights)
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("underlying calls while saturated = %d, want 0", got)
+	}
+	<-sem
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if _, _, err := waitRemoteFlight(waitCtx, flight); err != nil {
+		t.Fatalf("accepted flight after capacity was released: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying calls = %d, want 1", got)
+	}
+	_ = obj.Close()
+}
+
+func TestCallRemotePeersCapsAcceptedUniqueFlights(t *testing.T) {
+	keys := genKeyN(t, 3)
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		t.Fatal("over-cap call reached remote handler")
+		return nil, nil
+	})
+	obj.remoteSem = make(chan struct{}, 2)
+	for _, key := range keys[:2] {
+		obj.remoteFlights[toKeyArray(key)] = &remoteFlightObj{done: make(chan struct{})}
+	}
+
+	if _, _, err := obj.callRemotePeers(context.Background(), keys[2]); !errors.Is(err, ErrProbeBusy) {
+		t.Fatalf("new key error = %v, want ErrProbeBusy", err)
+	}
+	if got := len(obj.remoteFlights); got != 2 {
+		t.Fatalf("accepted flights = %d, want 2", got)
+	}
+
+	existing := obj.remoteFlights[toKeyArray(keys[0])]
+	existing.signal()
+	if _, _, err := obj.callRemotePeers(context.Background(), keys[0]); err != nil {
+		t.Fatalf("existing key must remain joinable at capacity: %v", err)
+	}
+}
+
+func TestCallRemotePeers_canceledCallerDoesNotPoisonQueuedFlight(t *testing.T) {
+	key := genKey(t)
+	sem := make(chan struct{}, 1)
+	sem <- struct{}{}
+	var calls atomic.Int64
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		calls.Add(1)
+		return yggcore.DebugGetPeersResponse{}, nil
+	})
+	obj.remoteSem = sem
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if _, _, err := obj.callRemotePeers(ctx, key); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("call error = %v, want context.DeadlineExceeded", err)
+	}
+	obj.remoteMu.RLock()
+	flight := obj.remoteFlights[toKeyArray(key)]
+	obj.remoteMu.RUnlock()
+	if flight == nil {
+		t.Fatal("accepted flight was removed after its caller canceled")
+	}
+
+	<-sem
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
+	defer waitCancel()
+	if _, _, err := waitRemoteFlight(waitCtx, flight); err != nil {
+		t.Fatalf("accepted flight after capacity was released: %v", err)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying calls after caller canceled = %d, want 1", got)
+	}
+	_ = obj.Close()
+}
+
+func TestCallRemotePeers_timeoutReturnsButKeepsUnderlyingCallOwned(t *testing.T) {
+	key := genKey(t)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
+		close(started)
+		<-release
+		return yggcore.DebugGetPeersResponse{}, nil
+	})
+	obj.remoteTimeout = 10 * time.Millisecond
+	obj.remoteSem = make(chan struct{}, 1)
+	result := make(chan error, 1)
+	go func() {
+		_, _, err := obj.callRemotePeers(context.Background(), key)
+		result <- err
+	}()
+	<-started
+	if err := <-result; !errors.Is(err, ErrRemoteCallTimedOut) {
+		t.Fatalf("call error = %v, want ErrRemoteCallTimedOut", err)
+	}
+	if got := len(obj.remoteSem); got != 1 {
+		t.Fatalf("remote slots after timeout = %d, want 1", got)
+	}
+	closed := make(chan struct{})
+	go func() {
+		_ = obj.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+		t.Fatal("Close abandoned the timed-out upstream call")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after upstream returned")
 	}
 }
 

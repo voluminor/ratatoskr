@@ -1,6 +1,6 @@
 # mod/ninfo
 
-NodeInfo operations for Yggdrasil nodes: querying remote nodes, parsing responses, and managing parse sigils.
+NodeInfo operations for Yggdrasil nodes: querying remote nodes and parsing responses with built-in or custom sigils.
 
 The module captures the `getNodeInfo` handler from `yggcore.Core`, wraps it with address resolution, sigil extraction,
 and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handled by `sigil_core`.
@@ -17,9 +17,7 @@ and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handle
 - [Parsing](#parsing)
     - [Parse](#parse)
     - [ParsedObj](#parsedobj)
-- [Sigil management](#sigil-management)
-    - [AddSigil / GetSigil / DelSigil](#addsigil--getsigil--delsigil)
-    - [ImportSigils](#importsigils)
+- [Custom sigil parsers](#custom-sigil-parsers)
 - [Errors](#errors)
 
 ---
@@ -28,12 +26,10 @@ and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handle
 
 ```mermaid
 flowchart LR
-    subgraph Obj["Obj — query & sigil management"]
+  subgraph Obj["Obj — query & parse"]
         New["New(ConfigObj)"]
         AskAddr["AskAddr(ctx, addr)"]
         Ask["Ask(ctx, key)"]
-        AddSigil["AddSigil / GetSigil / DelSigil"]
-        ImportSigils["ImportSigils(src)"]
     end
 
     subgraph Free["Package-level"]
@@ -43,7 +39,7 @@ flowchart LR
     AskAddr -->|"resolve addr → key"| Ask
     Ask --> AskResult["AskResultObj\n{RTT, Node, Software}"]
   AskResult -.->|" .Node "| ParsedObj["ParsedObj\n{Version, Sigils, SigilNames, Extra}"]
-  ImportSigils -.->|" reads sigils from "| SC["sigil_core.Obj"]
+  ConfigSigils["ConfigObj.Sigils"] -.-> New
 
     Parse --> ParsedObj
 ```
@@ -55,15 +51,22 @@ flowchart LR
 ```go
 obj, err := ninfo.New(ninfo.ConfigObj{
     Source: coreNode,
+    Sigils: []sigils.Interface{customParser},
 })
 ```
 
-`New` captures the `getNodeInfo` handler from the configured `Source` via `SetAdmin`. Returns `ErrCoreRequired` when
+`New` captures the `getNodeInfo` handler from the configured `Source` via `SetAdmin`. Returns `ErrSourceRequired` when
 `Source` is nil, or `ErrNodeInfoNotCaptured` when the handler is absent. Query timing is tunable through `ConfigObj`
 (`MaxAskTime`, `AskRetryPause`, `LookupInterval`, `MaxLookupTime`); a zero field falls back to its internal default.
+`LookupInterval` must not be negative.
+Negative `MaxAskTime` or `MaxLookupTime` disables that flight deadline, and negative `AskRetryPause` disables retries.
+These limits belong to shared flights, not to an individual caller's context. `MaxAskTime` prevents further retries
+after its deadline, but the synchronous upstream `getNodeInfo` handler cannot be interrupted and may delay flight
+completion by one in-progress upstream call (currently about six seconds). `Sigils` contains immutable parser prototypes
+for custom remote metadata; `New` validates and clones them before accepting work.
 
-`Close()` cancels the shared module context. `Ask` runs in the caller's goroutine, so there is nothing to join: any
-in-flight or later `Ask` observes the cancellation and returns `ErrClosed`.
+`Close()` rejects new work, cancels the shared module context, and waits for accepted `Ask` and IPv6-resolution flights.
+The root `ratatoskr.Obj` applies its own aggregate close timeout; standalone `ninfo.Close` deliberately waits.
 
 ---
 
@@ -75,13 +78,14 @@ in-flight or later `Ask` observes the cancellation and returns `ErrClosed`.
 Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error)
 ```
 
-Sends a `getNodeInfo` request to the node identified by `key`. Returns parsed metadata with measured RTT. Uses sigils
-registered via `AddSigil`/`ImportSigils` for response parsing.
+Sends a `getNodeInfo` request to the node identified by `key`. Returns parsed metadata with measured RTT. Custom
+metadata is parsed with the prototypes supplied through `ConfigObj.Sigils`.
 
-The captured `getNodeInfo` handler is called synchronously in the caller's goroutine and retried after `AskRetryPause`
-until a response arrives, `ctx` expires, or the module closes. Each attempt is also bounded by Yggdrasil's own internal
-handler timeout, which often fires before routing converges on a freshly started node, so retrying is what lets the
-address eventually resolve. On `ctx` expiry `Ask` returns the last attempt's error; on `Close` it returns `ErrClosed`.
+Concurrent calls for the same public key share one flight. The handler runs in that flight, detached from individual
+caller cancellation, and retries after `AskRetryPause` until it succeeds, reaches `MaxAskTime`, or the module closes.
+An upstream call already in progress at `MaxAskTime` is allowed to finish because upstream exposes no cancellation hook.
+Canceling a caller only stops that caller's wait. At most 64 distinct key flights run at once; another distinct key
+returns `ErrAskBusy`, while callers joining an existing flight remain accepted.
 
 ### AskAddr
 
@@ -100,11 +104,12 @@ Resolves `addr` to a public key, then calls `Ask`.
 | `[ipv6]:port`    | `[200:abcd::1]:8080` | Network lookup via yggdrasil core |
 | Bare IPv6        | `200:abcd::1`        | Network lookup via yggdrasil core |
 
-IPv6 resolution works by deriving a partial key from the address and calling `SendLookup`, then polling peers, sessions,
-and paths until a match is found or the context expires. The poll starts at `LookupInterval` (default 100ms) and backs
-off exponentially up to 1s between lookups; when the caller sets no deadline the total wait is bounded by
-`MaxLookupTime`
-(default 30s) so a lookup for an offline node cannot run forever.
+IPv6 may be a node address or any host inside a routable Yggdrasil `/64`. Subnet hosts are canonicalized to their
+`/64`, so different host literals in the same subnet share one lookup flight. Resolution derives a partial key and
+calls `SendLookup`. Peers and sessions are scanned once; subsequent polls scan only paths, where lookup results arrive.
+There is no result cache.
+At most 64 distinct address flights run at once, and excess distinct addresses return `ErrResolveBusy`. Caller
+cancellation detaches only that waiter. The flight itself is bounded by `MaxLookupTime` (default 30s) or `Close`.
 
 ```mermaid
 flowchart LR
@@ -183,44 +188,36 @@ Extra      map[string]any
 
 ---
 
-## Sigil management
+## Custom sigil parsers
 
-`Obj` maintains a separate set of **parse sigils** used by `Ask`/`AskAddr` when parsing remote responses.
+`ConfigObj.Sigils` is the complete set of custom parser prototypes used by `Ask` and `AskAddr`. The set is immutable
+after `New`, so parsing does not need a registry lock and cannot race with runtime mutation.
 
-### AddSigil / GetSigil / DelSigil
+`New` rejects nil parsers, invalid or reserved names, duplicates, and parsers whose `Clone` method returns nil. It
+returns `ErrInvalidSigil` joined with the details and does not construct a partially configured object. Every accepted
+prototype is cloned once for ownership. `Parse` clones that stored prototype again before calling `Match`, so one
+response cannot mutate the parser used by another response.
 
-```go
-AddSigil(seq iter.Seq[sigils.Interface]) []error
-GetSigil(name string) sigils.Interface
-DelSigil(name string) error
-```
-
-`AddSigil` consumes a sequence of sigils, each self-naming via `GetName()`. It validates names via `sigils.ValidateName`
-and rejects nil, invalid, reserved (built-in), duplicate, and non-cloneable sigils; each rejection is skipped and
-reported as a per-sigil error. Accepted sigils are stored as clones. `GetSigil` returns a clone of the named sigil, or
-nil.
-
-### ImportSigils
-
-```go
-ImportSigils(src *sigil_core.Obj) []error
-```
-
-Appends the non-reserved sigils from a `sigil_core.Obj` into the parse set. Reserved built-in names are skipped
-silently; names already present are kept and reported as conflict errors, as are a nil source or a nil sigil.
+Built-in names are always handled by `target.Parse` and cannot be overridden. Valid metadata names without a known
+parser remain in `ParsedObj.SigilNames`, while their raw values remain in `Extra`. Custom implementations are trusted
+application code: their parsing semantics and internal safety are the responsibility of their author.
 
 ---
 
 ## Errors
 
-| Variable                 | Description                                                |
-|--------------------------|------------------------------------------------------------|
-| `ErrCoreRequired`        | `New`: core argument is nil                                |
-| `ErrNodeInfoNotCaptured` | `New`: getNodeInfo handler not found in core               |
-| `ErrInvalidKeyLength`    | `Ask`: public key has wrong length                         |
-| `ErrUnexpectedResponse`  | `callNodeInfo`: response is not `GetNodeInfoResponse`      |
-| `ErrEmptyResponse`       | `callNodeInfo`: response map is empty                      |
-| `ErrNodeInfoTooLarge`    | `parseAskResponse`: response exceeds the 16 KB cap         |
-| `ErrUnresolvableAddr`    | `resolveIPv6`: lookup timed out                            |
-| `ErrInvalidAddr`         | `resolveAddr`: address does not match any supported format |
-| `ErrClosed`              | `Ask` / `AskAddr`: the module has been closed              |
+| Variable                   | Description                                                |
+|----------------------------|------------------------------------------------------------|
+| `ErrSourceRequired`        | `New`: `ConfigObj.Source` is nil                           |
+| `ErrNodeInfoNotCaptured`   | `New`: getNodeInfo handler not found in core               |
+| `ErrInvalidKeyLength`      | `Ask`: public key has wrong length                         |
+| `ErrUnexpectedResponse`    | `callNodeInfo`: response is not `GetNodeInfoResponse`      |
+| `ErrEmptyResponse`         | `callNodeInfo`: response map is empty                      |
+| `ErrNodeInfoTooLarge`      | `parseAskResponse`: response exceeds the 16 KB cap         |
+| `ErrUnresolvableAddr`      | `resolveIPv6`: lookup timed out                            |
+| `ErrInvalidAddr`           | `resolveAddr`: address does not match any supported format |
+| `ErrClosed`                | `Ask` / `AskAddr`: the module has been closed              |
+| `ErrAskBusy`               | 64 distinct NodeInfo key flights are already active        |
+| `ErrResolveBusy`           | 64 distinct IPv6 resolution flights are already active     |
+| `ErrInvalidLookupInterval` | `New`: `LookupInterval` is negative                        |
+| `ErrInvalidSigil`          | `New`: a custom parser prototype is invalid                |

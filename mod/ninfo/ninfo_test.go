@@ -5,267 +5,87 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/voluminor/ratatoskr/mod/sigils"
 	"github.com/voluminor/ratatoskr/mod/sigils/inet"
-	"github.com/voluminor/ratatoskr/mod/sigils/sigil_core"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
 
 func newTestObj() *Obj {
-	ctx, cancel := context.WithCancel(context.Background())
 	obj := &Obj{
-		ctx:            ctx,
-		cancel:         cancel,
+		tasks:          common.NewTaskGroup(context.Background()),
 		maxAskTime:     defaultMaxAskTime,
 		askRetryPause:  defaultAskRetryPause,
 		lookupInterval: defaultLookupInterval,
 		maxLookupTime:  defaultMaxLookupTime,
-		sigils:         make(map[string]sigils.Interface),
 	}
 	return obj
 }
 
-// // // // // // // // // //
-// AddSigil / GetSigil / DelSigil
-
-func TestAddSigil_valid(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.AddSigil(newMockSigil("test-sigil", "key1")); err != nil {
-		t.Fatalf("unexpected errors: %v", err)
+func TestNewRejectsNegativeLookupInterval(t *testing.T) {
+	obj, err := New(ConfigObj{LookupInterval: -1})
+	if err == nil {
+		if obj != nil {
+			_ = obj.Close()
+		}
+		t.Fatal("expected lookup interval error")
 	}
-	if obj.GetSigil("test-sigil") == nil {
-		t.Fatal("sigil not found after add")
-	}
-}
-
-func TestAddSigil_duplicate(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("test-sigil"))
-	if err := obj.AddSigil(newMockSigil("test-sigil")); err == nil {
-		t.Fatal("expected duplicate error")
+	if !errors.Is(err, ErrInvalidLookupInterval) {
+		t.Fatalf("New error = %v, want ErrInvalidLookupInterval", err)
 	}
 }
 
-func TestAddSigil_invalidName(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.AddSigil(newMockSigil("AB")); err == nil {
-		t.Fatal("expected invalid-name error")
-	}
-	if obj.GetSigil("AB") != nil {
-		t.Fatal("invalid sigil should not be stored")
-	}
-}
-
-func TestAddSigil_reservedBuiltinName(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.AddSigil(newMockSigil(inet.Name(), inet.Name())); err == nil {
-		t.Fatal("expected reserved-name error")
-	}
-	if obj.GetSigil(inet.Name()) != nil {
-		t.Fatal("reserved built-in sigil should not be stored")
-	}
-}
-
-func TestAddSigil_multiple(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.AddSigil(
-		newMockSigil("aaa"),
-		newMockSigil("bbb"),
-		newMockSigil("ccc"),
-	); err != nil {
-		t.Fatalf("unexpected errors: %v", err)
-	}
-	if len(obj.sigils) != 3 {
-		t.Fatalf("expected 3 sigils, got %d", len(obj.sigils))
-	}
-}
-
-func TestAddSigil_nil(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.AddSigil(nil); err == nil {
-		t.Fatal("expected nil-sigil error")
-	}
-}
-
-// //
-
-func TestGetSigil_notFound(t *testing.T) {
-	obj := newTestObj()
-	if obj.GetSigil("nonexistent") != nil {
-		t.Fatal("expected nil for missing sigil")
-	}
-}
-
-// //
-
-func TestDelSigil_valid(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("test-sigil"))
-	if err := obj.DelSigil("test-sigil"); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if obj.GetSigil("test-sigil") != nil {
-		t.Fatal("sigil should be removed")
-	}
-}
-
-func TestDelSigil_notFound(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.DelSigil("missing"); err == nil {
-		t.Fatal("expected error for missing sigil")
+func TestNewRequiresSource(t *testing.T) {
+	if _, err := New(ConfigObj{}); !errors.Is(err, ErrSourceRequired) {
+		t.Fatalf("New error = %v, want ErrSourceRequired", err)
 	}
 }
 
 // // // // // // // // // //
-// ImportSigils
+// Immutable custom sigils
 
-func TestImportSigils_append(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("existing"))
-
-	src, _ := sigil_core.New(nil, newMockSigil("new-one"))
-	if err := obj.ImportSigils(src); err != nil {
-		t.Fatalf("unexpected errors: %v", err)
-	}
-	if obj.GetSigil("new-one") == nil {
-		t.Fatal("imported sigil not found")
-	}
-	if obj.GetSigil("existing") == nil {
-		t.Fatal("existing sigil should be preserved")
-	}
-}
-
-func TestImportSigils_doesNotCloneAlreadyClonedSourceSigils(t *testing.T) {
-	obj := newTestObj()
+func TestCloneConfiguredSigilsOwnsOneClone(t *testing.T) {
 	var clones atomic.Int64
-	srcSigil := &cloneCountingSigilObj{
-		mockSigilObj: newMockSigil("counted"),
-		clones:       &clones,
+	parser := &cloneCountingSigilObj{mockSigilObj: newMockSigil("custom", "key"), clones: &clones}
+	configured, err := cloneConfiguredSigils([]sigils.Interface{parser})
+	if err != nil {
+		t.Fatal(err)
 	}
-	src, errs := sigil_core.New(nil, srcSigil)
-	if len(errs) != 0 {
-		t.Fatalf("sigil_core.New errors: %v", errs)
-	}
-	clones.Store(0)
-
-	if err := obj.ImportSigils(src); err != nil {
-		t.Fatalf("ImportSigils errors: %v", err)
+	if len(configured) != 1 {
+		t.Fatalf("configured sigils = %d, want 1", len(configured))
 	}
 	if got := clones.Load(); got != 1 {
-		t.Fatalf("ImportSigils should rely on sigil_core.Sigils clone only, got %d Clone calls", got)
+		t.Fatalf("construction clones = %d, want 1", got)
+	}
+	parser.params[0] = "changed"
+	if got := configured[0].GetParams()[0]; got != "key" {
+		t.Fatalf("stored parser changed with caller-owned parser: %q", got)
 	}
 }
 
-func TestImportSigils_append_conflict(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("shared"))
-
-	src, _ := sigil_core.New(nil, newMockSigil("shared"))
-	if err := obj.ImportSigils(src); err == nil {
-		t.Fatal("expected conflict error")
+func TestCloneConfiguredSigilsRejectsInvalidSet(t *testing.T) {
+	tests := []struct {
+		name    string
+		parsers []sigils.Interface
+	}{
+		{name: "nil", parsers: []sigils.Interface{nil}},
+		{name: "invalid name", parsers: []sigils.Interface{newMockSigil("AB")}},
+		{name: "reserved", parsers: []sigils.Interface{newMockSigil(inet.Name())}},
+		{name: "duplicate", parsers: []sigils.Interface{newMockSigil("same"), newMockSigil("same")}},
 	}
-}
-
-func TestImportSigils_skipsReservedBuiltinNames(t *testing.T) {
-	obj := newTestObj()
-
-	src, _ := sigil_core.New(nil, newMockSigil(inet.Name(), inet.Name()))
-	if err := obj.ImportSigils(src); err != nil {
-		t.Fatalf("unexpected errors: %v", err)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := cloneConfiguredSigils(test.parsers); !errors.Is(err, ErrInvalidSigil) {
+				t.Fatalf("error = %v, want ErrInvalidSigil", err)
+			}
+		})
 	}
-	if obj.GetSigil(inet.Name()) != nil {
-		t.Fatal("reserved built-in sigil should not be imported")
-	}
-}
-
-func TestImportSigils_conflictKeepsExisting(t *testing.T) {
-	obj := newTestObj()
-	old := newMockSigil("shared", "old-key")
-	_ = obj.AddSigil(old)
-
-	replacement := newMockSigil("shared", "new-key")
-	src, _ := sigil_core.New(nil, replacement)
-	if err := obj.ImportSigils(src); err == nil {
-		t.Fatal("expected conflict error")
-	}
-	got := obj.GetSigil("shared")
-	if got == nil {
-		t.Fatal("conflict should keep existing sigil")
-	}
-	// Registration clones, so compare by data, not identity: the kept sigil must
-	// carry the original's key, not the rejected import's.
-	if _, ok := got.Params()["old-key"]; !ok {
-		t.Fatal("conflict should keep the existing (old-key) sigil")
-	}
-	if _, ok := got.Params()["new-key"]; ok {
-		t.Fatal("import must not overwrite the existing sigil")
-	}
-}
-
-func TestImportSigils_nilSource(t *testing.T) {
-	obj := newTestObj()
-	if err := obj.ImportSigils(nil); err == nil {
-		t.Fatal("expected nil-source error")
-	}
-}
-
-// // // // // // // // // //
-// sigilSlice
-
-func TestSigilSlice_empty(t *testing.T) {
-	obj := newTestObj()
-	if obj.sigilSlice() != nil {
-		t.Fatal("expected nil for empty sigils")
-	}
-}
-
-func TestSigilSlice_populated(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("aaa"), newMockSigil("bbb"))
-	sl := obj.sigilSlice()
-	if len(sl) != 2 {
-		t.Fatalf("expected 2, got %d", len(sl))
-	}
-}
-
-func TestSigils_concurrentAccess(t *testing.T) {
-	obj := newTestObj()
-	src, errs := sigil_core.New(nil,
-		newMockSigil("src-one"),
-		newMockSigil("src-two"),
-	)
-	if len(errs) != 0 {
-		t.Fatalf("sigil_core.New: %v", errs)
-	}
-
-	const iterations = 2000
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iterations; i++ {
-			_ = obj.GetSigil("src-one")
-			_ = obj.sigilSlice()
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		for i := 0; i < iterations; i++ {
-			name := fmt.Sprintf("user-%d", i)
-			_ = obj.AddSigil(newMockSigil(name))
-			_ = obj.DelSigil(name)
-			_ = obj.ImportSigils(src)
-		}
-	}()
-	wg.Wait()
 }
 
 // // // // // // // // // //
@@ -383,8 +203,14 @@ func TestZeroValueObjIsClosed(t *testing.T) {
 	if !obj.isClosed() {
 		t.Fatal("zero-value object should be treated as closed")
 	}
-	if obj.ctx != nil {
+	if obj.tasks != nil {
 		t.Fatal("closed check should not initialize context")
+	}
+	if err := obj.Close(); err != nil {
+		t.Fatalf("zero-value Close: %v", err)
+	}
+	if obj.tasks != nil {
+		t.Fatal("zero-value Close should not initialize lifecycle state")
 	}
 }
 

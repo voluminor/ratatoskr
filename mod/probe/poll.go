@@ -3,6 +3,7 @@ package probe
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -33,24 +34,26 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 	result := o.collect(key)
 
 	if result != nil && result.TreePath != nil && result.Hops != nil {
-		o.enrichPath(ctx, result.TreePath)
-		return result, nil
+		return result, o.enrichPath(ctx, result.TreePath)
 	}
 
 	o.Lookup(key)
 
 	if result != nil {
+		var resultErr error
 		if result.TreePath != nil && result.Hops == nil {
-			result, _ = o.pollFull(ctx, key, result)
+			result, resultErr = o.pollFull(ctx, key, result)
 		}
-		o.enrichPath(ctx, result.TreePath)
-		return result, nil
+		if result != nil && result.TreePath != nil {
+			resultErr = errors.Join(resultErr, o.enrichPath(ctx, result.TreePath))
+		}
+		return result, resultErr
 	}
 
 	o.logger.Infof("[probe] lookup started for %x", key[:8])
 	result, err := o.pollFull(ctx, key, nil)
 	if result != nil && result.TreePath != nil {
-		o.enrichPath(ctx, result.TreePath)
+		err = errors.Join(err, o.enrichPath(ctx, result.TreePath))
 	}
 	return result, err
 }
@@ -113,9 +116,9 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey, initial *Trac
 
 // enrichPath fills RTT on path nodes (skips root).
 // Direct peers use core's latency; remote nodes use callRemotePeers round-trip.
-func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
+func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) error {
 	if len(path) <= 1 {
-		return
+		return nil
 	}
 
 	peerLatency := make(map[[ed25519.PublicKeySize]byte]time.Duration)
@@ -129,6 +132,7 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 	type rttResultObj struct {
 		idx int
 		rtt time.Duration
+		err error
 	}
 
 	// Direct peers get RTT from core; the rest are queried remotely. Collect the
@@ -145,7 +149,7 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 		}
 	}
 	if len(remote) == 0 {
-		return
+		return nil
 	}
 
 	ch := make(chan rttResultObj, len(remote))
@@ -162,19 +166,32 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) {
 	for range workerCount {
 		go func() {
 			for idx := range jobs {
-				_, rtt, _ := o.callRemotePeers(ctx, targets[idx].Key)
-				ch <- rttResultObj{idx: idx, rtt: rtt}
+				_, rtt, err := o.callRemotePeers(ctx, targets[idx].Key)
+				ch <- rttResultObj{idx: idx, rtt: rtt, err: err}
 			}
 		}()
 	}
+	var busy, closed bool
 	for range remote {
 		select {
 		case r := <-ch:
 			targets[r.idx].RTT = r.rtt
+			busy = busy || errors.Is(r.err, ErrProbeBusy)
+			closed = closed || errors.Is(r.err, ErrClosed)
 		case <-ctx.Done():
-			return
+			return ctx.Err()
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if closed {
+		return ErrClosed
+	}
+	if busy {
+		return ErrProbeBusy
+	}
+	return nil
 }
 
 // collect attempts to gather data from both tree and pathfinder sources.

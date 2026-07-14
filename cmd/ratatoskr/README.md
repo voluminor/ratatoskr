@@ -3,18 +3,26 @@
 ## Build
 
 ```bash
+go generate .
 go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ```
 
-## Info & help
+Generated runtime settings live under the ignored `target/` directory, so generation is required after a fresh clone.
+
+## Runtime configuration and help
+
+Without a `-go.*` command, the CLI loads defaults, optionally merges a YAML/JSON/HJSON file and flag overrides,
+validates the result, and prints the effective JSON configuration:
 
 ```bash
-./ratatoskr -i
+./ratatoskr -config ./ratatoskr-config.yml -yggdrasil.if.mtu 65535
 ```
 
 ```bash
 ./ratatoskr -h
 ```
+
+Command flags (`-go.*`) and runtime configuration flags are separate modes and cannot be mixed.
 
 ## Key utilities
 
@@ -69,6 +77,9 @@ go build -ldflags="-s -w" -trimpath -o ratatoskr .
 ```bash
 ./ratatoskr -go.conf.export.from /etc/ratatoskr/ratatoskr-config.yml -go.conf.export.to /etc/yggdrasil
 ```
+
+Generated and exported files use mode `0600`. The selected `yml`, `json`, or `conf` format controls both the extension
+and the actual encoding.
 
 ## Ask
 

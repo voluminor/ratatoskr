@@ -32,9 +32,69 @@ type stubbornReadConnObj struct {
 	startOnce   sync.Once
 }
 
+type watcherJoinConnObj struct {
+	readRelease     chan struct{}
+	deadlineStarted chan struct{}
+	deadlineRelease chan struct{}
+	startOnce       sync.Once
+}
+
+type failingPacketConnObj struct {
+	writes chan struct{}
+}
+
+func startUDPLoop(ctx context.Context, cfg UDPLoopConfigObj) <-chan error {
+	done := make(chan error, 1)
+	go func() { done <- RunUDPLoop(ctx, cfg) }()
+	return done
+}
+
+func (c *failingPacketConnObj) ReadFrom([]byte) (int, net.Addr, error) {
+	return 0, nil, net.ErrClosed
+}
+
+func (c *failingPacketConnObj) WriteTo([]byte, net.Addr) (int, error) {
+	select {
+	case c.writes <- struct{}{}:
+	default:
+	}
+	return 0, errors.New("write failed")
+}
+
+func (c *failingPacketConnObj) Close() error                     { return nil }
+func (c *failingPacketConnObj) LocalAddr() net.Addr              { return &net.UDPAddr{} }
+func (c *failingPacketConnObj) SetDeadline(time.Time) error      { return nil }
+func (c *failingPacketConnObj) SetReadDeadline(time.Time) error  { return nil }
+func (c *failingPacketConnObj) SetWriteDeadline(time.Time) error { return nil }
+
 func newStubbornReadConnObj() *stubbornReadConnObj {
 	return &stubbornReadConnObj{readStarted: make(chan struct{}), release: make(chan struct{})}
 }
+
+func newWatcherJoinConnObj() *watcherJoinConnObj {
+	return &watcherJoinConnObj{
+		readRelease:     make(chan struct{}),
+		deadlineStarted: make(chan struct{}),
+		deadlineRelease: make(chan struct{}),
+	}
+}
+
+func (c *watcherJoinConnObj) Read([]byte) (int, error) {
+	<-c.readRelease
+	return 0, net.ErrClosed
+}
+
+func (c *watcherJoinConnObj) Write(p []byte) (int, error) { return len(p), nil }
+func (c *watcherJoinConnObj) Close() error                { return nil }
+func (c *watcherJoinConnObj) LocalAddr() net.Addr         { return &net.UDPAddr{} }
+func (c *watcherJoinConnObj) RemoteAddr() net.Addr        { return &net.UDPAddr{} }
+func (c *watcherJoinConnObj) SetDeadline(time.Time) error { return nil }
+func (c *watcherJoinConnObj) SetReadDeadline(time.Time) error {
+	c.startOnce.Do(func() { close(c.deadlineStarted) })
+	<-c.deadlineRelease
+	return nil
+}
+func (c *watcherJoinConnObj) SetWriteDeadline(time.Time) error { return nil }
 
 func (c *stubbornReadConnObj) Read([]byte) (int, error) {
 	c.startOnce.Do(func() { close(c.readStarted) })
@@ -124,14 +184,57 @@ func (c *blockingUDPConnObj) SetWriteDeadline(time.Time) error { return nil }
 // //
 
 func TestUDPQueueSize_capsByBytes(t *testing.T) {
-	if got := udpQueueSize(512); got != udpSessionQueueMaxPackets {
+	if got := boundedUDPQueueSize(512, udpSessionQueueBytes, udpSessionQueueMaxPackets); got != udpSessionQueueMaxPackets {
 		t.Fatalf("small packet queue = %d, want %d", got, udpSessionQueueMaxPackets)
 	}
-	if got := udpQueueSize(8192); got != 8 {
+	if got := boundedUDPQueueSize(8192, udpSessionQueueBytes, udpSessionQueueMaxPackets); got != 8 {
 		t.Fatalf("8 KiB packet queue = %d, want 8", got)
 	}
-	if got := udpQueueSize(maxUDPDatagramSize); got != 1 {
+	if got := boundedUDPQueueSize(maxUDPDatagramSize, udpSessionQueueBytes, udpSessionQueueMaxPackets); got != 1 {
 		t.Fatalf("max datagram queue = %d, want 1", got)
+	}
+}
+
+func TestEnqueueUDPPacketCountsOnlyQueueFull(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	session := &udpSessionObj{
+		ctx:    ctx,
+		cancel: cancel,
+		out:    make(chan *udpPacketObj, 1),
+	}
+	pool := newUDPBufferPool(512)
+	var drops atomic.Uint64
+
+	if got := enqueueUDPPacket(session, pool, []byte("first"), &drops); got != udpEnqueueQueued {
+		t.Fatal("first packet was not enqueued")
+	}
+	if got := enqueueUDPPacket(session, pool, []byte("full"), &drops); got != udpEnqueueFull {
+		t.Fatal("packet unexpectedly fit in full queue")
+	}
+	if got := drops.Load(); got != 1 {
+		t.Fatalf("queue-full drops = %d, want 1", got)
+	}
+
+	cancel()
+	if got := enqueueUDPPacket(session, pool, []byte("closed"), &drops); got != udpEnqueueCanceled {
+		t.Fatal("packet unexpectedly enqueued after cancellation")
+	}
+	if got := drops.Load(); got != 1 {
+		t.Fatalf("cancellation changed overload drops to %d", got)
+	}
+
+	drainUDPPackets(session.out, pool)
+}
+
+func TestRecordUDPChurnDropExcludesGlobalShutdown(t *testing.T) {
+	var drops atomic.Uint64
+	if !recordUDPChurnDrop(context.Background(), &drops) || drops.Load() != 1 {
+		t.Fatalf("live churn drops = %d, want 1", drops.Load())
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if recordUDPChurnDrop(ctx, &drops) || drops.Load() != 1 {
+		t.Fatalf("shutdown changed churn drops to %d", drops.Load())
 	}
 }
 
@@ -223,13 +326,13 @@ func writeUDPUntilSignal(t *testing.T, conn *net.UDPConn, signal <-chan struct{}
 
 // //
 
-func TestManagerDefaultsAndConfig(t *testing.T) {
-	mgr := newTestManagerObj(&mockNodeObj{}, 5*time.Second, ConfigObj{})
-	if mgr.maxTCPConnections != DefaultMaxTCPConnections {
-		t.Fatalf("default TCP limit = %d, want %d", mgr.maxTCPConnections, DefaultMaxTCPConnections)
+func TestDefaultsAndConfig(t *testing.T) {
+	mgr := newBareTestObj(&mockNodeObj{}, 5*time.Second, ConfigObj{})
+	if mgr.tcpLimit.max != 0 {
+		t.Fatalf("default TCP limit = %d, want unlimited", mgr.tcpLimit.max)
 	}
-	if mgr.maxUDPSessions != DefaultMaxUDPSessions {
-		t.Fatalf("default UDP limit = %d, want %d", mgr.maxUDPSessions, DefaultMaxUDPSessions)
+	if mgr.udpLimit.max != 0 {
+		t.Fatalf("default UDP limit = %d, want unlimited", mgr.udpLimit.max)
 	}
 	// dialTimeout is stored raw; the default is applied at dial time by dialTimeoutContext.
 	dialCtx, cancelDial := dialTimeoutContext(context.Background(), mgr.dialTimeout)
@@ -241,35 +344,52 @@ func TestManagerDefaultsAndConfig(t *testing.T) {
 	if mgr.tcpIdleTimeout != DefaultTCPIdleTimeout {
 		t.Fatalf("default TCP idle timeout = %s, want %s", mgr.tcpIdleTimeout, DefaultTCPIdleTimeout)
 	}
-	mgr = newTestManagerObj(&mockNodeObj{mtu: 1280}, 5*time.Second, ConfigObj{})
+	mgr = newBareTestObj(&mockNodeObj{mtu: 1280}, 5*time.Second, ConfigObj{})
 	if got := mgr.effectiveUDPMaxPacketSize(); got != 1280 {
 		t.Fatalf("default UDP max packet size = %d, want node MTU", got)
 	}
 
-	// Zero config values resolve to defaults through the effective* helpers.
-	zero := newTestManagerObj(&mockNodeObj{}, 5*time.Second, ConfigObj{})
-	if zero.maxTCPConnections != DefaultMaxTCPConnections {
-		t.Fatalf("TCP default value = %d, want %d", zero.maxTCPConnections, DefaultMaxTCPConnections)
-	}
-	if zero.maxUDPSessions != DefaultMaxUDPSessions {
-		t.Fatalf("UDP default value = %d, want %d", zero.maxUDPSessions, DefaultMaxUDPSessions)
-	}
-
-	// Negative config values disable the respective limits.
-	unlimited := newTestManagerObj(&mockNodeObj{}, 5*time.Second, ConfigObj{
+	if _, err := New(ConfigObj{
+		Node:              &mockNodeObj{},
 		MaxTCPConnections: -1,
 		MaxUDPSessions:    -1,
-	})
-	if unlimited.maxTCPConnections != -1 {
-		t.Fatalf("TCP unlimited value = %d, want -1", unlimited.maxTCPConnections)
-	}
-	if unlimited.maxUDPSessions != -1 {
-		t.Fatalf("UDP unlimited value = %d, want -1", unlimited.maxUDPSessions)
+	}); !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("negative limits error = %v, want ErrInvalidLimit", err)
 	}
 
-	mgr = newTestManagerObj(&mockNodeObj{}, 5*time.Second, ConfigObj{UDPMaxPacketSize: 512})
+	mgr = newBareTestObj(&mockNodeObj{}, 5*time.Second, ConfigObj{UDPMaxPacketSize: 512})
 	if mgr.udpMaxPacketSize != 512 {
 		t.Fatalf("configured UDP max packet size = %d, want 512", mgr.udpMaxPacketSize)
+	}
+}
+
+func TestNewOwnsDeepCopiesOfMappings(t *testing.T) {
+	tcpListen := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Zone: "tcp-zone"}
+	tcpMapped := &net.TCPAddr{IP: net.ParseIP("::1"), Port: 1002}
+	udpListen := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Zone: "udp-zone"}
+	udpMapped := &net.UDPAddr{IP: net.ParseIP("::1"), Port: 2002}
+	mgr, err := New(ConfigObj{
+		Logger:     noopLogObj{},
+		Node:       &mockNodeObj{},
+		UDPTimeout: time.Second,
+		LocalTCP:   []TCPMappingObj{{Listen: tcpListen, Mapped: tcpMapped}},
+		RemoteUDP:  []UDPMappingObj{{Listen: udpListen, Mapped: udpMapped}},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() { _ = mgr.Close() }()
+
+	tcpListen.Port = 9
+	tcpListen.IP[0] ^= 0xff
+	tcpMapped.Port = 9
+	udpListen.Zone = "changed"
+	udpMapped.IP[0] ^= 0xff
+	if got := mgr.localTCPs[0]; got.Listen.Port != 0 || got.Mapped.Port != 1002 || got.Listen.IP.Equal(tcpListen.IP) {
+		t.Fatalf("TCP mapping changed with caller-owned addresses: %+v", got)
+	}
+	if got := mgr.remoteUDPs[0]; got.Listen.Zone != "udp-zone" || got.Mapped.IP.Equal(udpMapped.IP) {
+		t.Fatalf("UDP mapping changed with caller-owned addresses: %+v", got)
 	}
 }
 
@@ -294,42 +414,42 @@ func TestUDPMaxPacketSizeHelpers(t *testing.T) {
 	}
 }
 
-func TestManagerNilLoggerNormalized(t *testing.T) {
-	mgr := New(ConfigObj{Node: &mockNodeObj{}, UDPTimeout: time.Second})
+func TestNewNilLoggerNormalized(t *testing.T) {
+	mgr, err := New(ConfigObj{Node: &mockNodeObj{}, UDPTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if mgr.log == nil {
 		t.Fatal("expected nil logger to be normalized")
 	}
-	if err := mgr.Start(context.Background()); err != nil {
-		t.Fatalf("Start with nil logger: %v", err)
-	}
+	defer func() { _ = mgr.Close() }()
 }
 
-func TestStart_invalidSessionTimeout(t *testing.T) {
-	mgr := newTestManagerObj(&mockNodeObj{}, 0, ConfigObj{})
-	if err := mgr.AddLocalUDP(UDPMappingObj{
-		Listen: &net.UDPAddr{IP: net.ParseIP("127.0.0.1")},
-		Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	err := mgr.Start(context.Background())
+func TestNew_invalidSessionTimeout(t *testing.T) {
+	_, err := New(ConfigObj{
+		Node: &mockNodeObj{},
+		LocalUDP: []UDPMappingObj{{
+			Listen: &net.UDPAddr{IP: net.ParseIP("127.0.0.1")},
+			Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+	})
 	if !errors.Is(err, ErrInvalidSessionTimeout) {
-		t.Fatalf("Start = %v, want ErrInvalidSessionTimeout", err)
+		t.Fatalf("New = %v, want ErrInvalidSessionTimeout", err)
 	}
 }
 
-func TestStart_invalidUDPMapping(t *testing.T) {
-	mgr := newTestManagerObj(&mockNodeObj{}, time.Second, ConfigObj{})
-	if err := mgr.AddLocalUDP(UDPMappingObj{Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}}); err != nil {
-		t.Fatal(err)
-	}
-	err := mgr.Start(context.Background())
+func TestNew_invalidUDPMapping(t *testing.T) {
+	_, err := New(ConfigObj{
+		Node:       &mockNodeObj{},
+		UDPTimeout: time.Second,
+		LocalUDP:   []UDPMappingObj{{Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1}}},
+	})
 	if !errors.Is(err, ErrInvalidMapping) {
-		t.Fatalf("Start = %v, want ErrInvalidMapping", err)
+		t.Fatalf("New = %v, want ErrInvalidMapping", err)
 	}
 }
 
-func TestStartLocalUDP_bindErrorReturned(t *testing.T) {
+func TestNewLocalUDP_bindErrorReturned(t *testing.T) {
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
@@ -338,21 +458,55 @@ func TestStartLocalUDP_bindErrorReturned(t *testing.T) {
 
 	addr := conn.LocalAddr().(*net.UDPAddr)
 	node := &mockNodeObj{addr: net.ParseIP("::1")}
-	mgr := newTestManagerObj(node, 5*time.Second, ConfigObj{})
-	if err := mgr.AddLocalUDP(UDPMappingObj{
-		Listen: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: addr.Port},
-		Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
-	}); err != nil {
+	_, err = New(ConfigObj{
+		Logger:     noopLogObj{},
+		Node:       node,
+		UDPTimeout: 5 * time.Second,
+		LocalUDP: []UDPMappingObj{{
+			Listen: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: addr.Port},
+			Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+	})
+	if err == nil {
+		t.Fatal("New returned nil for occupied UDP listen address")
+	}
+}
+
+func TestNewLocalUDP_bindFailureCanBeRetriedWithNewObject(t *testing.T) {
+	occupied, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
 		t.Fatal(err)
 	}
-
-	if err = mgr.Start(context.Background()); err == nil {
-		t.Fatal("Start returned nil for occupied UDP listen address")
+	addr := occupied.LocalAddr().(*net.UDPAddr)
+	node := &mockNodeObj{addr: net.ParseIP("::1")}
+	cfg := ConfigObj{
+		Logger:     noopLogObj{},
+		Node:       node,
+		UDPTimeout: 5 * time.Second,
+		LocalUDP: []UDPMappingObj{{
+			Listen: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: addr.Port},
+			Mapped: &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1},
+		}},
+	}
+	if _, err = New(cfg); err == nil {
+		t.Fatal("first New succeeded on an occupied address")
+	}
+	if err = occupied.Close(); err != nil {
+		t.Fatal(err)
+	}
+	mgr, err := New(cfg)
+	if err != nil {
+		t.Fatalf("retry New: %v", err)
+	}
+	if err = mgr.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
 	}
 }
 
 func TestRunUDPLoop_nilLoggerInvalidTimeoutDoesNotPanic(t *testing.T) {
-	RunUDPLoop(context.Background(), UDPLoopConfigObj{})
+	if err := RunUDPLoop(context.Background(), UDPLoopConfigObj{}); !errors.Is(err, ErrInvalidSessionTimeout) {
+		t.Fatalf("RunUDPLoop error = %v, want ErrInvalidSessionTimeout", err)
+	}
 }
 
 // //
@@ -523,12 +677,14 @@ func TestRunUDPLoop_echoRoundtrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
-		Logger:     noopLogObj{},
-		ListenConn: listenConn,
-		Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
-		Timeout:    2 * time.Second,
-	})
+	go func() {
+		_ = RunUDPLoop(ctx, UDPLoopConfigObj{
+			Logger:     noopLogObj{},
+			ListenConn: listenConn,
+			Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
+			Timeout:    2 * time.Second,
+		})
+	}()
 
 	// Simulate a client: dial listenConn directly
 	clientConn, err := net.DialUDP("udp4", nil, listenConn.LocalAddr().(*net.UDPAddr))
@@ -544,7 +700,7 @@ func TestRunUDPLoop_echoRoundtrip(t *testing.T) {
 	}
 }
 
-func TestManagerUDPStandaloneAppliesSafeDefaults(t *testing.T) {
+func TestUDPLoopAllowsUnlimitedSessionsByDefault(t *testing.T) {
 	echoAddr := echoUDPServer(t)
 
 	listenConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -557,9 +713,9 @@ func TestManagerUDPStandaloneAppliesSafeDefaults(t *testing.T) {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		// Zero MaxSessions must resolve to a safe default on the standalone
-		// entrypoint, not "unlimited"; the loop must still relay traffic.
-		RunUDPLoop(ctx, UDPLoopConfigObj{
+		// Zero MaxSessions is intentionally unlimited; bounded queues still cap
+		// memory retained by each active session.
+		_ = RunUDPLoop(ctx, UDPLoopConfigObj{
 			Logger:     noopLogObj{},
 			ListenConn: listenConn,
 			Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
@@ -585,6 +741,114 @@ func TestManagerUDPStandaloneAppliesSafeDefaults(t *testing.T) {
 	}
 }
 
+func TestUDPSessionLimitIsSharedAcrossLoops(t *testing.T) {
+	firstListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondListener, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		_ = firstListener.Close()
+		t.Fatal(err)
+	}
+	limit := &admissionLimitObj{max: 1}
+	dials := make(chan int, 2)
+	ctx, cancel := context.WithCancel(context.Background())
+	var wait sync.WaitGroup
+	start := func(id int, listener net.PacketConn) {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			var workers sync.WaitGroup
+			_ = runUDPLoopWithWait(ctx, UDPLoopConfigObj{
+				Logger:     noopLogObj{},
+				ListenConn: listener,
+				Dial: func(context.Context, net.Addr) (net.Conn, error) {
+					dials <- id
+					return newRecordingConnObj(), nil
+				},
+				Timeout: time.Second,
+			}, &workers, limit, nil)
+			workers.Wait()
+		}()
+	}
+	start(1, firstListener)
+	start(2, secondListener)
+	t.Cleanup(func() {
+		cancel()
+		wait.Wait()
+	})
+
+	firstClient, err := net.DialUDP("udp4", nil, firstListener.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = firstClient.Close() }()
+	if _, err := firstClient.Write([]byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-dials:
+		if id != 1 {
+			t.Fatalf("first dial came from loop %d", id)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first UDP session did not dial")
+	}
+
+	secondClient, err := net.DialUDP("udp4", nil, secondListener.LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = secondClient.Close() }()
+	if _, err := secondClient.Write([]byte("second")); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-dials:
+		t.Fatalf("shared limit allowed a dial from loop %d", id)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if got := limit.active.Load(); got != 1 {
+		t.Fatalf("active sessions = %d, want 1", got)
+	}
+}
+
+func TestUDPReverseWriterCountsWriteFailures(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	destination := &failingPacketConnObj{writes: make(chan struct{}, 1)}
+	pool := newUDPBufferPool(512)
+	var drops atomic.Uint64
+	writer := newUDPReverseWriter(ctx, destination, time.Second, pool, 512, &drops)
+	done := make(chan struct{})
+	go func() {
+		writer.run()
+		close(done)
+	}()
+	if !writer.enqueue(&net.UDPAddr{}, []byte("packet")) {
+		t.Fatal("enqueue failed")
+	}
+	select {
+	case <-destination.writes:
+	case <-time.After(time.Second):
+		t.Fatal("reverse writer did not attempt the write")
+	}
+	deadline := time.Now().Add(time.Second)
+	for drops.Load() != 1 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := drops.Load(); got != 1 {
+		t.Fatalf("write-failure drops = %d, want 1", got)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reverse writer did not stop")
+	}
+}
+
 func TestRunUDPLoop_forwardsFirstPacket(t *testing.T) {
 	echoAddr := echoUDPServer(t)
 
@@ -597,7 +861,7 @@ func TestRunUDPLoop_forwardsFirstPacket(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
@@ -639,7 +903,7 @@ func TestRunUDPLoop_defaultBufferStillForwards(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
@@ -669,7 +933,7 @@ func TestRunUDPLoop_dropsOversizedPacketBeforeDial(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	dialed := make(chan struct{}, 1)
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial: func(context.Context, net.Addr) (net.Conn, error) {
@@ -706,7 +970,7 @@ func TestRunUDPLoop_dropsOversizedPacketForExistingSession(t *testing.T) {
 	upstream := newRecordingConnObj()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:        noopLogObj{},
 		ListenConn:    listenConn,
 		Dial:          func(context.Context, net.Addr) (net.Conn, error) { return upstream, nil },
@@ -748,7 +1012,7 @@ func TestRunUDPLoop_asyncDialDoesNotBlockOtherSources(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial: func(ctx context.Context, _ net.Addr) (net.Conn, error) {
@@ -806,7 +1070,7 @@ func TestRunUDPLoop_sessionTimeoutCancelsInFlightDial(t *testing.T) {
 	dialDone := make(chan error, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial: func(ctx context.Context, _ net.Addr) (net.Conn, error) {
@@ -850,20 +1114,41 @@ func TestRunUDPLoop_invalidTimeoutReturns(t *testing.T) {
 	}
 	defer func() { _ = listenConn.Close() }()
 
-	done := make(chan struct{})
+	done := make(chan error, 1)
 	go func() {
-		RunUDPLoop(context.Background(), UDPLoopConfigObj{
+		done <- RunUDPLoop(context.Background(), UDPLoopConfigObj{
 			Logger:     noopLogObj{},
 			ListenConn: listenConn,
 			Dial:       func(context.Context, net.Addr) (net.Conn, error) { return nil, nil },
 		})
-		close(done)
 	}()
 
 	select {
-	case <-done:
+	case err = <-done:
+		if !errors.Is(err, ErrInvalidSessionTimeout) {
+			t.Fatalf("RunUDPLoop error = %v, want ErrInvalidSessionTimeout", err)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("RunUDPLoop did not return on invalid timeout")
+	}
+}
+
+func TestRunUDPLoop_invalidLimitReturnsError(t *testing.T) {
+	listenConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = listenConn.Close() }()
+
+	err = RunUDPLoop(context.Background(), UDPLoopConfigObj{
+		Logger:      noopLogObj{},
+		ListenConn:  listenConn,
+		Dial:        func(context.Context, net.Addr) (net.Conn, error) { return nil, nil },
+		Timeout:     time.Second,
+		MaxSessions: -1,
+	})
+	if !errors.Is(err, ErrInvalidLimit) {
+		t.Fatalf("RunUDPLoop error = %v, want ErrInvalidLimit", err)
 	}
 }
 
@@ -881,7 +1166,7 @@ func TestRunUDPLoop_sessionTimeout(t *testing.T) {
 
 	// Very short timeout to trigger session cleanup
 	const sessionTimeout = 100 * time.Millisecond
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
@@ -912,7 +1197,7 @@ func TestRunUDPLoop_maxSessions(t *testing.T) {
 	defer cancel()
 	dials := make(chan *recordingConnObj, 2)
 
-	go RunUDPLoop(ctx, UDPLoopConfigObj{
+	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
 		ListenConn: listenConn,
 		Dial: func(context.Context, net.Addr) (net.Conn, error) {
@@ -975,7 +1260,7 @@ func TestRunUDPLoop_cancelStops(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		RunUDPLoop(ctx, UDPLoopConfigObj{
+		_ = RunUDPLoop(ctx, UDPLoopConfigObj{
 			Logger:     noopLogObj{},
 			ListenConn: listenConn,
 			Dial:       func(context.Context, net.Addr) (net.Conn, error) { return net.DialUDP("udp4", nil, echoAddr) },
@@ -1005,13 +1290,13 @@ func TestRunUDPLoopWithWait_waitsForSessionWorkers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	loopDone := make(chan struct{})
 	go func() {
-		runUDPLoopWithWait(ctx, UDPLoopConfigObj{
+		_ = runUDPLoopWithWait(ctx, UDPLoopConfigObj{
 			Logger:      noopLogObj{},
 			ListenConn:  listenConn,
 			Dial:        func(context.Context, net.Addr) (net.Conn, error) { return upstream, nil },
 			Timeout:     5 * time.Second,
 			MaxSessions: 10,
-		}, &wg)
+		}, &wg, nil, nil)
 		close(loopDone)
 	}()
 
@@ -1047,6 +1332,36 @@ func TestRunUDPLoopWithWait_waitsForSessionWorkers(t *testing.T) {
 	}
 }
 
+func TestReverseReadUDPWaitsForCancellationWatcher(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	conn := newWatcherJoinConnObj()
+	done := make(chan struct{})
+	go func() {
+		reverseReadUDP(ctx, conn, 512, func([]byte) bool { return true })
+		close(done)
+	}()
+
+	select {
+	case <-conn.deadlineStarted:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation watcher did not enter SetReadDeadline")
+	}
+	close(conn.readRelease)
+	select {
+	case <-done:
+		close(conn.deadlineRelease)
+		t.Fatal("reverseReadUDP returned before its cancellation watcher")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(conn.deadlineRelease)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("reverseReadUDP did not return after watcher completion")
+	}
+}
+
 func TestUDPSessionCountHeldUntilReverseReaderExits(t *testing.T) {
 	dst, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
@@ -1057,20 +1372,20 @@ func TestUDPSessionCountHeldUntilReverseReaderExits(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	upstream := newStubbornReadConnObj()
-	var count atomic.Int64
-	count.Store(1)
+	limit := &admissionLimitObj{max: 1}
+	limit.active.Store(1)
 	sessionCtx, sessionCancel := context.WithCancel(ctx)
 	session := &udpSessionObj{
-		ctx:     sessionCtx,
-		cancel:  sessionCancel,
-		out:     make(chan *udpPacketObj, 1),
-		counter: &count,
+		ctx:    sessionCtx,
+		cancel: sessionCancel,
+		out:    make(chan *udpPacketObj, 1),
+		limit:  limit,
 	}
 	key := netip.MustParseAddrPort("127.0.0.1:1234")
 	sessions := newUDPSessionMap()
 	sessions.store(key, session)
 	pool := newUDPBufferPool(512)
-	reverseWriter := newUDPReverseWriter(ctx, dst, time.Second, pool, 512)
+	reverseWriter := newUDPReverseWriter(ctx, dst, time.Second, pool, 512, nil)
 	var wg sync.WaitGroup
 	startUDPSessionWorker(ctx, UDPLoopConfigObj{
 		ListenConn: dst,
@@ -1084,12 +1399,12 @@ func TestUDPSessionCountHeldUntilReverseReaderExits(t *testing.T) {
 	}
 	session.stop()
 	time.Sleep(20 * time.Millisecond)
-	if got := count.Load(); got != 1 {
+	if got := limit.active.Load(); got != 1 {
 		t.Fatalf("session count released while reverse reader is alive: %d", got)
 	}
 	close(upstream.release)
 	wg.Wait()
-	if got := count.Load(); got != 0 {
+	if got := limit.active.Load(); got != 0 {
 		t.Fatalf("session count after reverse reader exit = %d, want 0", got)
 	}
 }

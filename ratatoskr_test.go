@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -111,10 +112,6 @@ func (e errCoreObj) DisableAdmin() error {
 	return nil
 }
 
-func (e errCoreObj) RSTDropped() uint64 {
-	return 0
-}
-
 func (e errCoreObj) SetAdmin(yggcore.AddHandler) error {
 	return nil
 }
@@ -145,6 +142,65 @@ type blockingCoreObj struct {
 	errCoreObj
 	started chan struct{}
 	release chan struct{}
+}
+
+type trackedConnObj struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *trackedConnObj) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
+}
+
+type trackedListenerObj struct {
+	net.Listener
+	closed atomic.Bool
+}
+
+func (l *trackedListenerObj) Close() error {
+	l.closed.Store(true)
+	return l.Listener.Close()
+}
+
+type trackedPacketConnObj struct {
+	net.PacketConn
+	closed atomic.Bool
+}
+
+func (c *trackedPacketConnObj) Close() error {
+	c.closed.Store(true)
+	return c.PacketConn.Close()
+}
+
+type lateResourceCoreObj struct {
+	errCoreObj
+	started  chan struct{}
+	release  chan struct{}
+	conn     net.Conn
+	listener net.Listener
+	packet   net.PacketConn
+}
+
+func (c *lateResourceCoreObj) wait() {
+	close(c.started)
+	<-c.release
+}
+
+func (c *lateResourceCoreObj) DialContext(context.Context, string, string) (net.Conn, error) {
+	c.wait()
+	return c.conn, nil
+}
+
+func (c *lateResourceCoreObj) Listen(string, string) (net.Listener, error) {
+	c.wait()
+	return c.listener, nil
+}
+
+func (c *lateResourceCoreObj) ListenPacket(string, string) (net.PacketConn, error) {
+	c.wait()
+	return c.packet, nil
 }
 
 type orderedCloseCoreObj struct {
@@ -194,6 +250,45 @@ func TestNew_rejectsCyclicNodeInfo(t *testing.T) {
 	}
 }
 
+func TestNewRejectsAnySigilAssemblyError(t *testing.T) {
+	cfg := config.GenerateConfig()
+	cfg.AdminListen = "none"
+	if _, err := New(ConfigObj{Config: cfg, Sigils: []sigils.Interface{nil}}); !errors.Is(err, ErrInvalidSigils) {
+		t.Fatalf("New error = %v, want ErrInvalidSigils", err)
+	}
+}
+
+func TestNewMapsNodeInfoParserErrorToErrInvalidSigils(t *testing.T) {
+	cfg := config.GenerateConfig()
+	cfg.AdminListen = "none"
+	_, err := New(ConfigObj{
+		Config:   cfg,
+		NodeInfo: &ninfo.ConfigObj{Sigils: []sigils.Interface{nil}},
+	})
+	if !errors.Is(err, ErrInvalidSigils) || !errors.Is(err, ninfo.ErrInvalidSigil) {
+		t.Fatalf("New error = %v, want ErrInvalidSigils and ninfo.ErrInvalidSigil", err)
+	}
+}
+
+func TestRollbackNewErrorPreservesCauseAndDeadline(t *testing.T) {
+	cause := errors.New("construction failed")
+	coreObj := &blockingCoreObj{started: make(chan struct{}), release: make(chan struct{})}
+	started := time.Now()
+	err := rollbackNewError(20*time.Millisecond, cause, nil, common.NamedCloseObj{Name: "core", Close: coreObj.Close})
+	if !errors.Is(err, cause) || !errors.Is(err, ErrCloseTimedOut) {
+		t.Fatalf("rollback error = %v, want cause and ErrCloseTimedOut", err)
+	}
+	if elapsed := time.Since(started); elapsed > 200*time.Millisecond {
+		t.Fatalf("rollback exceeded deadline: %s", elapsed)
+	}
+	select {
+	case <-coreObj.started:
+	case <-time.After(time.Second):
+		t.Fatal("best-effort core rollback did not start")
+	}
+	close(coreObj.release)
+}
+
 func TestNew_nilLogger(t *testing.T) {
 	// nil Logger uses the shared discard logger internally; must not panic.
 	node, err := New(ConfigObj{CloseTimeout: 3 * time.Second})
@@ -224,20 +319,6 @@ func TestNew_canceledContext(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got %v", err)
 	}
-}
-
-func TestNew_acceptsRSTQueueSize(t *testing.T) {
-	cfg := config.GenerateConfig()
-	cfg.AdminListen = "none"
-	node, err := New(ConfigObj{
-		Config:       cfg,
-		RSTQueueSize: 1,
-		CloseTimeout: 3 * time.Second,
-	})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	_ = node.Close()
 }
 
 func TestNew_doesNotMutateConfigNodeInfo(t *testing.T) {
@@ -484,6 +565,111 @@ func TestEnableSOCKS_afterCloseReturnsErrClosed(t *testing.T) {
 	}
 }
 
+func TestRootErrorMethodsAfterCloseReturnErrClosed(t *testing.T) {
+	node := newTestNode(t)
+	if err := node.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	checks := []struct {
+		name string
+		call func() error
+	}{
+		{name: "DialContext", call: func() error { _, err := node.DialContext(context.Background(), "tcp", "[200::1]:1"); return err }},
+		{name: "Listen", call: func() error { _, err := node.Listen("tcp", ":0"); return err }},
+		{name: "ListenPacket", call: func() error { _, err := node.ListenPacket("udp", ":0"); return err }},
+		{name: "AddPeer", call: func() error { return node.AddPeer("tcp://127.0.0.1:1") }},
+		{name: "RemovePeer", call: func() error { return node.RemovePeer("tcp://127.0.0.1:1") }},
+		{name: "DisableSOCKS", call: node.DisableSOCKS},
+		{name: "SetSOCKSMaxConnections", call: func() error { return node.SetSOCKSMaxConnections(1) }},
+		{name: "PeerManagerOptimize", call: node.PeerManagerOptimize},
+	}
+	for _, check := range checks {
+		t.Run(check.name, func(t *testing.T) {
+			if err := check.call(); !errors.Is(err, ErrClosed) {
+				t.Fatalf("error = %v, want ErrClosed", err)
+			}
+		})
+	}
+}
+
+func assertLateResourceClosed(t *testing.T, coreObj *lateResourceCoreObj, closed *atomic.Bool, call func(*Obj) error) {
+	t.Helper()
+	node := &Obj{
+		core:         coreObj,
+		socks:        socks.NewDisabled(),
+		nodeInfo:     &ninfo.Obj{},
+		closeTimeout: time.Second,
+		done:         make(chan struct{}),
+	}
+	result := make(chan error, 1)
+	go func() { result <- call(node) }()
+	select {
+	case <-coreObj.started:
+	case <-time.After(time.Second):
+		t.Fatal("network operation did not reach the core")
+	}
+	if err := node.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	close(coreObj.release)
+	select {
+	case err := <-result:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("operation error = %v, want ErrClosed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("network operation did not return")
+	}
+	if !closed.Load() {
+		t.Fatal("resource returned after Close was not closed")
+	}
+}
+
+func TestNetworkOperationsCloseLateResources(t *testing.T) {
+	t.Run("DialContext", func(t *testing.T) {
+		client, server := net.Pipe()
+		defer func() { _ = server.Close() }()
+		tracked := &trackedConnObj{Conn: client}
+		coreObj := &lateResourceCoreObj{
+			started: make(chan struct{}), release: make(chan struct{}), conn: tracked,
+		}
+		assertLateResourceClosed(t, coreObj, &tracked.closed, func(node *Obj) error {
+			_, err := node.DialContext(context.Background(), "tcp", "[200::1]:1")
+			return err
+		})
+	})
+
+	t.Run("Listen", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("Listen: %v", err)
+		}
+		tracked := &trackedListenerObj{Listener: listener}
+		coreObj := &lateResourceCoreObj{
+			started: make(chan struct{}), release: make(chan struct{}), listener: tracked,
+		}
+		assertLateResourceClosed(t, coreObj, &tracked.closed, func(node *Obj) error {
+			_, callErr := node.Listen("tcp", ":0")
+			return callErr
+		})
+	})
+
+	t.Run("ListenPacket", func(t *testing.T) {
+		packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("ListenPacket: %v", err)
+		}
+		tracked := &trackedPacketConnObj{PacketConn: packet}
+		coreObj := &lateResourceCoreObj{
+			started: make(chan struct{}), release: make(chan struct{}), packet: tracked,
+		}
+		assertLateResourceClosed(t, coreObj, &tracked.closed, func(node *Obj) error {
+			_, callErr := node.ListenPacket("udp", ":0")
+			return callErr
+		})
+	})
+}
+
 func TestAsk_afterCloseReturnsErrClosed(t *testing.T) {
 	node := newTestNode(t)
 	if err := node.Close(); err != nil {
@@ -677,8 +863,10 @@ func TestModuleHandles(t *testing.T) {
 	}
 	socksHandle := node.socks
 	if err := node.EnableSOCKS(SOCKSConfigObj{
-		Addr:                          "127.0.0.1:0",
-		MaxAssociateTargetsPerSession: 3,
+		Addr:                               "127.0.0.1:0",
+		MaxAssociateTargetsPerSession:      3,
+		MaxAssociateQueuedPacketsPerTarget: 5,
+		MaxAssociateQueuedBytesPerTarget:   2048,
 	}); err != nil {
 		t.Fatalf("EnableSOCKS: %v", err)
 	}
@@ -688,7 +876,15 @@ func TestModuleHandles(t *testing.T) {
 	if got := node.socks.MaxAssociateTargetsPerSession(); got != 3 {
 		t.Fatalf("SOCKS MaxAssociateTargetsPerSession = %d, want 3", got)
 	}
-	node.SetSOCKSMaxConnections(17)
+	if got := node.socks.MaxAssociateQueuedPacketsPerTarget(); got != 5 {
+		t.Fatalf("SOCKS MaxAssociateQueuedPacketsPerTarget = %d, want 5", got)
+	}
+	if got := node.socks.MaxAssociateQueuedBytesPerTarget(); got != 2048 {
+		t.Fatalf("SOCKS MaxAssociateQueuedBytesPerTarget = %d, want 2048", got)
+	}
+	if err := node.SetSOCKSMaxConnections(17); err != nil {
+		t.Fatalf("SetSOCKSMaxConnections: %v", err)
+	}
 	if got := node.SOCKSMaxConnections(); got != 17 {
 		t.Fatalf("SOCKS MaxConnections = %d, want 17", got)
 	}
@@ -746,6 +942,9 @@ func TestNew_withPeerManager(t *testing.T) {
 		t.Fatalf("New with peer manager: %v", err)
 	}
 	defer func() { _ = node.Close() }()
+	if pmCfg.Node != nil {
+		t.Fatal("New mutated the caller's peer manager config")
+	}
 
 	// Peer manager should be active
 	if act := node.PeerManagerActive(); act == nil {

@@ -205,28 +205,54 @@ type DeadlineConnInterface interface {
 	SetReadDeadline(time.Time) error
 }
 
-// RefreshDeadline applies the half-refresh gate against the caller-owned atomic
-// deadline state, arming or clearing the connection's idle deadline only when the
-// gate says so. readOnly selects SetReadDeadline (one-way UDP relay) over
-// SetDeadline (bidirectional tunnel). It is lock-free: concurrent callers may cost
-// one redundant SetDeadline syscall but never corrupt state, which is acceptable
-// for an advisory idle deadline. timeout must already be normalized.
-func RefreshDeadline(now time.Time, timeout time.Duration, state *atomic.Int64, conn DeadlineConnInterface, readOnly bool) {
-	action, deadline := deadlineRefresh(now, timeout, state.Load())
+// DeadlineGateObj serializes the rare SetDeadline side effect while retaining an
+// atomic fast path for refreshes that remain inside the current half-life window.
+// Serialization matters because net.Conn permits concurrent SetDeadline calls but
+// does not promise they complete in invocation order: an older call completing
+// last could otherwise shorten a freshly extended deadline.
+type DeadlineGateObj struct {
+	mu    sync.Mutex
+	state atomic.Int64
+}
+
+// RefreshDeadline arms or clears an idle deadline only when the half-refresh gate
+// says so. readOnly selects SetReadDeadline (one-way UDP relay) over SetDeadline
+// (bidirectional tunnel). timeout must already be normalized.
+func RefreshDeadline(now time.Time, timeout time.Duration, gate *DeadlineGateObj, conn DeadlineConnInterface, readOnly bool) {
+	if timeout <= 0 && gate.state.Load() == 0 {
+		return
+	}
+	action, _ := deadlineRefresh(now, timeout, gate.state.Load())
+	if action == deadlineSkip {
+		return
+	}
+
+	gate.mu.Lock()
+	defer gate.mu.Unlock()
+	// Another caller may have refreshed while this one waited for the side-effect
+	// lock. Re-evaluate so only the newest necessary deadline reaches the conn.
+	action, deadline := deadlineRefresh(now, timeout, gate.state.Load())
 	switch action {
 	case deadlineArm:
-		state.Store(deadline.UnixNano())
+		var err error
 		if readOnly {
-			_ = conn.SetReadDeadline(deadline)
+			err = conn.SetReadDeadline(deadline)
 		} else {
-			_ = conn.SetDeadline(deadline)
+			err = conn.SetDeadline(deadline)
+		}
+		if err == nil {
+			gate.state.Store(deadline.UnixNano())
 		}
 	case deadlineClear:
-		if state.Swap(0) != 0 {
+		if gate.state.Load() != 0 {
+			var err error
 			if readOnly {
-				_ = conn.SetReadDeadline(time.Time{})
+				err = conn.SetReadDeadline(time.Time{})
 			} else {
-				_ = conn.SetDeadline(time.Time{})
+				err = conn.SetDeadline(time.Time{})
+			}
+			if err == nil {
+				gate.state.Store(0)
 			}
 		}
 	}

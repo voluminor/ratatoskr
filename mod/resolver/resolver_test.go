@@ -251,7 +251,11 @@ func resetResolverCache(r *Obj) {
 func newTestResolverObj(dialer proxy.ContextDialer, nameserver string, cfg ConfigObj) *Obj {
 	cfg.Dialer = dialer
 	cfg.Nameserver = nameserver
-	return New(cfg)
+	r, err := New(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return r
 }
 
 func TestCacheKeyNormalizesTrailingDot(t *testing.T) {
@@ -261,7 +265,10 @@ func TestCacheKeyNormalizesTrailingDot(t *testing.T) {
 }
 
 func TestResolveAfterClose(t *testing.T) {
-	r := New(ConfigObj{})
+	r, err := New(ConfigObj{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -399,14 +406,16 @@ func TestResolve_noDNS_hostname(t *testing.T) {
 }
 
 func TestResolve_dnsRequiresDialer(t *testing.T) {
-	r := New(ConfigObj{
+	r, err := New(ConfigObj{
 		Nameserver:    "[200::1]:53",
 		LookupTimeout: 10 * time.Millisecond,
 		CacheTTL:      -1,
 	})
-	_, _, err := r.Resolve(context.Background(), "example.com")
 	if !errors.Is(err, ErrDialerRequired) {
-		t.Fatalf("expected ErrDialerRequired, got %v", err)
+		t.Fatalf("New error = %v, want ErrDialerRequired", err)
+	}
+	if r != nil {
+		t.Fatal("New returned an object with a missing DNS dialer")
 	}
 }
 
@@ -473,6 +482,21 @@ func TestResolve_dnsRejectsNonYggdrasilAddress(t *testing.T) {
 	}
 }
 
+func TestResolve_dnsAcceptsYggdrasilSubnetAddress(t *testing.T) {
+	server := newDNSServerWithIP(t, 0, net.ParseIP("300::1"))
+	r := newTestResolverObj(udpDialerObj{}, server.addr(), ConfigObj{
+		LookupTimeout: time.Second,
+		CacheTTL:      -1,
+	})
+	_, ip, err := r.Resolve(context.Background(), "example.com")
+	if err != nil {
+		t.Fatalf("resolve subnet address: %v", err)
+	}
+	if got := ip.String(); got != "300::1" {
+		t.Fatalf("resolved address = %s, want 300::1", got)
+	}
+}
+
 func TestResolve_dnsWaiterContextCancel(t *testing.T) {
 	dialer := &blockingDialerObj{started: make(chan struct{})}
 	r := newTestResolverObj(dialer, "[200::1]:53", ConfigObj{
@@ -533,7 +557,7 @@ func TestLookupContext_disabledTimeoutHasNoInternalDeadline(t *testing.T) {
 	r := newTestResolverObj(&countingFailDialerObj{}, "[200::1]:53", ConfigObj{
 		LookupTimeout: -1,
 	})
-	ctx, cancel := r.lookupContext(context.Background())
+	ctx, cancel := r.lookupContext()
 	defer cancel()
 	if _, ok := ctx.Deadline(); ok {
 		t.Fatal("disabled lookup timeout must not impose an internal deadline")

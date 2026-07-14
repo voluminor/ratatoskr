@@ -33,4 +33,10 @@ runs:
         [[ -n "$GOARM" ]]  && tag="${tag}v${GOARM}"
         [[ -n "$GOMIPS" ]] && tag="${tag}/${GOMIPS}"
         echo "→ ${tag}"
-        go build ./...
+        out_dir="$(mktemp -d)"
+        trap 'rm -rf "$out_dir"' EXIT
+        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+          [ -n "$dir" ] || continue
+          echo "Building ${dir}"
+          go -C "$dir" build -o "$out_dir/" ./...
+        done

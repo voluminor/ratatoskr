@@ -75,7 +75,7 @@ func (b *logBridgeObj) emit(levelVal int, prefix, msg string) {
 	if cb == nil || levelVal < min {
 		return
 	}
-	go cb.Log(prefix + msg)
+	cb.Log(prefix + msg)
 }
 
 func (b *logBridgeObj) Printf(f string, args ...interface{}) {
@@ -135,5 +135,5 @@ func (b *peerBridgeObj) OnPeerCountChanged(connected, total int64) {
 	if cb == nil {
 		return
 	}
-	go cb.OnPeerCountChanged(connected, total)
+	cb.OnPeerCountChanged(connected, total)
 }

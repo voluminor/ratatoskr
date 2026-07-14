@@ -13,10 +13,9 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
-	"github.com/voluminor/ratatoskr/mod/core"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/probe"
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -45,10 +44,8 @@ func traceCmd(cfg *gsettings.GoProbeObj) error {
 		return err
 	}
 	defer func() {
-		go func() {
-			tr.Close()
-			node.Close()
-		}()
+		tr.Close()
+		_ = node.Close()
 	}()
 
 	if err := waitForPeers(ctx, tr); err != nil {
@@ -58,7 +55,6 @@ func traceCmd(cfg *gsettings.GoProbeObj) error {
 	if err := waitForRouting(ctx, tr); err != nil {
 		return err
 	}
-	tr.FlushCache()
 	fmt.Fprintln(os.Stderr, "ready")
 
 	if cfg.Scan {
@@ -129,10 +125,10 @@ func bootNode(ctx context.Context, peerURIs []string) (*ratatoskr.Obj, *probe.Ob
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:             ctx,
-		Config:          nodeCfg,
-		Logger:          logger,
-		CoreStopTimeout: 5 * time.Second,
+		Ctx:          ctx,
+		Config:       nodeCfg,
+		Logger:       logger,
+		CloseTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     peerURIs,
 			BatchSize: len(peerURIs),
@@ -142,10 +138,9 @@ func bootNode(ctx context.Context, peerURIs []string) (*ratatoskr.Obj, *probe.Ob
 		return nil, nil, fmt.Errorf("start node: %w", err)
 	}
 
-	coreNode := node.Interface.(*core.Obj)
-	tr, err := probe.New(coreNode.UnsafeCore(), logger)
+	tr, err := probe.New(node.Core(), probe.ConfigObj{Logger: logger})
 	if err != nil {
-		node.Close()
+		_ = node.Close()
 		return nil, nil, fmt.Errorf("init probe: %w", err)
 	}
 
@@ -240,7 +235,6 @@ func waitForRouting(ctx context.Context, tr *probe.Obj) error {
 			if !probing {
 				probing = true
 				go func() {
-					tr.FlushCache()
 					result, _ := tr.Tree(ctx, 2, 1)
 					probeDone <- result != nil && result.Total > 0 && !hasUnreachable(result.Root)
 				}()

@@ -4,7 +4,7 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"errors"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 )
@@ -124,29 +124,29 @@ func (r *deadlineRecorderObj) SetReadDeadline(t time.Time) error {
 
 func TestRefreshDeadlineArmSkipClear(t *testing.T) {
 	rec := &deadlineRecorderObj{}
-	var state atomic.Int64
+	var gate DeadlineGateObj
 	now := time.Now()
 
 	// First refresh arms the deadline.
-	RefreshDeadline(now, time.Minute, &state, rec, false)
+	RefreshDeadline(now, time.Minute, &gate, rec, false)
 	if rec.setDeadline != 1 {
 		t.Fatalf("first refresh should arm once, got %d", rec.setDeadline)
 	}
 	// Immediate second refresh is within the half-budget window: no syscall.
-	RefreshDeadline(now, time.Minute, &state, rec, false)
+	RefreshDeadline(now, time.Minute, &gate, rec, false)
 	if rec.setDeadline != 1 {
 		t.Fatalf("second refresh should skip, got %d", rec.setDeadline)
 	}
 	// Disabling the timeout clears the armed deadline exactly once, to zero.
-	RefreshDeadline(now, 0, &state, rec, false)
+	RefreshDeadline(now, 0, &gate, rec, false)
 	if rec.setDeadline != 2 || !rec.lastDeadline.IsZero() {
 		t.Fatalf("clear should fire once with zero deadline, got %d last=%s", rec.setDeadline, rec.lastDeadline)
 	}
-	if state.Load() != 0 {
-		t.Fatalf("state should reset after clear, got %d", state.Load())
+	if gate.state.Load() != 0 {
+		t.Fatalf("state should reset after clear, got %d", gate.state.Load())
 	}
 	// A redundant clear touches nothing (no deadline armed).
-	RefreshDeadline(now, 0, &state, rec, false)
+	RefreshDeadline(now, 0, &gate, rec, false)
 	if rec.setDeadline != 2 {
 		t.Fatalf("redundant clear should not touch the conn, got %d", rec.setDeadline)
 	}
@@ -154,10 +154,86 @@ func TestRefreshDeadlineArmSkipClear(t *testing.T) {
 
 func TestRefreshDeadlineReadOnlyUsesReadDeadline(t *testing.T) {
 	rec := &deadlineRecorderObj{}
-	var state atomic.Int64
-	RefreshDeadline(time.Now(), time.Minute, &state, rec, true)
+	var gate DeadlineGateObj
+	RefreshDeadline(time.Now(), time.Minute, &gate, rec, true)
 	if rec.setReadDeadline != 1 || rec.setDeadline != 0 {
 		t.Fatalf("readOnly should use SetReadDeadline only, got read=%d write=%d", rec.setReadDeadline, rec.setDeadline)
+	}
+}
+
+func TestRefreshDeadlineDisabledFastPathDoesNotTakeSideEffectLock(t *testing.T) {
+	recorder := &deadlineRecorderObj{}
+	var gate DeadlineGateObj
+	gate.mu.Lock()
+	done := make(chan struct{})
+	go func() {
+		RefreshDeadline(time.Now(), -1, &gate, recorder, false)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		gate.mu.Unlock()
+		t.Fatal("disabled fast path waited for the side-effect lock")
+	}
+	gate.mu.Unlock()
+}
+
+type orderedDeadlineRecorderObj struct {
+	mu           sync.Mutex
+	firstEntered chan struct{}
+	releaseFirst chan struct{}
+	calls        []time.Time
+}
+
+func (r *orderedDeadlineRecorderObj) SetDeadline(deadline time.Time) error {
+	r.mu.Lock()
+	first := len(r.calls) == 0
+	r.calls = append(r.calls, deadline)
+	r.mu.Unlock()
+	if first {
+		close(r.firstEntered)
+		<-r.releaseFirst
+	}
+	return nil
+}
+
+func (*orderedDeadlineRecorderObj) SetReadDeadline(time.Time) error { return nil }
+
+func TestRefreshDeadlineSerializesSideEffects(t *testing.T) {
+	rec := &orderedDeadlineRecorderObj{
+		firstEntered: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+	}
+	var gate DeadlineGateObj
+	base := time.Now()
+	done := make(chan struct{}, 2)
+	go func() {
+		RefreshDeadline(base, time.Minute, &gate, rec, false)
+		done <- struct{}{}
+	}()
+	<-rec.firstEntered
+	go func() {
+		RefreshDeadline(base.Add(time.Minute), time.Minute, &gate, rec, false)
+		done <- struct{}{}
+	}()
+
+	// The second side effect must not overtake the blocked first call.
+	time.Sleep(10 * time.Millisecond)
+	rec.mu.Lock()
+	gotBeforeRelease := len(rec.calls)
+	rec.mu.Unlock()
+	if gotBeforeRelease != 1 {
+		t.Fatalf("SetDeadline calls before release = %d, want 1", gotBeforeRelease)
+	}
+	close(rec.releaseFirst)
+	<-done
+	<-done
+
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	if len(rec.calls) != 2 || !rec.calls[1].After(rec.calls[0]) {
+		t.Fatalf("deadlines were not applied in increasing order: %v", rec.calls)
 	}
 }
 

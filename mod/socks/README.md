@@ -52,6 +52,9 @@ s, err := socks.New(socks.ConfigObj{
     DialTimeout:       10 * time.Second,
     TunnelIdleTimeout: 5 * time.Minute,
     MaxAssociateTargetsPerSession: 128, // 0 — safe default, <0 — no per-session cap
+MaxAssociateTargetsPerPrincipal: 0,     // <=0 — unlimited; server cap remains
+MaxAssociateQueuedPacketsPerTarget: 64,       // 0 — 64, <0 — unlimited
+MaxAssociateQueuedBytesPerTarget:   64 << 10, // 0 — 64 KiB, <0 — unlimited
     Credentials:       credentials, // optional username/password auth
 })
 ```
@@ -80,9 +83,9 @@ err := s.Close() // stop and clean up
 | `IsEnabled()`          | `true` if the proxy is running       |
 | `SetMaxConnections(n)` | Updates the active connection limit  |
 
-`MaxConnections` is the only runtime-mutable setting. `DialTimeout` and `TunnelIdleTimeout` are immutable: set them once
-via `ConfigObj` at `Start`. `TunnelIdleTimeout` uses a 5 minute safe default when set to `0`; use a negative value only
-when idle tunnels must stay open indefinitely.
+`MaxConnections` is the only runtime-mutable setting. Timeouts and UDP ASSOCIATE queue limits are immutable: set them
+through `ConfigObj` at `Start`. `TunnelIdleTimeout` uses a 5 minute safe default when set to `0`; use a negative value
+only when idle tunnels must stay open indefinitely.
 
 ---
 
@@ -107,9 +110,23 @@ The listener is always wrapped in a `limitedListenerObj` backed by a `common.Dyn
 semaphore, so `SetMaxConnections` can change the limit while the proxy runs. `MaxConnections: 0` uses the safe default
 (`256`); a negative value makes the limit unlimited, and `Accept` never blocks on it.
 
-UDP ASSOCIATE targets are bounded to 1024 per server, 128 per principal within that server, and 128 per session by
-default. A negative value disables only the per-session cap. Each server also owns its bounded worker pool, so load or
-credentials on one embedded proxy cannot consume another proxy's quota or queue.
+UDP ASSOCIATE targets are bounded to 1024 per server and 128 per session by default. The per-principal limit is
+optional and unlimited by default; set `MaxAssociateTargetsPerPrincipal` to isolate an authenticated user or source IP.
+A negative `MaxAssociateTargetsPerSession` disables only the per-session cap. Each server also owns its bounded worker
+pool, so load or credentials on one embedded proxy cannot consume another proxy's quota or queue.
+
+Each established target has its own writer goroutine. A blocked target therefore cannot stop packets for other targets
+in the same ASSOCIATE session. Its queue is bounded by both packet count (64 by default) and actual payload bytes
+(64 KiB by default). A packet that would exceed either limit is dropped only for that target and increments
+`Snapshot().DroppedAssociatePackets`. Packets arriving while that target is still resolving or dialing are also counted
+as drops. Set a queue limit below zero only for an explicit unbounded-memory deployment.
+
+The upstream SOCKS server resolves a domain-form client address before creating an ASSOCIATE session. A broken custom
+resolver that returns no IP is rejected with `RepHostUnreachable` instead of creating a session that can never accept a
+datagram. A reverse response whose SOCKS header would push it beyond the maximum UDP payload is dropped and counted;
+the target remains usable for later packets.
+
+`Snapshot()` also reports active, pending, and rejected targets. Counters are cumulative and are not reset by reads.
 
 ```mermaid
 flowchart LR
@@ -155,14 +172,15 @@ On `Close`, the Unix socket file is automatically removed.
 
 ## Errors
 
-| Variable                  | Description                                  |
-|---------------------------|----------------------------------------------|
-| `ErrAlreadyEnabled`       | `New` called while the proxy is already open |
-| `ErrAlreadyListening`     | Unix socket is held by another process       |
-| `ErrAssociateTargetLimit` | UDP ASSOCIATE target limit reached           |
-| `ErrInvalidAddress`       | Empty or invalid listen address              |
-| `ErrNetworkRequired`      | `Start` called without a `Network` dialer    |
-| `ErrSymlinkRefusal`       | Refusal to remove a symlink (safety measure) |
-| `ErrSocketRefusal`        | Refusal to remove a non-socket path (safety) |
-| `ErrUnsafeSocketDir`      | Unix socket parent directory is not private  |
-| `ErrSocketChanged`        | Socket path changed during the stale probe   |
+| Variable                  | Description                                    |
+|---------------------------|------------------------------------------------|
+| `ErrAlreadyEnabled`       | `New` called while the proxy is already open   |
+| `ErrAlreadyListening`     | Unix socket is held by another process         |
+| `ErrAssociateTargetLimit` | UDP ASSOCIATE target limit reached             |
+| `ErrInvalidAddress`       | Empty or invalid listen address                |
+| `ErrNetworkRequired`      | `Start` called without a `Network` dialer      |
+| `ErrResolverRequired`     | Domain target used without an allowed resolver |
+| `ErrSymlinkRefusal`       | Refusal to remove a symlink (safety measure)   |
+| `ErrSocketRefusal`        | Refusal to remove a non-socket path (safety)   |
+| `ErrUnsafeSocketDir`      | Unix socket parent directory is not private    |
+| `ErrSocketChanged`        | Socket path changed during the stale probe     |

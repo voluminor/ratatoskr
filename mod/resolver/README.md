@@ -36,28 +36,34 @@ flowchart LR
 ## Initialization
 
 ```go
-r := resolver.New(resolver.ConfigObj{
-    Dialer:     dialer,
-    Nameserver: "[200::1]:53", // DNS over Yggdrasil
+r, err := resolver.New(resolver.ConfigObj{
+    Dialer:         dialer,
+    Nameserver:     "[200::1]:53", // DNS over Yggdrasil
+    LookupTimeout:   10 * time.Second,
+    CacheTTL:        30 * time.Second,
+    CacheMaxEntries: 4096,
 })
-r := resolver.New(resolver.ConfigObj{}) // no DNS, only .pk.ygg and literals
-r := resolver.New(resolver.ConfigObj{
-Dialer:               dialer,
-Nameserver:           "[200::1]:53",
-LookupTimeout:   10 * time.Second,
-CacheTTL:        30 * time.Second,
-CacheMaxEntries: 4096,
-})
+if err != nil {
+    return err
+}
+defer func() { _ = r.Close() }()
 ```
 
-If `nameserver` is empty — DNS resolution is disabled, only `.pk.ygg` and IP literals work.
+If `Nameserver` is empty, DNS resolution is disabled and `Dialer` is optional. If `Nameserver` is set, `Dialer` is
+mandatory and `New` returns `ErrDialerRequired` before creating an object when it is missing.
+
+`Close` cancels admitted DNS lookups and waits for their owned goroutines. It is idempotent and returns `error`, so a
+standalone resolver satisfies `io.Closer`.
 
 The resolver uses `PreferGo: true` (pure Go DNS, no cgo).
 
-`ConfigObj` is optional. Defaults are safe for embedded use:
+The zero `ConfigObj` is valid and resolves only IP literals and `.pk.ygg` names. DNS additionally requires both fields
+shown below. Timing and cache settings have safe defaults for embedded use:
 
 | Field             | Default | Description                                                                        |
 |-------------------|---------|------------------------------------------------------------------------------------|
+| `Dialer`          | `nil`   | Required when `Nameserver` is non-empty                                            |
+| `Nameserver`      | empty   | DNS server address; empty disables DNS                                             |
 | `LookupTimeout`   | `10s`   | DNS lookup timeout. `0` — default, `<0` — no resolver deadline (Go DNS client ~5s) |
 | `CacheTTL`        | `30s`   | Positive DNS cache TTL. `0` — default, `<0` off                                    |
 | `CacheMaxEntries` | `4096`  | Positive DNS cache cap. `0` — default, `<0` off                                    |
@@ -125,7 +131,9 @@ IPv6 resolution via the configured nameserver. If no nameserver is set — `ErrN
 r.resolver.LookupIP(ctx, "ip6", name)
 ```
 
-Returns the first address found. If no addresses are found — `ErrNoAddresses`.
+Returns the first Yggdrasil node address (`200::/7`) or routed subnet address (`300::/7`). Other DNS answers are
+ignored; if the response has addresses but none belongs to either Yggdrasil form, resolution returns
+`ErrNonYggdrasilAddress`. IP literals remain pass-through and are not filtered.
 
 ---
 
@@ -140,3 +148,4 @@ Returns the first address found. If no addresses are found — `ErrNoAddresses`.
 | `ErrInvalidKeyLength`       | Public key is not 32 bytes              |
 | `ErrNonYggdrasilAddress`    | DNS response is not a Yggdrasil address |
 | `ErrLookupBusy`             | Too many concurrent distinct lookups    |
+| `ErrClosed`                 | Resolver has been closed                |

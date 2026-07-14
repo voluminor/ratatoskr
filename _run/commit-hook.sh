@@ -22,7 +22,10 @@ mv "$tmp_file" "$1"
 
 (
   cd "$root_path"
-  go test -v ./...
+  go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+    [ -n "$dir" ] || continue
+    go -C "$dir" test -v ./...
+  done
 )
 
 #############################################################################

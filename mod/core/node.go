@@ -14,7 +14,7 @@ import (
 	"sync/atomic"
 
 	"github.com/voluminor/ratatoskr/internal/common"
-	"github.com/yggdrasil-network/yggdrasil-go/src/admin"
+	"github.com/voluminor/ratatoskr/mod/core/admin"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"github.com/yggdrasil-network/yggdrasil-go/src/multicast"
@@ -25,9 +25,7 @@ import (
 var _ Interface = (*Obj)(nil)
 
 const (
-	minimumMTU      = 1280
-	defaultRSTQueue = 100
-	maxRSTQueue     = 65536
+	minimumMTU = 1280
 )
 
 func normalizeMTU(requested, max uint64) uint64 {
@@ -53,13 +51,10 @@ type Obj struct {
 	netstackPtr atomic.Pointer[netstackObj]
 	logger      yggcore.Logger
 	multicast   componentObj[*multicast.Multicast]
-	adminSocket componentObj[*admin.AdminSocket]
-	// adminMu serializes multicast→admin handler wiring across the two independent
-	// enable paths; admin.AddHandler writes its handler map without a lock.
-	adminMu      sync.Mutex
-	closeOnce    sync.Once
-	rstQueueSize int
-	closeErr     error
+	adminSocket componentObj[*admin.Obj]
+	adminMu     sync.Mutex
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 // New creates and starts the Yggdrasil node.
@@ -85,20 +80,11 @@ func New(cfg ConfigObj) (*Obj, error) {
 		nodeCfg = &cloned
 	}
 
-	rstQueueSize := cfg.RSTQueueSize
-	if rstQueueSize <= 0 {
-		rstQueueSize = defaultRSTQueue
-	}
-	if rstQueueSize > maxRSTQueue {
-		return nil, fmt.Errorf("%w: got %d, max %d", ErrRSTQueueTooLarge, rstQueueSize, maxRSTQueue)
-	}
-
 	obj := &Obj{
-		nodeCfg:      nodeCfg,
-		logger:       log,
-		rstQueueSize: rstQueueSize,
-		multicast:    componentObj[*multicast.Multicast]{name: "multicast"},
-		adminSocket:  componentObj[*admin.AdminSocket]{name: "admin"},
+		nodeCfg:     nodeCfg,
+		logger:      log,
+		multicast:   componentObj[*multicast.Multicast]{name: "multicast"},
+		adminSocket: componentObj[*admin.Obj]{name: "admin"},
 	}
 
 	// Yggdrasil core
@@ -113,7 +99,7 @@ func New(cfg ConfigObj) (*Obj, error) {
 	obj.corePtr.Store(c)
 
 	// Network stack
-	ns, err := newNetstack(c, log, rstQueueSize, nodeCfg.IfMTU)
+	ns, err := newNetstack(c, log, nodeCfg.IfMTU)
 	if err != nil {
 		c.Stop()
 		return nil, fmt.Errorf("netstack: %w", err)
@@ -228,7 +214,7 @@ func (o *Obj) PublicKey() ed25519.PublicKey {
 	if c == nil {
 		return nil
 	}
-	return c.PublicKey()
+	return slices.Clone(c.PublicKey())
 }
 
 // MTU returns the MTU of the NIC interface
@@ -242,15 +228,6 @@ func (o *Obj) MTU() uint64 {
 
 // //
 
-// RSTDropped — count of RST packets dropped on queue overflow
-func (o *Obj) RSTDropped() uint64 {
-	ns := o.netstackPtr.Load()
-	if ns == nil {
-		return 0
-	}
-	return ns.nic.rstDropped.Load()
-}
-
 func (o *Obj) RetryPeers() error {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -262,9 +239,8 @@ func (o *Obj) RetryPeers() error {
 
 // SetAdmin exposes Yggdrasil's low-level handler-registration hook. It is unsafe
 // to call concurrently with another SetAdmin, EnableAdmin, or EnableMulticast:
-// upstream mutates its handler registry without synchronization, and a capture
-// callback can observe privileged debug handlers. Call it only during controlled
-// module construction and never with an untrusted AddHandler implementation.
+// upstream mutates handler registries without synchronization, and a callback
+// can observe privileged debug handlers. Never pass an untrusted implementation.
 func (o *Obj) SetAdmin(a yggcore.AddHandler) error {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -379,49 +355,52 @@ func (o *Obj) EnableMulticast() error {
 	if err != nil {
 		return err
 	}
-	// Wire multicast handlers under the same lock as admin transitions.
 	o.adminMu.Lock()
-	o.syncAdminHandlers()
+	o.attachMulticastAdminHandler()
 	o.adminMu.Unlock()
 	return nil
 }
 
 func (o *Obj) DisableMulticast() error {
-	// The multicast admin handler is left wired; it is safe on a stopped multicast
-	// (reports its last interface set) and yggdrasil exposes no unregister.
 	return o.multicast.disable()
 }
 
 // //
 
-func (o *Obj) newAdminSocket(addr string) (*admin.AdminSocket, func() error, error) {
+func (o *Obj) newAdminSocket(addr string) (*admin.Obj, func() error, error) {
 	c := o.corePtr.Load()
 	if c == nil {
 		return nil, nil, ErrNotAvailable
 	}
-	as, err := admin.New(c, o.logger, admin.ListenAddress(addr))
+	as, err := admin.New(admin.ConfigObj{
+		Core:    c,
+		Logger:  o.logger,
+		Address: addr,
+	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("admin.New: %w", err)
 	}
 	if as == nil {
 		return nil, nil, fmt.Errorf("%w for address %q", ErrAdminDisabled, addr)
 	}
-	as.SetupAdminHandlers()
 	return as, as.Stop, nil
 }
 
-// EnableAdmin starts the admin socket; "unix:///path" or "tcp://host:port"
+// EnableAdmin starts the unsafe upstream admin socket; "unix:///path" or
+// "tcp://host:port". Handler registration can race with requests, Stop does not
+// close accepted connections, and bind or Unix-socket cleanup failures terminate
+// the process with os.Exit(1). Use only a protected local endpoint.
 func (o *Obj) EnableAdmin(addr string) error {
 	o.adminMu.Lock()
 	defer o.adminMu.Unlock()
 
-	err := o.adminSocket.enable(func() (*admin.AdminSocket, func() error, error) {
+	err := o.adminSocket.enable(func() (*admin.Obj, func() error, error) {
 		return o.newAdminSocket(addr)
 	})
 	if err != nil {
 		return err
 	}
-	o.syncAdminHandlers()
+	o.attachMulticastAdminHandler()
 	return nil
 }
 
@@ -434,15 +413,14 @@ func (o *Obj) DisableAdmin() error {
 
 // //
 
-// syncAdminHandlers wires the multicast diagnostic handler into the admin socket
-// when both components are active. Idempotent: AddHandler rejects a duplicate, so
-// after a multicast restart the command keeps reporting the first instance until
-// the admin socket is torn down. Caller must hold adminMu.
-func (o *Obj) syncAdminHandlers() {
+// attachMulticastAdminHandler wires the upstream diagnostic command when both
+// components are active. The admin adapter documents the inherited map race.
+// Caller must hold adminMu.
+func (o *Obj) attachMulticastAdminHandler() {
 	as, adminActive := o.adminSocket.get()
 	mc, multicastActive := o.multicast.get()
 	if adminActive && multicastActive {
-		mc.SetupAdminHandlers(as)
+		as.AttachMulticast(mc)
 	}
 }
 

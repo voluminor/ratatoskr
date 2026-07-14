@@ -4,7 +4,8 @@
 # Flags:
 #   --no-build    reuse existing rts-* images
 #   --verify      run smoke verifier and then stop the stack
-#   --keep-state  with --verify, keep tmp/tests after teardown for inspection
+#   --throughput  run direct/Yggdrasil TCP/UDP throughput diagnostics and stop
+#   --keep-state  with --verify/--throughput, keep tmp/tests after teardown
 #   --no-rebuild  reuse per-node /data/bin/ratatoskr-diag when present
 set -Eeuo pipefail
 
@@ -19,12 +20,14 @@ export RTS_REBUILD=1
 COMPOSE=(docker compose -f tests/docker-compose.yml)
 build=1
 verify=0
+throughput=0
 keep_state=0
 
 for arg in "$@"; do
   case "$arg" in
     --no-build) build=0 ;;
     --verify) verify=1 ;;
+    --throughput) throughput=1 ;;
     --keep-state) keep_state=1 ;;
     --no-rebuild) export RTS_REBUILD=0 ;;
     *)
@@ -34,9 +37,14 @@ for arg in "$@"; do
   esac
 done
 
+if [ "${verify}" = 1 ] && [ "${throughput}" = 1 ]; then
+  echo "--verify and --throughput are mutually exclusive" >&2
+  exit 2
+fi
+
 cleanup_after_verify() {
   local rc=$?
-  if [ "$verify" = 1 ]; then
+  if [ "$verify" = 1 ] || [ "$throughput" = 1 ]; then
     "${COMPOSE[@]}" --profile verify down --remove-orphans || true
     if [ "$keep_state" = 0 ]; then
       chmod -R u+w "${ROOT}/tmp/tests" 2>/dev/null || true
@@ -49,7 +57,7 @@ cleanup_after_verify() {
   exit "$rc"
 }
 
-if [ "$verify" = 1 ]; then
+if [ "$verify" = 1 ] || [ "$throughput" = 1 ]; then
   trap cleanup_after_verify EXIT
 fi
 
@@ -69,6 +77,9 @@ echo "[up] starting Yggdrasil hubs and ratatoskr diagnostic nodes"
 if [ "$verify" = 1 ]; then
   echo "[up] running smoke verifier"
   "${COMPOSE[@]}" run --rm verifier
+elif [ "$throughput" = 1 ]; then
+  echo "[up] running throughput diagnostics"
+  "${COMPOSE[@]}" run --rm verifier throughput
 else
   echo "[up] stack is running"
   echo "[up] topology: tmp/tests/topology.txt"

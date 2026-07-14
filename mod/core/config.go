@@ -14,7 +14,4 @@ type ConfigObj struct {
 
 	// Logger; nil → logs are discarded
 	Logger yggcore.Logger
-
-	// RST packet deferred queue size; 0 → 100
-	RSTQueueSize int
 }

@@ -15,7 +15,7 @@ import (
 	"github.com/yggdrasil-network/yggdrasil-go/src/address"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 )
 
 // // // // // // // // // //
@@ -199,7 +199,8 @@ func mineKey(duration time.Duration) (*keygenResultObj, error) {
 			defer wg.Done()
 
 			cfg := &config.NodeConfig{}
-			prefixLen := len(address.GetPrefix())
+			prefix := address.GetPrefix()
+			prefixLen := len(prefix[:])
 			var localBest byte
 
 			for !done.Load() {

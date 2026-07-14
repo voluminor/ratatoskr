@@ -227,14 +227,13 @@ func TestParsedObj_NodeInfo_plain(t *testing.T) {
 }
 
 func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("aaa", "key1"))
+	parser := newMockSigil("aaa", "key1")
 	m := map[string]any{
 		target.Name: "[aaa] " + target.Version,
 		"key1":      "test",
 		"extra":     "val",
 	}
-	p := Parse(m, obj.sigilSlice()...)
+	p := Parse(m, parser)
 	ni := p.NodeInfo()
 	if ni["extra"] != "val" {
 		t.Fatal("extra key should be in NodeInfo")
@@ -248,13 +247,12 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 }
 
 func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("aaa", "key1"))
+	parser := newMockSigil("aaa", "key1")
 	m := map[string]any{
 		target.Name: "[aaa] v9.9.9",
 		"key1":      "test",
 	}
-	p := Parse(m, obj.sigilSlice()...)
+	p := Parse(m, parser)
 	ni := p.NodeInfo()
 	if ni[target.Name] != "[aaa] v9.9.9" {
 		t.Fatalf("unexpected metadata: %v", ni[target.Name])
@@ -262,14 +260,13 @@ func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
 }
 
 func TestParsedObj_NodeInfo_preservesUnknownSigilNames(t *testing.T) {
-	obj := newTestObj()
-	_ = obj.AddSigil(newMockSigil("aaa", "key1"))
+	parser := newMockSigil("aaa", "key1")
 	m := map[string]any{
 		target.Name: "[aaa,zzz] v9.9.9",
 		"key1":      "test",
 		"zzz":       "opaque",
 	}
-	p := Parse(m, obj.sigilSlice()...)
+	p := Parse(m, parser)
 	ni := p.NodeInfo()
 	if ni[target.Name] != "[aaa,zzz] v9.9.9" {
 		t.Fatalf("unexpected metadata: %v", ni[target.Name])

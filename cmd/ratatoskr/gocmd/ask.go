@@ -10,9 +10,9 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 	"github.com/voluminor/ratatoskr/mod/ninfo"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -50,10 +50,10 @@ func askRun(cfg *gsettings.GoAskObj) error {
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:             ctx,
-		Config:          nodeCfg,
-		Logger:          logger,
-		CoreStopTimeout: 5 * time.Second,
+		Ctx:          ctx,
+		Config:       nodeCfg,
+		Logger:       logger,
+		CloseTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     cfg.Peer,
 			BatchSize: len(cfg.Peer),
@@ -62,7 +62,7 @@ func askRun(cfg *gsettings.GoAskObj) error {
 	if err != nil {
 		return fmt.Errorf("start node: %w", err)
 	}
-	defer func() { go node.Close() }()
+	defer func() { _ = node.Close() }()
 
 	if err := askWaitPeers(ctx, node, len(cfg.Peer)); err != nil {
 		return err

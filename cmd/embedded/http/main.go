@@ -17,7 +17,6 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
-	"github.com/voluminor/ratatoskr/mod/core"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/mod/probe"
 )
@@ -59,10 +58,10 @@ func main() {
 	logger.EnableLevel("error")
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:             ctx,
-		Config:          nodeCfg,
-		CoreStopTimeout: shutdownTimeout,
-		Logger:          logger,
+		Ctx:          ctx,
+		Config:       nodeCfg,
+		CloseTimeout: shutdownTimeout,
+		Logger:       logger,
 		Peers: &peermgr.ConfigObj{
 			Peers:     cfg.Peers,
 			BatchSize: 4,
@@ -72,15 +71,14 @@ func main() {
 		fmt.Println("Error: start yggdrasil:", err)
 		os.Exit(1)
 	}
-	defer node.Close()
+	defer func() { _ = node.Close() }()
 
 	if cfg.PrivateKey == "" {
 		logger.Warnf("auto-generated private key (add to conf.yml to keep the same address across restarts):")
 		logger.Warnf("private_key: %s", hex.EncodeToString(nodeCfg.PrivateKey))
 	}
 
-	coreNode := node.Interface.(*core.Obj)
-	tr, err := probe.New(coreNode.UnsafeCore(), logger)
+	tr, err := probe.New(node.Core(), probe.ConfigObj{Logger: logger})
 	if err != nil {
 		fmt.Println("Error: probe:", err)
 		os.Exit(1)
@@ -112,11 +110,12 @@ func main() {
 			fmt.Printf("Error: listen HTTP :%d: %v\n", port, err)
 			os.Exit(1)
 		}
-		go (&http.Server{
+		server := &http.Server{
 			Handler:           buildMux(*wwwPath, info, false, qrHandler, traceHandler, treeHandler, treeWSHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
-		}).Serve(l)
+		}
+		go serveHTTP(server, l, logger)
 		fmt.Printf("HTTP       http://%s:%d/\n", cfg.Hostname, port)
 	}
 
@@ -128,15 +127,22 @@ func main() {
 			fmt.Printf("Error: listen Yggdrasil :%d: %v\n", port, err)
 			os.Exit(1)
 		}
-		go (&http.Server{
+		server := &http.Server{
 			Handler:           buildMux(*wwwPath, info, true, qrHandler, traceHandler, treeHandler, treeWSHandler),
 			ReadHeaderTimeout: 10 * time.Second,
 			IdleTimeout:       60 * time.Second,
-		}).Serve(l)
+		}
+		go serveHTTP(server, l, logger)
 		fmt.Printf("Yggdrasil  http://[%s]:%d/\n", yggAddr, port)
 	}
 
 	<-ctx.Done()
+}
+
+func serveHTTP(server *http.Server, listener net.Listener, logger interface{ Errorf(string, ...interface{}) }) {
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+		logger.Errorf("HTTP server stopped: %v", err)
+	}
 }
 
 // //

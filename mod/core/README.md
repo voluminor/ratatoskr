@@ -71,9 +71,8 @@ Layers from bottom to top:
 
 ```go
 obj, err := core.New(core.ConfigObj{
-Config:       nodeCfg, // *config.NodeConfig; nil — random keys
-Logger:       logger,  // nil — logs are discarded
-RSTQueueSize: 100,     // 0 → 100 by default
+Config: nodeCfg, // *config.NodeConfig; nil — random keys
+Logger: logger, // nil — logs are discarded
 })
 defer obj.Close()
 ```
@@ -115,13 +114,12 @@ Creates a UDP listener. Address format is the same as `Listen`. Automatically cl
 
 ## Node information
 
-| Method         | Returns             | Description                                |
-|----------------|---------------------|--------------------------------------------|
-| `Address()`    | `net.IP`            | Node's IPv6 address in the `200::/7` range |
-| `Subnet()`     | `net.IPNet`         | Routable `/64` subnet                      |
-| `PublicKey()`  | `ed25519.PublicKey` | Node's public key (32 bytes)               |
-| `MTU()`        | `uint64`            | Network interface MTU                      |
-| `RSTDropped()` | `uint64`            | Number of dropped RST packets              |
+| Method        | Returns             | Description                                |
+|---------------|---------------------|--------------------------------------------|
+| `Address()`   | `net.IP`            | Node's IPv6 address in the `200::/7` range |
+| `Subnet()`    | `net.IPNet`         | Routable `/64` subnet                      |
+| `PublicKey()` | `ed25519.PublicKey` | Node's public key (32 bytes)               |
+| `MTU()`       | `uint64`            | Network interface MTU                      |
 
 ---
 
@@ -163,11 +161,13 @@ obj.EnableAdmin("tcp://127.0.0.1:9001")
 obj.DisableAdmin()
 ```
 
-Once enabled, registers handlers for inter-component communication.
+`EnableAdmin` delegates through [`mod/core/admin`](admin/README.md), a thin pass-through to the upstream Yggdrasil
+admin socket. It intentionally inherits upstream behavior instead of maintaining a second server implementation.
 
-Warning: `EnableAdmin` delegates to the upstream `yggdrasil-go` admin socket. Upstream listen and Unix socket cleanup
-failures can terminate the process with `os.Exit(1)`. Admin access is unsafe operational tooling and should only be
-enabled for trusted operators.
+The socket is unsafe operational tooling: it has no authentication, deadlines, or request-size limit; handler
+registration can race with requests; accepted keepalive connections survive `DisableAdmin`; and bind or Unix-socket
+cleanup failures can terminate the process with `os.Exit(1)`. Use only a protected Unix socket or loopback endpoint
+with trusted clients. The admin package README documents the complete limitations.
 
 ---
 
@@ -194,15 +194,14 @@ applications.
 
 ## Errors
 
-| Variable                     | Description                                |
-|------------------------------|--------------------------------------------|
-| `ErrNotAvailable`            | Netstack is not initialized                |
-| `ErrAlreadyEnabled`          | Component is already enabled               |
-| `ErrAdminDisabled`           | Admin socket is not active                 |
-| `ErrUnsupportedNetwork`      | Unsupported network type (not tcp/udp)     |
-| `ErrPortRequired`            | Address is missing a port                  |
-| `ErrPortOutOfRange`          | Port is out of the 0–65535 range           |
-| `ErrInvalidAddress`          | Invalid IP address                         |
-| `ErrIPv6Only`                | Only IPv6 addresses are supported          |
-| `ErrRSTQueueTooLarge`        | RSTQueueSize exceeds the maximum (65536)   |
-| `ErrInvalidAllowedPublicKey` | Malformed AllowedPublicKeys entry          |
+| Variable                     | Description                              |
+|------------------------------|------------------------------------------|
+| `ErrNotAvailable`            | Netstack is not initialized              |
+| `ErrAlreadyEnabled`          | Component is already enabled             |
+| `ErrAdminDisabled`           | Admin socket is not active               |
+| `ErrUnsupportedNetwork`      | Unsupported network type (not tcp/udp)   |
+| `ErrPortRequired`            | Address is missing a port                |
+| `ErrPortOutOfRange`          | Port is out of the 0–65535 range         |
+| `ErrInvalidAddress`          | Invalid IP address                       |
+| `ErrIPv6Only`                | Only IPv6 addresses are supported        |
+| `ErrInvalidAllowedPublicKey` | Malformed AllowedPublicKeys entry        |

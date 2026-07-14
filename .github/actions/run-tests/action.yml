@@ -13,11 +13,19 @@ runs:
       shell: bash
       run: |
         set -Eeuo pipefail
-        go test -race -v ./...
+        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+          [ -n "$dir" ] || continue
+          echo "Testing ${dir}"
+          go -C "$dir" test -race -v ./...
+        done
 
     - name: 📊 Run benchmarks
       if: inputs.run-benchmarks == 'true'
       shell: bash
       run: |
         set -Eeuo pipefail
-        go test -bench=. -run=NONE -benchmem -v ./...
+        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+          [ -n "$dir" ] || continue
+          echo "Benchmarking ${dir}"
+          go -C "$dir" test -bench=. -run=NONE -benchmem -v ./...
+        done

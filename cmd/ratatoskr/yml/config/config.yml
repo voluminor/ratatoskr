@@ -79,7 +79,7 @@ yggdrasil:
   core_stop_timeout:
     type: time.Duration
     value: "5s"
-    usage: "core.Stop timeout."
+    usage: "Aggregate Ratatoskr shutdown timeout."
   rst_queue_size:
     type: int
     value: 100
