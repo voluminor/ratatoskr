@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Stop/remove the diagnostic stack. Add --clean for tmp/tests, --prune for images and BuildKit cache.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

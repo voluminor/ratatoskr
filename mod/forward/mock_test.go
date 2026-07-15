@@ -5,11 +5,12 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"github.com/voluminor/ratatoskr/internal/common"
 )
 
 // // // // // // // // // //
 
-// mockNodeObj — network-capable node backed by real loopback TCP/UDP
 type mockNodeObj struct {
 	addr net.IP
 	mtu  uint64
@@ -44,20 +45,7 @@ func (m *mockNodeObj) MTU() uint64 {
 
 // //
 
-// noopLogObj — yggcore.Logger that discards all messages
-type noopLogObj struct{}
-
-func (noopLogObj) Printf(string, ...interface{}) {}
-func (noopLogObj) Println(...interface{})        {}
-func (noopLogObj) Infof(string, ...interface{})  {}
-func (noopLogObj) Infoln(...interface{})         {}
-func (noopLogObj) Warnf(string, ...interface{})  {}
-func (noopLogObj) Warnln(...interface{})         {}
-func (noopLogObj) Errorf(string, ...interface{}) {}
-func (noopLogObj) Errorln(...interface{})        {}
-func (noopLogObj) Debugf(string, ...interface{}) {}
-func (noopLogObj) Debugln(...interface{})        {}
-func (noopLogObj) Traceln(...interface{})        {}
+type noopLogObj = common.DiscardLoggerObj
 
 // //
 
@@ -89,7 +77,6 @@ func newRunningTestObj(t *testing.T, node NetworkInterface, timeout time.Duratio
 
 // //
 
-// checkIPv6 skips the test if IPv6 loopback is unavailable
 func checkIPv6(t *testing.T) {
 	t.Helper()
 	ln, err := net.Listen("tcp6", "[::1]:0")
@@ -99,7 +86,6 @@ func checkIPv6(t *testing.T) {
 	_ = ln.Close()
 }
 
-// echoTCPServer6 starts a TCP echo server on [::1]:0 and returns its address
 func echoTCPServer6(t *testing.T) *net.TCPAddr {
 	t.Helper()
 	checkIPv6(t)
@@ -134,7 +120,6 @@ func echoConn(c net.Conn) {
 	}
 }
 
-// freePort returns an unused TCP port on the given IP
 func freePort(t *testing.T, ip string) int {
 	t.Helper()
 	network := "tcp4"

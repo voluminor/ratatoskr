@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// // // // // // // // // //
+
 func TestRatatoskrStartStopRestart(t *testing.T) {
 	y := NewRatatoskr()
 	for cycle := 0; cycle < 2; cycle++ {

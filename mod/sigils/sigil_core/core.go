@@ -1,3 +1,4 @@
+// Package sigil_core assembles sigils into NodeInfo and manages their metadata.
 package sigil_core
 
 import (
@@ -18,10 +19,12 @@ const (
 	maxInfoVersionLength = 64
 )
 
+// CompileInfo returns sorted sigil metadata using the current Ratatoskr version.
 func CompileInfo(sg map[string]sigils.Interface) string {
 	return CompileInfoVersion(sg, target.Version)
 }
 
+// CompileInfoVersion returns sorted sigil metadata using version.
 func CompileInfoVersion(sg map[string]sigils.Interface, version string) string {
 	names := make([]string, 0, len(sg))
 	for name := range sg {
@@ -30,6 +33,8 @@ func CompileInfoVersion(sg map[string]sigils.Interface, version string) string {
 	return CompileInfoNames(names, version)
 }
 
+// CompileInfoNames returns metadata for sorted, deduplicated names without
+// modifying the input slice. An empty version uses the current version.
 func CompileInfoNames(names []string, version string) string {
 	names = slices.Clone(names)
 	slices.Sort(names)
@@ -44,10 +49,8 @@ func CompileInfoNames(names []string, version string) string {
 	)
 }
 
-// ParseInfo parses a ratatoskr info string.
-// Accepted formats:
-//   - "[sigil1,sigil2] version"
-//   - "ratatoskr [sigil1,sigil2] version"
+// ParseInfo returns the version and unique sigil names encoded in metadata. It
+// accepts an optional prefix before the opening bracket.
 func ParseInfo(raw string) (string, []string, error) {
 	begin := strings.IndexByte(raw, '[')
 	end := strings.IndexByte(raw, ']')

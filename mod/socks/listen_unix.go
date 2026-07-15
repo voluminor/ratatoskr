@@ -14,7 +14,6 @@ import (
 
 // // // // // // // // // //
 
-// listenUnix opens a Unix socket with stale file handling.
 func listenUnix(path string, mode os.FileMode) (net.Listener, error) {
 	if err := validatePrivateSocketDir(filepath.Dir(path)); err != nil {
 		return nil, err
@@ -36,7 +35,6 @@ func listenUnix(path string, mode os.FileMode) (net.Listener, error) {
 	if before.Mode()&os.ModeSocket == 0 {
 		return nil, fmt.Errorf("%w: %s", ErrSocketRefusal, path)
 	}
-	// EADDRINUSE: check if the owning process is still alive.
 	dialer := net.Dialer{Timeout: time.Second}
 	probe, dialErr := dialer.Dial("unix", path)
 	if dialErr == nil {
@@ -46,8 +44,6 @@ func listenUnix(path string, mode os.FileMode) (net.Listener, error) {
 	if !errors.Is(dialErr, syscall.ECONNREFUSED) {
 		return nil, fmt.Errorf("probe unix socket %s: %w", path, dialErr)
 	}
-	// The process is gone; remove only the same verified socket inode observed
-	// before the probe, so a replacement path cannot be unlinked by a TOCTOU race.
 	if rmErr := removeUnixSocket(path, before); rmErr != nil {
 		return nil, rmErr
 	}
@@ -58,9 +54,6 @@ func listenUnix(path string, mode os.FileMode) (net.Listener, error) {
 	return chmodUnixSocket(path, ln, mode)
 }
 
-// listenUnixSocket binds inside a validated private directory. That directory
-// is the access-control boundary until chmod applies the final socket mode, so no
-// process-global umask mutation is needed.
 func listenUnixSocket(path string) (net.Listener, error) {
 	ln, err := net.Listen("unix", path)
 	if unixListener, ok := ln.(*net.UnixListener); ok {
@@ -89,7 +82,6 @@ func chmodUnixSocket(path string, ln net.Listener, mode os.FileMode) (net.Listen
 	return ln, nil
 }
 
-// removeUnixSocket removes only stale Unix socket filesystem entries.
 func removeUnixSocket(path string, expected os.FileInfo) error {
 	fi, err := os.Lstat(path)
 	if err != nil {

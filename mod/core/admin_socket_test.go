@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/yggdrasil-network/yggdrasil-go/src/admin"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 )
@@ -16,7 +17,7 @@ import (
 func TestAdminSocketPassThrough(t *testing.T) {
 	cfg := config.GenerateConfig()
 	cfg.AdminListen = "none"
-	node, err := New(ConfigObj{Config: cfg, Logger: noopLoggerObj{}})
+	node, err := New(ConfigObj{Config: cfg, Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

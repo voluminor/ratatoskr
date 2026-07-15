@@ -10,8 +10,6 @@ import (
 // // // // // // // // // //
 
 const (
-	// Loopback defaults keep a directly launched binary unreachable from the
-	// network; explicit config binds (e.g. docker compose) still override these.
 	defaultHTTPListen        = "127.0.0.1:8080"
 	defaultDebugListen       = "127.0.0.1:7070"
 	defaultSOCKSListen       = "127.0.0.1:1080"
@@ -22,8 +20,7 @@ const (
 	defaultCloseTimeout      = 10 * time.Second
 )
 
-// ConfigObj controls one diagnostic ratatoskr node.
-type ConfigObj struct {
+type configObj struct {
 	Name              string   `json:"name"`
 	Peers             []string `json:"peers"`
 	IfMTU             uint64   `json:"if_mtu"`
@@ -37,19 +34,17 @@ type ConfigObj struct {
 	UDPThroughputPort uint16   `json:"udp_throughput_port"`
 	ResultsDir        string   `json:"results_dir"`
 	CloseTimeout      string   `json:"close_timeout"`
-	// DebugEnabled gates the pprof/expvar debug listener; off by default.
-	// May also be enabled at startup via the RTS_DIAG_DEBUG env var.
-	DebugEnabled bool `json:"debug_enabled"`
+	DebugEnabled      bool     `json:"debug_enabled"`
 }
 
-func loadConfig(path string) (ConfigObj, time.Duration, error) {
+func loadConfig(path string) (configObj, time.Duration, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return ConfigObj{}, 0, fmt.Errorf("read config %s: %w", path, err)
+		return configObj{}, 0, fmt.Errorf("read config %s: %w", path, err)
 	}
-	var cfg ConfigObj
+	var cfg configObj
 	if err = json.Unmarshal(data, &cfg); err != nil {
-		return ConfigObj{}, 0, fmt.Errorf("parse config %s: %w", path, err)
+		return configObj{}, 0, fmt.Errorf("parse config %s: %w", path, err)
 	}
 	if cfg.Name == "" {
 		cfg.Name = "ratatoskr-node"
@@ -82,7 +77,7 @@ func loadConfig(path string) (ConfigObj, time.Duration, error) {
 	if cfg.CloseTimeout != "" {
 		timeout, err = time.ParseDuration(cfg.CloseTimeout)
 		if err != nil {
-			return ConfigObj{}, 0, fmt.Errorf("parse close_timeout: %w", err)
+			return configObj{}, 0, fmt.Errorf("parse close_timeout: %w", err)
 		}
 	}
 	return cfg, timeout, nil

@@ -24,8 +24,6 @@ type remoteFlightObj struct {
 
 func (f *remoteFlightObj) signal() { f.doneOnce.Do(func() { close(f.done) }) }
 
-// remotePeerMessageObj is the per-node debug_remoteGetPeers payload; only the
-// key list is consumed, other fields are ignored.
 type remotePeerMessageObj struct {
 	Keys []string `json:"keys"`
 }
@@ -58,9 +56,6 @@ func releaseRemoteSlot(sem chan struct{}) {
 	}
 }
 
-// callRemotePeers queries a remote node's peers via debug_remoteGetPeers.
-// Returns immediately on ctx cancellation; the underlying call (~6s timeout)
-// may outlive the return. Calls for the same key share one underlying handler.
 func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error) {
 	if o.isClosed() {
 		return nil, 0, ErrClosed
@@ -96,8 +91,6 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 	o.remoteFlights[keyArray] = flight
 	tasks := o.tasks
 	o.remoteMu.Unlock()
-	// Publish before waiting for global capacity. The accepted flight belongs to
-	// module lifecycle; caller cancellation only detaches that caller.
 	if !tasks.Go(func(lifecycle context.Context) {
 		o.runRemoteFlight(lifecycle, keyArray, flight, o.remoteSem)
 	}) {
@@ -190,11 +183,6 @@ func (o *Obj) queryRemotePeers(key [ed25519.PublicKeySize]byte) remoteResultObj 
 
 // //
 
-// parseRemotePeersResponse parses DebugGetPeersResponse into a key list.
-// The payload is already fully materialised in RAM, so keys are unmarshalled in
-// one pass rather than streamed. Over-cap peer sets are truncated to the first
-// limit valid keys (truncated=true) so an over-sharing node stays reachable with
-// a bounded peer set; messages larger than maxRemotePeerMessageBytes are rejected.
 func parseRemotePeersResponse(raw interface{}, limit int) ([]ed25519.PublicKey, bool, error) {
 	outer, ok := raw.(yggcore.DebugGetPeersResponse)
 	if !ok {
@@ -222,17 +210,12 @@ func parseRemotePeersResponse(raw interface{}, limit int) ([]ed25519.PublicKey, 
 	return peers, truncated, nil
 }
 
-// appendRemotePeerKeys decodes one node's payload and appends its valid keys,
-// stopping once the accumulator reaches limit. Invalid or wrong-length hex keys
-// are skipped without consuming a slot. Returns truncated=true when keys were
-// dropped because the cap was reached.
 func appendRemotePeerKeys(peers []ed25519.PublicKey, msg json.RawMessage, limit int) ([]ed25519.PublicKey, bool, error) {
 	if len(msg) > maxRemotePeerMessageBytes {
 		return nil, false, fmt.Errorf("%w: %d bytes", ErrRemoteResponseTooLarge, len(msg))
 	}
 	var decoded remotePeerMessageObj
 	if err := json.Unmarshal(msg, &decoded); err != nil {
-		// Malformed payloads contribute no peers rather than failing the node.
 		return peers, false, nil
 	}
 	for _, hexKey := range decoded.Keys {

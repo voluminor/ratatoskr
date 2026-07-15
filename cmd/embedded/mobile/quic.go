@@ -6,17 +6,14 @@ import (
 	"fmt"
 	"net/url"
 	"time"
-
-	"github.com/quic-go/quic-go"
 )
 
 // // // // // // // // // //
 
 const quicDialTimeout = 10 * time.Second
 
-// CheckQuicRTT measures the QUIC handshake RTT to a peer in milliseconds.
-// peerURI — URI in quic:// format, e.g. "quic://1.2.3.4:12345".
-// Returns the handshake duration in ms or -1 on error.
+// CheckQuicRTT returns the QUIC handshake duration in milliseconds. It returns
+// -1 with an error when peerURI is invalid or the handshake fails.
 func CheckQuicRTT(peerURI string) (int64, error) {
 	u, err := url.Parse(peerURI)
 	if err != nil {

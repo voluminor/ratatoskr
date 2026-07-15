@@ -86,7 +86,6 @@ func tcpConnPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 // //
 
 func TestProxyTCP_bidirectional(t *testing.T) {
-	// c1↔s1 is the proxy pair; c2/s2 are the user-facing ends
 	c1, c2 := net.Pipe()
 	s1, s2 := net.Pipe()
 
@@ -561,7 +560,6 @@ func TestCloseLocalTCP_stopsListener(t *testing.T) {
 		}},
 	})
 
-	// Wait for listener to start
 	addr := fmt.Sprintf("[::1]:%d", localPort)
 	c := dialTCP6WithRetry(t, addr)
 	_ = c.Close()

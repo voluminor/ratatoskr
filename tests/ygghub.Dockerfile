@@ -1,5 +1,4 @@
 # syntax=docker/dockerfile:1.7
-# Unprivileged Yggdrasil backbone hub used by diagnostic ratatoskr nodes.
 FROM golang:1.25-bookworm AS build
 
 ENV CGO_ENABLED=0

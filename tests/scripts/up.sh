@@ -1,12 +1,4 @@
 #!/usr/bin/env bash
-# Build images, render tmp/tests configs, and start the live diagnostic stack.
-#
-# Flags:
-#   --no-build    reuse existing rts-* images
-#   --verify      run smoke verifier and then stop the stack
-#   --throughput  run direct/Yggdrasil TCP/UDP throughput diagnostics and stop
-#   --keep-state  with --verify/--throughput, keep tmp/tests after teardown
-#   --no-rebuild  reuse per-node /data/bin/ratatoskr-diag when present
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

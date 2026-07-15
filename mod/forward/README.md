@@ -1,6 +1,21 @@
-# mod/forward
+# Forward
 
-TCP and UDP port forwarding between the local network and Yggdrasil.
+Package `forward` proxies TCP and UDP between the host network and Yggdrasil.
+Construction is transactional and starts the immutable rule set immediately.
+TCP and UDP admission default to unlimited, so public listeners require explicit
+positive limits.
+
+## Contents
+
+- [Overview](#overview)
+- [Initialization](#initialization)
+- [Lifecycle](#lifecycle)
+- [Admission limits and security](#admission-limits-and-security)
+- [TCP forwarding](#tcp-forwarding)
+- [UDP forwarding](#udp-forwarding)
+- [Configuration](#configuration)
+- [Snapshot](#snapshot)
+- [Errors](#errors)
 
 ## Overview
 
@@ -15,6 +30,20 @@ The package supports four directions:
 
 `ConfigObj.Node` implements the package-local `NetworkInterface`: `DialContext`, `Listen`, `ListenPacket`, `Address`,
 and `MTU`. A `*core.Obj` satisfies this interface structurally; `mod/forward` does not import `mod/core`.
+
+```mermaid
+flowchart TD
+    HostListener["host listener"]
+    YggListener["Yggdrasil listener"]
+    Forward["forward.Obj"]
+    HostTarget["host target"]
+    YggTarget["Yggdrasil target"]
+
+    HostListener --> Forward
+    Forward --> YggTarget
+    YggListener --> Forward
+    Forward --> HostTarget
+```
 
 ## Initialization
 
@@ -40,7 +69,7 @@ Mapped: &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 5353},
 if err != nil {
 return err
 }
-defer obj.Close()
+defer func () { _ = obj.Close() }()
 ```
 
 Do not omit positive `MaxTCPConnections` and `MaxUDPSessions` on untrusted or publicly reachable listeners: zero means

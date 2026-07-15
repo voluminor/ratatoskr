@@ -12,8 +12,6 @@ import (
 
 // // // // // // // // // //
 
-// emptyParseSigilObj always matches and claims its declared keys, but stores
-// nothing on parse: it models a user sigil whose keys are all optional.
 type emptyParseSigilObj struct {
 	name string
 	keys []string
@@ -38,7 +36,6 @@ func (e *emptyParseSigilObj) Clone() sigils.Interface {
 	return &emptyParseSigilObj{name: e.name, keys: append([]string(nil), e.keys...)}
 }
 
-// nilCloneParseSigilObj is a user sigil that refuses to clone itself.
 type nilCloneParseSigilObj struct {
 	emptyParseSigilObj
 }
@@ -48,7 +45,6 @@ func (n *nilCloneParseSigilObj) Clone() sigils.Interface {
 }
 
 // // // // // // // // // //
-// Parse
 
 func TestParse_noRatatoskrKey(t *testing.T) {
 	m := map[string]any{"custom": "data"}
@@ -88,8 +84,6 @@ func TestParse_builtinSigilNameIsReserved(t *testing.T) {
 		"shadow_key": "keep",
 	}
 
-	// A user sigil registered under a built-in name must never override the
-	// built-in parser, which wins by resolution order.
 	p := Parse(m, newMockSigil(inet.Name(), "shadow_key"))
 	if p.Sigils == nil || p.Sigils[inet.Name()] == nil {
 		t.Fatal("built-in sigil parser should handle reserved names")
@@ -157,8 +151,6 @@ func TestParse_userSigilWithOptionalKeysIsAccepted(t *testing.T) {
 		target.Name: "[custom] " + target.Version,
 		"custom":    "value",
 	}
-	// A matched user sigil is accepted even when ParseParams stores nothing:
-	// optional keys may be absent. Its declared keys are claimed from Extra.
 	p := Parse(m, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
 	if p.Sigils == nil || p.Sigils["custom"] == nil {
 		t.Fatal("matched user sigil should be accepted")
@@ -173,9 +165,6 @@ func TestParse_absentUserSigilIsSkipped(t *testing.T) {
 		target.Name: "[custom] " + target.Version,
 		"custom":    "value",
 	}
-	// A user sigil whose Match reports absence must be skipped and must leave its
-	// data untouched in Extra. newMockSigil only matches when its keys are present,
-	// and "absent" declares a key the map does not carry.
 	p := Parse(m, newMockSigil("custom", "absent"))
 	if p.Sigils != nil {
 		t.Fatal("absent sigil should not be accepted")
@@ -190,8 +179,6 @@ func TestParse_nilUserSigilIsSkipped(t *testing.T) {
 		target.Name: "[custom] " + target.Version,
 		"custom":    "value",
 	}
-	// A nil element in the variadic must be skipped, not dereferenced, and must
-	// not disrupt parsing of the valid sigil that follows it.
 	p := Parse(m, nil, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
 	if p.Sigils == nil || p.Sigils["custom"] == nil {
 		t.Fatal("nil sigil must not disrupt parsing of valid sigils")
@@ -215,7 +202,6 @@ func TestParse_nilCloneUserSigilIsSkipped(t *testing.T) {
 }
 
 // // // // // // // // // //
-// NodeInfo
 
 func TestParsedObj_NodeInfo_plain(t *testing.T) {
 	m := map[string]any{"custom": "data"}
@@ -285,7 +271,6 @@ func TestParsedObj_NodeInfo_noVersion(t *testing.T) {
 }
 
 // // // // // // // // // //
-// String
 
 func TestParsedObj_String_validJSON(t *testing.T) {
 	m := map[string]any{"name": "test", "version": "1.0"}
@@ -305,29 +290,5 @@ func TestParsedObj_String_empty(t *testing.T) {
 	s := p.String()
 	if s != "{}" {
 		t.Fatalf("expected {}, got %s", s)
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkParse_withRatatoskr(b *testing.B) {
-	m := map[string]any{
-		target.Name:    "[inet,info] v0.1.3",
-		"buildname":    "yggdrasil",
-		"buildversion": "0.5.13",
-		"extra":        "data",
-	}
-	for b.Loop() {
-		Parse(m)
-	}
-}
-
-func BenchmarkParse_plain(b *testing.B) {
-	m := map[string]any{
-		"name":    "test",
-		"version": "1.0",
-	}
-	for b.Loop() {
-		Parse(m)
 	}
 }

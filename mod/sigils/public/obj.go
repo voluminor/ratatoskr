@@ -86,12 +86,12 @@ func parsePeers(NodeInfo map[string]any) (map[string][]string, bool) {
 	}
 }
 
-// Obj — peering URIs grouped by network.
+// Obj owns validated peering URIs grouped by network.
 type Obj struct {
 	peers map[string][]string
 }
 
-// New creates the "public" sigil. Max 8 groups, max 16 URIs per group.
+// New creates a public sigil with at most 8 groups and 16 URIs per group.
 func New(peers map[string][]string) (*Obj, error) {
 	if err := validatePeers(peers); err != nil {
 		return nil, err
@@ -101,18 +101,22 @@ func New(peers map[string][]string) (*Obj, error) {
 
 // //
 
+// GetName returns Name.
 func (o *Obj) GetName() string {
 	return Name()
 }
 
+// GetParams returns Keys.
 func (o *Obj) GetParams() []string {
 	return Keys()
 }
 
+// SetParams merges the current fragment into a copy of NodeInfo.
 func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 	return sigils.MergeParams(NodeInfo, o.Params())
 }
 
+// ParseParams extracts the public fragment and replaces current data when valid.
 func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	parsed := ParseParams(NodeInfo)
 
@@ -125,18 +129,20 @@ func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	return parsed
 }
 
+// Match reports whether NodeInfo contains a valid public fragment.
 func (o *Obj) Match(NodeInfo map[string]any) bool {
 	return Match(NodeInfo)
 }
 
+// Clone returns an independent copy.
 func (o *Obj) Clone() sigils.Interface {
 	return &Obj{peers: clonePeers(o.peers)}
 }
 
+// Params returns an independent NodeInfo fragment.
 func (o *Obj) Params() map[string]any {
 	if len(o.peers) == 0 {
 		return map[string]any{}
 	}
-	// Deep-copy the nested map/slices so the returned fragment cannot alias internal state.
 	return map[string]any{sigName: clonePeers(o.peers)}
 }

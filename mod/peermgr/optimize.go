@@ -9,7 +9,6 @@ import (
 
 // // // // // // // // // //
 
-// lockOptimize acquires the single-flight optimize gate, honoring ctx cancellation.
 func (m *Obj) lockOptimize(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -28,7 +27,6 @@ func (m *Obj) unlockOptimize() {
 
 // //
 
-// run drives one bounded startup pass, scheduled refreshes, and health recovery.
 func (m *Obj) run(ctx context.Context) {
 	_ = m.optimizeLocked(ctx)
 
@@ -80,7 +78,6 @@ func (m *Obj) run(ctx context.Context) {
 	}
 }
 
-// optimizeLocked serializes optimize calls through the gate and runs one cycle.
 func (m *Obj) optimizeLocked(ctx context.Context) error {
 	return m.optimizeLockedMode(ctx, false)
 }
@@ -119,10 +116,7 @@ func (m *Obj) activeUpCount() int {
 
 // // // // // // // // // //
 
-// recoverySlots returns the remaining per-protocol capacity for partial
-// recovery. Missing active peers reserve a slot because the cycle reconnects
-// them itself; present-but-down peers do not.
-func (m *Obj) recoverySlots(active []peerEntryObj, peers []yggcore.PeerInfo) (map[string]int, bool) {
+func (m *Obj) recoverySlots(active []PeerEntryObj, peers []yggcore.PeerInfo) (map[string]int, bool) {
 	slots := make(map[string]int)
 	for _, peer := range m.peers {
 		slots[peer.Scheme] = m.cfg.MaxPerProto
@@ -160,13 +154,10 @@ func (m *Obj) recoverySlots(active []peerEntryObj, peers []yggcore.PeerInfo) (ma
 	return slots, false
 }
 
-// probeCycleCandidates returns every currently active peer plus one bounded
-// batch of challengers. A partial recovery targets only vacant protocol slots;
-// a complete outage bypasses holdoff for the whole bounded batch.
-func (m *Obj) probeCycleCandidates(now time.Time, recovery bool, peerSnapshot []yggcore.PeerInfo) []peerEntryObj {
+func (m *Obj) probeCycleCandidates(now time.Time, recovery bool, peerSnapshot []yggcore.PeerInfo) []PeerEntryObj {
 	activeSet := m.activeSet()
-	out := make([]peerEntryObj, 0, len(activeSet)+effectiveBatchSize(m.cfg.BatchSize, len(m.peers)))
-	active := make([]peerEntryObj, 0, len(activeSet))
+	out := make([]PeerEntryObj, 0, len(activeSet)+effectiveBatchSize(m.cfg.BatchSize, len(m.peers)))
+	active := make([]PeerEntryObj, 0, len(activeSet))
 	seen := make(map[string]struct{}, len(m.peers))
 	for _, peer := range m.peers {
 		key := peerEntryKey(peer)
@@ -240,15 +231,13 @@ func (m *Obj) activeSet() map[string]struct{} {
 	return out
 }
 
-func peerEntryKey(peer peerEntryObj) string {
+func peerEntryKey(peer PeerEntryObj) string {
 	if peer.MatchURI != "" {
 		return peer.MatchURI
 	}
 	return normalizePeerURI(peer.URI)
 }
 
-// updateProbeSchedule clears state for selected peers, holds reachable losers for
-// ReprobeInterval, and grows exponential backoff for peers still down.
 func (m *Obj) updateProbeSchedule(results []peerResultObj, selected map[string]bool, probeTimeout time.Duration) {
 	now := time.Now()
 	for _, r := range results {
@@ -269,11 +258,6 @@ func (m *Obj) updateProbeSchedule(results []peerResultObj, selected map[string]b
 	}
 }
 
-// bumpProbeBackoff grows the capped exponential backoff for one peer key. It is
-// used both for peers that connect but fail the probe and for peers that never
-// reach the probe stage (AddPeer fails synchronously on a malformed URI), so an
-// unusable URI decays out of the candidate set instead of being re-dialed every
-// cycle. Called only from the single optimize goroutine, so probeState is unlocked.
 func (m *Obj) bumpProbeBackoff(key string, probeTimeout time.Duration) {
 	state := m.probeState[key]
 	state.failures++
@@ -301,7 +285,6 @@ func waitProbeBatch(ctx context.Context, probeTimeout time.Duration) error {
 	}
 }
 
-// effectiveBatchSize bounds new candidate connection attempts in one cycle.
 func effectiveBatchSize(size, total int) int {
 	if total <= 0 {
 		return 0
@@ -318,7 +301,6 @@ func effectiveBatchSize(size, total int) int {
 	return size
 }
 
-// managedURIs returns the URIs currently handed to the node, order-independent.
 func managedURIs(managed map[string]string) []string {
 	out := make([]string, 0, len(managed))
 	for _, uri := range managed {
@@ -337,10 +319,6 @@ func (m *Obj) optimizeActiveMode(ctx context.Context, recovery bool) error {
 		m.cfg.Logger.Debugf("[peermgr] no candidates due for probing")
 		return nil
 	}
-	// managed maps normalized key → URI for every peer currently handed to the
-	// node. It is seeded with the already-active peers so a cancelled cycle still
-	// reports them (plus anything added since, minus losers already removed) for
-	// Close to reap — losing them here would leak established peers past Close.
 	managed := make(map[string]string)
 	m.mu.Lock()
 	for _, uri := range m.active {
@@ -363,7 +341,7 @@ func (m *Obj) optimizeActiveMode(ctx context.Context, recovery bool) error {
 			present[key] = struct{}{}
 		}
 	}
-	connected := make([]peerEntryObj, 0, len(candidates))
+	connected := make([]PeerEntryObj, 0, len(candidates))
 	startedConnection := false
 	for _, p := range candidates {
 		if err := ctx.Err(); err != nil {
@@ -380,9 +358,6 @@ func (m *Obj) optimizeActiveMode(ctx context.Context, recovery bool) error {
 		if err := m.cfg.Node.AddPeer(p.URI); err != nil {
 			m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", normalizePeerURI(p.URI), err)
 			if owned {
-				// GetPeers and AddPeer are not atomic. Preserve teardown ownership
-				// until the fresh selection snapshot confirms the peer is absent and
-				// RemovePeer succeeds.
 				connected = append(connected, p)
 				continue
 			}
@@ -411,8 +386,6 @@ func (m *Obj) optimizeActiveMode(ctx context.Context, recovery bool) error {
 	return nil
 }
 
-// optimizePassive keeps the complete configured set managed without probing or
-// pruning. AddPeer is retried on every cycle so externally dropped peers recover.
 func (m *Obj) optimizePassive(ctx context.Context) error {
 	managed := make(map[string]string, len(m.peers))
 	m.mu.Lock()
@@ -437,8 +410,6 @@ func (m *Obj) optimizePassive(ctx context.Context) error {
 		}
 		if err := m.cfg.Node.AddPeer(peer.URI); err != nil {
 			m.cfg.Logger.Debugf("[peermgr] AddPeer %s: %v", normalizePeerURI(peer.URI), err)
-			// A stale snapshot cannot revoke ownership. Close or a later
-			// reconciliation remains responsible for an already-owned peer.
 			continue
 		}
 		managed[key] = peer.URI
@@ -448,9 +419,7 @@ func (m *Obj) optimizePassive(ctx context.Context) error {
 	return nil
 }
 
-// selectAndPrune measures the connected candidates against GetPeers, keeps the
-// best per protocol, and removes the losers from the node (and from managed).
-func (m *Obj) selectAndPrune(connected []peerEntryObj, probeTimeout time.Duration, managed map[string]string) []peerEntryObj {
+func (m *Obj) selectAndPrune(connected []PeerEntryObj, probeTimeout time.Duration, managed map[string]string) []PeerEntryObj {
 	results := buildResults(connected, m.cfg.Node.GetPeers())
 	selected := selectBest(results, m.cfg.MaxPerProto)
 	selectedSet := make(map[string]bool, len(selected))
@@ -461,7 +430,7 @@ func (m *Obj) selectAndPrune(connected []peerEntryObj, probeTimeout time.Duratio
 	m.cfg.Logger.Debugf("[peermgr] %d up, %d selected, %d dropped",
 		countUp(results), len(selected), len(connected)-len(selected))
 
-	kept := make([]peerEntryObj, 0, len(selected))
+	kept := make([]PeerEntryObj, 0, len(selected))
 	for _, p := range connected {
 		if selectedSet[p.URI] {
 			kept = append(kept, p)
@@ -469,8 +438,6 @@ func (m *Obj) selectAndPrune(connected []peerEntryObj, probeTimeout time.Duratio
 		}
 		if err := m.cfg.Node.RemovePeer(p.URI); err != nil {
 			m.cfg.Logger.Debugf("[peermgr] RemovePeer %s: %v", normalizePeerURI(p.URI), err)
-			// The peer is still handed to the node. Keep it managed and retry the
-			// reconciliation on the next cycle instead of losing teardown ownership.
 			kept = append(kept, p)
 			continue
 		}
@@ -481,8 +448,7 @@ func (m *Obj) selectAndPrune(connected []peerEntryObj, probeTimeout time.Duratio
 
 // //
 
-// reportResult logs the optimize outcome.
-func (m *Obj) reportResult(kept []peerEntryObj) {
+func (m *Obj) reportResult(kept []PeerEntryObj) {
 	up := countUp(buildResults(kept, m.cfg.Node.GetPeers()))
 	if up == 0 {
 		m.cfg.Logger.Warnf("[peermgr] no reachable peers after probe")

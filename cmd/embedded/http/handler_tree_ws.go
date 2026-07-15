@@ -11,30 +11,24 @@ import (
 
 // // // // // // // // // //
 
-// treeWSReqJSON is a client request to start a new tree scan.
-type treeWSReqJSON struct {
+type treeWSReqJSONObj struct {
 	Depth int `json:"depth"`
 }
 
-// treeWSMsgJSON is a server message: ack, progress, result, or error.
-type treeWSMsgJSON struct {
-	Type     string         `json:"type"`
-	Depth    int            `json:"depth,omitempty"`
-	Found    int            `json:"found,omitempty"`
-	Total    int            `json:"total,omitempty"`
-	Root     *traceNodeJSON `json:"root,omitempty"`
-	Duration float64        `json:"duration_ms,omitempty"`
-	Message  string         `json:"message,omitempty"`
+type treeWSMsgJSONObj struct {
+	Type     string            `json:"type"`
+	Depth    int               `json:"depth,omitempty"`
+	Found    int               `json:"found,omitempty"`
+	Total    int               `json:"total,omitempty"`
+	Root     *traceNodeJSONObj `json:"root,omitempty"`
+	Duration float64           `json:"duration_ms,omitempty"`
+	Message  string            `json:"message,omitempty"`
 }
 
 // // // // // // // // // //
 
-// newTreeWSHandler creates a persistent WebSocket handler for tree scans.
-// One connection per modal session; closed when the modal closes.
-// Each Refresh sends a new scan request over the same connection.
 func newTreeWSHandler(tr *probe.Obj) http.Handler {
 	return websocket.Server{
-		// Accept connections from any origin — embedded server serves its own UI.
 		Handshake: func(cfg *websocket.Config, r *http.Request) error {
 			cfg.Origin = r.URL
 			return nil
@@ -49,15 +43,12 @@ func newTreeWSHandler(tr *probe.Obj) http.Handler {
 
 // //
 
-// treeWSLoop processes tree scan requests from the WebSocket connection.
-// A dedicated reader goroutine detects disconnect immediately and cancels ctx,
-// so in-flight BFS scans abort without waiting for the next progress Send.
 func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Conn, tr *probe.Obj) {
-	requests := make(chan treeWSReqJSON, 1)
+	requests := make(chan treeWSReqJSONObj, 1)
 	go func() {
 		defer cancel()
 		for {
-			var req treeWSReqJSON
+			var req treeWSReqJSONObj
 			if err := websocket.JSON.Receive(ws, &req); err != nil {
 				return
 			}
@@ -75,11 +66,11 @@ func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Co
 			return
 		case req := <-requests:
 			if req.Depth <= 0 || req.Depth > 65535 {
-				_ = websocket.JSON.Send(ws, treeWSMsgJSON{Type: "error", Message: "depth must be between 1 and 65535"})
+				_ = websocket.JSON.Send(ws, treeWSMsgJSONObj{Type: "error", Message: "depth must be between 1 and 65535"})
 				continue
 			}
 
-			if err := websocket.JSON.Send(ws, treeWSMsgJSON{Type: "ack"}); err != nil {
+			if err := websocket.JSON.Send(ws, treeWSMsgJSONObj{Type: "ack"}); err != nil {
 				return
 			}
 
@@ -99,14 +90,14 @@ func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Co
 			}
 
 			if scanErr != nil {
-				if err := websocket.JSON.Send(ws, treeWSMsgJSON{Type: "error", Message: scanErr.Error()}); err != nil {
+				if err := websocket.JSON.Send(ws, treeWSMsgJSONObj{Type: "error", Message: scanErr.Error()}); err != nil {
 					return
 				}
 				continue
 			}
 
 			elapsed := time.Since(start)
-			if err := websocket.JSON.Send(ws, treeWSMsgJSON{
+			if err := websocket.JSON.Send(ws, treeWSMsgJSONObj{
 				Type:     "result",
 				Root:     nodeToJSON(result.Root),
 				Total:    result.Total,
@@ -120,8 +111,6 @@ func treeWSLoop(ctx context.Context, cancel context.CancelFunc, ws *websocket.Co
 
 // //
 
-// streamTreeProgress reads progress from ch until Done=true, ctx cancellation, or goroutine exit.
-// Returns true if the connection was lost (ctx cancelled by reader goroutine).
 func streamTreeProgress(ws *websocket.Conn, ctx context.Context, ch <-chan probe.TreeProgressObj, done <-chan struct{}) bool {
 	for {
 		select {
@@ -130,7 +119,7 @@ func streamTreeProgress(ws *websocket.Conn, ctx context.Context, ch <-chan probe
 			return true
 		case p := <-ch:
 			if p.Found > 0 {
-				if err := websocket.JSON.Send(ws, treeWSMsgJSON{
+				if err := websocket.JSON.Send(ws, treeWSMsgJSONObj{
 					Type:  "progress",
 					Depth: p.Depth,
 					Found: p.Found,

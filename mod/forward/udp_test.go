@@ -240,7 +240,6 @@ func TestRecordUDPChurnDropExcludesGlobalShutdown(t *testing.T) {
 
 // //
 
-// echoUDPServer starts a UDP echo server on 127.0.0.1:0 and returns its address
 func echoUDPServer(t *testing.T) *net.UDPAddr {
 	t.Helper()
 	conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
@@ -334,7 +333,6 @@ func TestDefaultsAndConfig(t *testing.T) {
 	if mgr.udpLimit.max != 0 {
 		t.Fatalf("default UDP limit = %d, want unlimited", mgr.udpLimit.max)
 	}
-	// dialTimeout is stored raw; the default is applied at dial time by dialTimeoutContext.
 	dialCtx, cancelDial := dialTimeoutContext(context.Background(), mgr.dialTimeout)
 	dl, ok := dialCtx.Deadline()
 	cancelDial()
@@ -512,7 +510,6 @@ func TestRunUDPLoop_nilLoggerInvalidTimeoutDoesNotPanic(t *testing.T) {
 // //
 
 func TestReverseProxyUDP_forwardsData(t *testing.T) {
-	// dst listens on UDP; src is a net.Conn wrapping a pair
 	dstConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
@@ -539,7 +536,6 @@ func TestReverseProxyUDP_forwardsData(t *testing.T) {
 		},
 	})
 
-	// Write to srcWriter → should appear on dstConn
 	msg := []byte("reverse-udp-test")
 	if _, err := srcWriter.Write(msg); err != nil {
 		t.Fatalf("write to src: %v", err)
@@ -667,7 +663,6 @@ func TestReverseProxyUDP_stopsOnSrcClose(t *testing.T) {
 func TestRunUDPLoop_echoRoundtrip(t *testing.T) {
 	echoAddr := echoUDPServer(t)
 
-	// Local UDP listener (plays the role of "Yggdrasil" side)
 	listenConn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
 	if err != nil {
 		t.Fatal(err)
@@ -686,7 +681,6 @@ func TestRunUDPLoop_echoRoundtrip(t *testing.T) {
 		})
 	}()
 
-	// Simulate a client: dial listenConn directly
 	clientConn, err := net.DialUDP("udp4", nil, listenConn.LocalAddr().(*net.UDPAddr))
 	if err != nil {
 		t.Fatal(err)
@@ -713,8 +707,6 @@ func TestUDPLoopAllowsUnlimitedSessionsByDefault(t *testing.T) {
 	loopDone := make(chan struct{})
 	go func() {
 		defer close(loopDone)
-		// Zero MaxSessions is intentionally unlimited; bounded queues still cap
-		// memory retained by each active session.
 		_ = RunUDPLoop(ctx, UDPLoopConfigObj{
 			Logger:     noopLogObj{},
 			ListenConn: listenConn,
@@ -1164,7 +1156,6 @@ func TestRunUDPLoop_sessionTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	// Very short timeout to trigger session cleanup
 	const sessionTimeout = 100 * time.Millisecond
 	_ = startUDPLoop(ctx, UDPLoopConfigObj{
 		Logger:     noopLogObj{},
@@ -1181,9 +1172,7 @@ func TestRunUDPLoop_sessionTimeout(t *testing.T) {
 
 	_ = readUDPEchoWithRetry(t, clientConn, []byte("x"))
 
-	// Wait for session to expire
 	time.Sleep(sessionTimeout * 6)
-	// No panic or deadlock — test passes
 }
 
 func TestRunUDPLoop_maxSessions(t *testing.T) {
@@ -1211,7 +1200,6 @@ func TestRunUDPLoop_maxSessions(t *testing.T) {
 
 	addr := listenConn.LocalAddr().(*net.UDPAddr)
 
-	// First client
 	c1, err := net.DialUDP("udp4", nil, addr)
 	if err != nil {
 		t.Fatal(err)
@@ -1231,7 +1219,6 @@ func TestRunUDPLoop_maxSessions(t *testing.T) {
 		t.Fatalf("unexpected first upstream write %q", got)
 	}
 
-	// Second client (different source port → different session → should be dropped)
 	c2, err := net.DialUDP("udp4", nil, addr)
 	if err != nil {
 		t.Fatal(err)
@@ -1445,9 +1432,6 @@ func BenchmarkReverseProxyUDP(b *testing.B) {
 	}
 }
 
-// BenchmarkUDPSessionRouting exercises the per-datagram hot path: derive the NAT
-// key from the source address and look up its session. It must stay at 0 allocs/op
-// — the typed netip.AddrPort key must never be boxed into interface{}.
 func BenchmarkUDPSessionRouting(b *testing.B) {
 	addr := &net.UDPAddr{IP: net.ParseIP("200:1234::1"), Port: 5000}
 	sessions := newUDPSessionMap()
@@ -1467,18 +1451,5 @@ func BenchmarkUDPSessionRouting(b *testing.B) {
 		if _, found := sessions.load(k); !found {
 			b.Fatal("session not found")
 		}
-	}
-}
-
-func BenchmarkUDPBufferPool(b *testing.B) {
-	const packetSize = 1200
-
-	pool := newUDPBufferPool(maxUDPDatagramSize)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		packet := pool.get(packetSize)
-		packet.buf[0] = 1
-		pool.put(packet)
 	}
 }

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Measure stable direct Docker and Yggdrasil TCP/UDP goodput and GOMAXPROCS scaling.
 set -Eeuo pipefail
 
 OUT="${OUT:-/out}/throughput"

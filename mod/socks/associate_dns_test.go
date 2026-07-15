@@ -13,9 +13,6 @@ import (
 
 // // // // // // // // // //
 
-// countingResolverObj is a case-insensitive, accept-any NameResolver that records
-// how many times Resolve is invoked. It lets a datagram test assert resolve-on-miss
-// semantics without depending on which exact FQDN case reaches the resolver.
 type countingResolverObj struct {
 	ip    net.IP
 	calls atomic.Int64
@@ -28,7 +25,6 @@ func (r *countingResolverObj) Resolve(ctx context.Context, name string) (context
 
 // //
 
-// sendOne relays a single SOCKS UDP datagram to target and fails on mismatch.
 func sendOne(t *testing.T, udpConn net.PacketConn, relay net.Addr, target string, payload []byte) {
 	t.Helper()
 	_ = udpConn.SetDeadline(time.Now().Add(time.Second))
@@ -40,9 +36,6 @@ func sendOne(t *testing.T, udpConn net.PacketConn, relay net.Addr, target string
 
 // // // // // // // // // //
 
-// H1/M2 acceptance: a UDP ASSOCIATE flow to one FQDN target must resolve exactly
-// once, not per datagram. Pre-fix this counts N (resolve before target-cache
-// lookup, cache keyed by resolved address); post-fix it must be 1.
 func TestAssociate_resolvesDomainOncePerTarget(t *testing.T) {
 	echo := udpEchoServer(t)
 	cfg := tcpCfgOnFreePort(t)
@@ -69,9 +62,6 @@ func TestAssociate_resolvesDomainOncePerTarget(t *testing.T) {
 
 // //
 
-// H1 acceptance: the ASSOCIATE target key must canonicalize the FQDN (lowercase,
-// strip trailing dot), so case/dot variants of the same host reuse one target and
-// resolve once — otherwise a client can multiply targets past any per-session cap.
 func TestAssociate_domainKeyIsCanonical(t *testing.T) {
 	echo := udpEchoServer(t)
 	cfg := tcpCfgOnFreePort(t)
@@ -101,9 +91,6 @@ func TestAssociate_domainKeyIsCanonical(t *testing.T) {
 
 // //
 
-// Guard against over-dedup: two DISTINCT FQDN targets must remain distinct — each
-// resolves once (not collapsed into a single target). Two datagrams per host: pre-fix
-// counts 4 (per-datagram), post-fix counts 2 (one resolve per distinct target).
 func TestAssociate_distinctDomainsResolveIndependently(t *testing.T) {
 	echo := udpEchoServer(t)
 	cfg := tcpCfgOnFreePort(t)

@@ -12,8 +12,8 @@ import (
 
 // // // // // // // // // //
 
-// GenerateConfig generates a new Yggdrasil node configuration with a random key pair.
-// Returns a JSON string to be saved and passed to LoadConfigJSON.
+// GenerateConfig returns a JSON Yggdrasil configuration with a random key pair
+// and the admin listener disabled.
 func GenerateConfig() (string, error) {
 	nodeCfg := config.GenerateConfig()
 	nodeCfg.AdminListen = "none"

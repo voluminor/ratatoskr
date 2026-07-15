@@ -7,11 +7,11 @@ import (
 
 // // // // // // // // // //
 
-// ConfigObj — Yggdrasil node creation parameters
+// ConfigObj contains node construction parameters.
 type ConfigObj struct {
-	// Yggdrasil configuration (keys, peers, listen); nil → random keys
+	// Config is copied during construction. Nil generates a default node config.
 	Config *config.NodeConfig
 
-	// Logger; nil → logs are discarded
+	// Logger receives Yggdrasil logs. Nil discards them.
 	Logger yggcore.Logger
 }

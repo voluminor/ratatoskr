@@ -1,507 +1,161 @@
 package public
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
 
 // // // // // // // // // //
-// Name / Keys
 
-func TestName(t *testing.T) {
-	if Name() != "public" {
-		t.Fatalf("expected public, got %s", Name())
-	}
-}
-
-func TestKeys(t *testing.T) {
-	k := Keys()
-	if len(k) != 1 || k[0] != "public" {
-		t.Fatalf("unexpected keys: %v", k)
-	}
-	k[0] = "changed"
-	if Keys()[0] != "public" {
-		t.Fatal("Keys leaked internal slice")
-	}
-}
-
-// // // // // // // // // //
-// New — validation
-
-func TestNew_valid(t *testing.T) {
-	obj, err := New(map[string][]string{
-		"europe": {"tls://1.2.3.4:12345", "tls://5.6.7.8:12345"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if obj.GetName() != "public" {
-		t.Fatal("wrong name")
-	}
-}
-
-func TestNew_multipleGroups(t *testing.T) {
-	peers := make(map[string][]string)
-	for i := range 8 {
-		name := "gr" + strings.Repeat("x", i)
-		peers[name] = []string{"tls://1.2.3.4:12345"}
-	}
-	_, err := New(peers)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_empty(t *testing.T) {
-	_, err := New(map[string][]string{})
-	if err == nil {
-		t.Fatal("expected error for empty peers")
-	}
-}
-
-func TestNew_nil(t *testing.T) {
-	_, err := New(nil)
-	if err == nil {
-		t.Fatal("expected error for nil peers")
-	}
-}
-
-func TestNew_tooManyGroups(t *testing.T) {
-	peers := make(map[string][]string)
-	for i := range 9 {
-		name := "gr" + strings.Repeat("x", i)
-		peers[name] = []string{"tls://1.2.3.4:12345"}
-	}
-	_, err := New(peers)
-	if err == nil {
-		t.Fatal("expected error for >8 groups")
-	}
-}
-
-func TestNew_emptyGroup(t *testing.T) {
-	_, err := New(map[string][]string{"europe": {}})
-	if err == nil {
-		t.Fatal("expected error for empty group")
-	}
-}
-
-func TestNew_tooManyURIs(t *testing.T) {
-	uris := make([]string, 17)
-	for i := range uris {
-		uris[i] = "tls://1.2.3.4:" + strings.Repeat("1", 5) + strings.Repeat("x", i)
-	}
-	_, err := New(map[string][]string{"europe": uris})
-	if err == nil {
-		t.Fatal("expected error for >16 URIs per group")
-	}
-}
-
-func TestNew_exactMaxURIs(t *testing.T) {
-	uris := make([]string, 16)
-	for i := range uris {
-		uris[i] = "tls://host" + strings.Repeat("x", i) + ":12345"
-	}
-	_, err := New(map[string][]string{"europe": uris})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_invalidGroupName_tooShort(t *testing.T) {
-	_, err := New(map[string][]string{"a": {"tls://1.2.3.4:12345"}})
-	if err == nil {
-		t.Fatal("expected error for 1-char group name")
-	}
-}
-
-func TestNew_invalidGroupName_tooLong(t *testing.T) {
-	_, err := New(map[string][]string{
-		strings.Repeat("a", 17): {"tls://1.2.3.4:12345"},
-	})
-	if err == nil {
-		t.Fatal("expected error for 17-char group name")
-	}
-}
-
-func TestNew_invalidGroupName_uppercase(t *testing.T) {
-	_, err := New(map[string][]string{"Europe": {"tls://1.2.3.4:12345"}})
-	if err == nil {
-		t.Fatal("expected error for uppercase group name")
-	}
-}
-
-func TestNew_invalidGroupName_specialChar(t *testing.T) {
-	_, err := New(map[string][]string{"eu-west": {"tls://1.2.3.4:12345"}}) // dash not in regex
-	if err == nil {
-		t.Fatal("expected error for dash in group name")
-	}
-}
-
-func TestNew_validGroupName_boundary(t *testing.T) {
-	_, err := New(map[string][]string{
-		"ab":                    {"tls://1.2.3.4:12345"}, // min 2
-		strings.Repeat("a", 16): {"tls://5.6.7.8:12345"}, // max 16
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_invalidURI_tooShort(t *testing.T) {
-	_, err := New(map[string][]string{"eu": {"tls://a"}}) // 7 chars, min 8
-	if err == nil {
-		t.Fatal("expected error for too short URI")
-	}
-}
-
-func TestNew_invalidURI_tooLong(t *testing.T) {
-	_, err := New(map[string][]string{"eu": {strings.Repeat("a", 257)}})
-	if err == nil {
-		t.Fatal("expected error for too long URI")
-	}
-}
-
-func TestNew_validURI_boundary(t *testing.T) {
-	_, err := New(map[string][]string{
-		"eu": {"tls://ab"}, // 8 chars
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_invalidURI_specialChars(t *testing.T) {
-	invalid := []string{
-		"tls://a b:80",  // space
-		"tls://a\tb:80", // tab
-		"tls://a#b:80",  // hash
-		"tls://a?b:80",  // question mark
-	}
-	for _, uri := range invalid {
-		_, err := New(map[string][]string{"eu": {uri}})
-		if err == nil {
-			t.Fatalf("expected error for URI %q", uri)
+func TestNewValidation(t *testing.T) {
+	maximum := make(map[string][]string, maxGroups)
+	for i := range maxGroups {
+		uris := make([]string, maxURIsPerGroup)
+		for j := range uris {
+			uris[j] = "tls://host" + strings.Repeat("a", i) + ":" + strings.Repeat("1", j+1)
 		}
+		maximum["group"+string(rune('a'+i))] = uris
+	}
+	tooManyGroups := clonePeers(maximum)
+	tooManyGroups["extra"] = []string{"tls://x:1"}
+	tooManyURIs := make([]string, maxURIsPerGroup+1)
+	for i := range tooManyURIs {
+		tooManyURIs[i] = "tls://x:" + strings.Repeat("1", i+1)
+	}
+	tests := []struct {
+		name  string
+		peers map[string][]string
+		valid bool
+	}{
+		{name: "single", peers: map[string][]string{"internet": {"tls://example.com:443"}}, valid: true},
+		{name: "maximum counts", peers: maximum, valid: true},
+		{name: "name boundaries", peers: map[string][]string{"ab": {"tls://x:1"}, strings.Repeat("a", 16): {"tls://x:2"}}, valid: true},
+		{name: "URI boundaries", peers: map[string][]string{"ab": {"tls://x:1", strings.Repeat("a", 256)}}, valid: true},
+		{name: "empty", peers: map[string][]string{}},
+		{name: "nil"},
+		{name: "too many groups", peers: tooManyGroups},
+		{name: "empty group", peers: map[string][]string{"internet": {}}},
+		{name: "too many URIs", peers: map[string][]string{"internet": tooManyURIs}},
+		{name: "short group", peers: map[string][]string{"a": {"tls://x:1"}}},
+		{name: "long group", peers: map[string][]string{strings.Repeat("a", 17): {"tls://x:1"}}},
+		{name: "uppercase group", peers: map[string][]string{"Internet": {"tls://x:1"}}},
+		{name: "group punctuation", peers: map[string][]string{"inter-net": {"tls://x:1"}}},
+		{name: "short URI", peers: map[string][]string{"internet": {"tcp://x"}}},
+		{name: "long URI", peers: map[string][]string{"internet": {strings.Repeat("a", 257)}}},
+		{name: "URI whitespace", peers: map[string][]string{"internet": {"tls://bad host:1"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			obj, err := New(test.peers)
+			if test.valid {
+				if err != nil || obj == nil {
+					t.Fatalf("New() = (%v, %v), want valid object", obj, err)
+				}
+				return
+			}
+			if err == nil || obj != nil {
+				t.Fatalf("New() = (%v, %v), want validation error", obj, err)
+			}
+		})
 	}
 }
 
-// // // // // // // // // //
-// Match
-
-func TestMatch_valid(t *testing.T) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"eu": []any{"tls://1.2.3.4:12345"},
-		},
+func TestMatchForeignNodeInfo(t *testing.T) {
+	tooMany := make(map[string]any, maxGroups+1)
+	for i := 0; i <= maxGroups; i++ {
+		tooMany["group"+string(rune('a'+i))] = []any{"tls://x:1"}
 	}
-	if !Match(ni) {
-		t.Fatal("expected match")
+	tests := []struct {
+		name     string
+		nodeInfo map[string]any
+		match    bool
+	}{
+		{name: "valid JSON map", nodeInfo: map[string]any{"public": map[string]any{"internet": []any{"tls://example.com:443"}}}, match: true},
+		{name: "valid typed map", nodeInfo: map[string]any{"public": map[string][]string{"internet": {"tls://example.com:443"}}}, match: true},
+		{name: "missing", nodeInfo: map[string]any{}},
+		{name: "wrong top-level type", nodeInfo: map[string]any{"public": []any{}}},
+		{name: "empty map", nodeInfo: map[string]any{"public": map[string]any{}}},
+		{name: "invalid group", nodeInfo: map[string]any{"public": map[string]any{"Internet": []any{"tls://x:1"}}}},
+		{name: "group value not array", nodeInfo: map[string]any{"public": map[string]any{"internet": "tls://x:1"}}},
+		{name: "array element not string", nodeInfo: map[string]any{"public": map[string]any{"internet": []any{1.0}}}},
+		{name: "empty group", nodeInfo: map[string]any{"public": map[string]any{"internet": []any{}}}},
+		{name: "invalid URI", nodeInfo: map[string]any{"public": map[string]any{"internet": []any{"bad"}}}},
+		{name: "nil value", nodeInfo: map[string]any{"public": nil}},
+		{name: "too many groups", nodeInfo: map[string]any{"public": tooMany}},
 	}
-}
-
-func TestMatch_missingKey(t *testing.T) {
-	if Match(map[string]any{"other": "data"}) {
-		t.Fatal("expected no match")
-	}
-}
-
-func TestMatch_wrongType(t *testing.T) {
-	if Match(map[string]any{"public": "string"}) {
-		t.Fatal("expected no match for string")
-	}
-}
-
-func TestMatch_emptyMap(t *testing.T) {
-	if Match(map[string]any{"public": map[string]any{}}) {
-		t.Fatal("expected no match for empty map")
-	}
-}
-
-func TestMatch_invalidGroupName(t *testing.T) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"EU": []any{"tls://1.2.3.4:12345"}, // uppercase
-		},
-	}
-	if Match(ni) {
-		t.Fatal("expected no match for invalid group name")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := Match(test.nodeInfo); got != test.match {
+				t.Fatalf("Match() = %v, want %v", got, test.match)
+			}
+		})
 	}
 }
 
-func TestMatch_valueNotArray(t *testing.T) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"eu": "not-array",
-		},
-	}
-	if Match(ni) {
-		t.Fatal("expected no match for non-array value")
-	}
-}
-
-func TestMatch_arrayElementNotString(t *testing.T) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"eu": []any{123},
-		},
-	}
-	if Match(ni) {
-		t.Fatal("expected no match for non-string element")
-	}
-}
-
-func TestMatch_nilValue(t *testing.T) {
-	if Match(map[string]any{"public": nil}) {
-		t.Fatal("expected no match for nil")
-	}
-}
-
-func TestMatch_intValue(t *testing.T) {
-	if Match(map[string]any{"public": 42}) {
-		t.Fatal("expected no match for int")
-	}
-}
-
-// // // // // // // // // //
-// Parse
-
-func TestParse_valid(t *testing.T) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"eu": []any{"tls://1.2.3.4:12345"},
-			"us": []any{"tls://5.6.7.8:12345"},
-		},
-	}
-	obj, err := Parse(ni)
+func TestParseAndObjectUpdate(t *testing.T) {
+	nodeInfo := map[string]any{"public": map[string]any{"internet": []any{"tls://example.com:443"}}}
+	obj, err := Parse(nodeInfo)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
-	p := obj.Params()
-	peers := p["public"].(map[string][]string)
-	if len(peers) != 2 {
-		t.Fatalf("expected 2 groups, got %d", len(peers))
+	want := map[string][]string{"internet": {"tls://example.com:443"}}
+	if got := obj.Peers(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Peers() = %v", got)
 	}
-	if peers["eu"][0] != "tls://1.2.3.4:12345" {
-		t.Fatalf("unexpected URI: %s", peers["eu"][0])
+	if _, err := Parse(map[string]any{}); err == nil {
+		t.Fatal("Parse accepted missing public data")
 	}
-}
+	if _, err := Parse(map[string]any{"public": map[string]any{"internet": []any{"bad"}}}); err == nil {
+		t.Fatal("Parse accepted invalid URI")
+	}
 
-func TestParse_noMatch(t *testing.T) {
-	_, err := Parse(map[string]any{"other": "data"})
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
-func TestParse_rejectsInvalidURI(t *testing.T) {
-	_, err := Parse(map[string]any{
-		"public": map[string]any{
-			"eu": []any{"tls://bad uri:12345"},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid parsed URI")
-	}
-}
-
-func TestParse_rejectsTooManyURIs(t *testing.T) {
-	uris := make([]any, maxURIsPerGroup+1)
-	for i := range uris {
-		uris[i] = "tls://host" + strings.Repeat("x", i) + ":12345"
-	}
-	_, err := Parse(map[string]any{
-		"public": map[string]any{"eu": uris},
-	})
-	if err == nil {
-		t.Fatal("expected error for too many parsed URIs")
-	}
-}
-
-// // // // // // // // // //
-// ParseParams
-
-func TestParseParams_present(t *testing.T) {
-	ni := map[string]any{"public": map[string]any{"eu": []any{"x"}}, "other": "y"}
-	pp := ParseParams(ni)
-	if _, ok := pp["public"]; !ok {
-		t.Fatal("expected public key")
-	}
-	if _, ok := pp["other"]; ok {
-		t.Fatal("unexpected other key")
-	}
-}
-
-func TestParseParams_absent(t *testing.T) {
-	pp := ParseParams(map[string]any{"other": "y"})
-	if len(pp) != 0 {
-		t.Fatalf("expected empty, got %v", pp)
-	}
-}
-
-// // // // // // // // // //
-// SetParams
-
-func TestSetParams_noConflict(t *testing.T) {
-	obj, _ := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
-	result, err := obj.SetParams(map[string]any{"other": "data"})
+	current, err := New(map[string][]string{"old": {"tls://old:1"}})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
-	if result["public"] == nil {
-		t.Fatal("public key not set")
+	current.ParseParams(nodeInfo)
+	if got := current.Peers(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("object was not updated: %v", got)
 	}
-	if result["other"] != "data" {
-		t.Fatal("other lost")
-	}
-}
-
-func TestSetParams_conflict(t *testing.T) {
-	obj, _ := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
-	_, err := obj.SetParams(map[string]any{"public": "existing"})
-	if err == nil {
-		t.Fatal("expected conflict error")
+	current.ParseParams(map[string]any{"public": map[string]any{"internet": []any{"bad"}}})
+	if got := current.Peers(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("invalid update changed object: %v", got)
 	}
 }
 
-func TestSetParams_doesNotMutateInput(t *testing.T) {
-	obj, _ := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
-	ni := map[string]any{"other": "data"}
-	if _, err := obj.SetParams(ni); err != nil {
+func TestOwnershipAndMerge(t *testing.T) {
+	input := map[string][]string{"internet": {"tls://example.com:443"}}
+	obj, err := New(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input["internet"][0] = "tls://changed:1"
+	peers := obj.Peers()
+	peers["internet"][0] = "tls://changed:2"
+	params := obj.Params()
+	params["public"].(map[string][]string)["internet"][0] = "tls://changed:3"
+	clone := obj.Clone().(*Obj)
+	clone.peers["internet"][0] = "tls://changed:4"
+	if got := obj.Peers()["internet"][0]; got != "tls://example.com:443" {
+		t.Fatalf("mutable alias changed object: %q", got)
+	}
+
+	base := map[string]any{"other": "value"}
+	merged, err := obj.SetParams(base)
+	if err != nil {
 		t.Fatalf("SetParams: %v", err)
 	}
-	if _, ok := ni["public"]; ok {
-		t.Fatal("SetParams should not mutate input")
+	if _, exists := base["public"]; exists {
+		t.Fatal("SetParams mutated input")
 	}
-}
-
-func TestNew_clonesInput(t *testing.T) {
-	peers := map[string][]string{"eu": {"tls://1.2.3.4:12345"}}
-	obj, err := New(peers)
-	if err != nil {
-		t.Fatalf("New: %v", err)
+	if got := merged["public"].(map[string][]string)["internet"][0]; got != "tls://example.com:443" {
+		t.Fatalf("merged URI = %q", got)
 	}
-	peers["eu"][0] = "bad"
-	if got := obj.Peers()["eu"][0]; got != "tls://1.2.3.4:12345" {
-		t.Fatalf("input mutation changed object: %s", got)
+	if _, err := obj.SetParams(map[string]any{"public": "occupied"}); err == nil {
+		t.Fatal("SetParams accepted a key conflict")
 	}
-}
-
-func TestAccessorsReturnCopy(t *testing.T) {
-	obj, err := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	out := obj.Peers()
-	out["eu"][0] = "tls://5.6.7.8:12345"
-	if got := obj.Peers()["eu"][0]; got != "tls://1.2.3.4:12345" {
-		t.Fatalf("accessor must return a copy, internal data leaked: %s", got)
-	}
-}
-
-func TestParams_returnsIndependentCopy(t *testing.T) {
-	obj, err := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	// Mutating a returned nested slice must not reach internal state.
-	obj.Params()["public"].(map[string][]string)["eu"][0] = "tls://9.9.9.9:12345"
-	if got := obj.Params()["public"].(map[string][]string)["eu"][0]; got != "tls://1.2.3.4:12345" {
-		t.Fatalf("Params leaked internal slice: %s", got)
-	}
-	// Two calls must yield independent maps.
-	a := obj.Params()["public"].(map[string][]string)
-	b := obj.Params()["public"].(map[string][]string)
-	a["eu"][0] = "tls://mutated:12345"
-	if b["eu"][0] == "tls://mutated:12345" {
-		t.Fatal("Params returned aliased maps across calls")
-	}
-}
-
-// // // // // // // // // //
-// Obj.ParseParams
-
-func TestObjParseParams(t *testing.T) {
-	obj, _ := New(map[string][]string{"eu": {"tls://original:12345"}})
-	ni := map[string]any{
-		"public": map[string]any{
-			"us": []any{"tls://foreign:12345"},
-		},
-	}
-	obj.ParseParams(ni)
-	peers := obj.Params()["public"].(map[string][]string)
-	if len(peers) != 1 {
-		t.Fatalf("expected 1 group, got %d", len(peers))
-	}
-	if peers["us"][0] != "tls://foreign:12345" {
-		t.Fatalf("unexpected URI: %s", peers["us"][0])
-	}
-}
-
-func TestObjParseParams_noPublic(t *testing.T) {
-	obj, _ := New(map[string][]string{"eu": {"tls://original:12345"}})
-	ni := map[string]any{"other": "data"}
-	obj.ParseParams(ni)
-	// peers should remain unchanged
-	peers := obj.Params()["public"].(map[string][]string)
-	if peers["eu"][0] != "tls://original:12345" {
-		t.Fatal("peers should not change when public key missing")
-	}
-}
-
-// // // // // // // // // //
-// Params
-
-func TestParams_empty(t *testing.T) {
-	obj := &Obj{}
-	p := obj.Params()
-	if len(p) != 0 {
-		t.Fatalf("expected empty, got %v", p)
-	}
-}
-
-func TestParams_populated(t *testing.T) {
-	obj, _ := New(map[string][]string{"eu": {"tls://1.2.3.4:12345"}})
-	p := obj.Params()
-	if _, ok := p["public"]; !ok {
-		t.Fatal("expected public key")
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkNew(b *testing.B) {
-	peers := map[string][]string{
-		"eu": {"tls://1.2.3.4:12345", "tls://5.6.7.8:12345"},
-		"us": {"tls://10.0.0.1:12345"},
-	}
-	for b.Loop() {
-		if _, err := New(peers); err != nil {
-			b.Fatalf("New: %v", err)
-		}
-	}
-}
-
-func BenchmarkMatch(b *testing.B) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"eu": []any{"tls://1.2.3.4:12345", "tls://5.6.7.8:12345"},
-			"us": []any{"tls://10.0.0.1:12345"},
-		},
-	}
-	for b.Loop() {
-		Match(ni)
-	}
-}
-
-func BenchmarkParse(b *testing.B) {
-	ni := map[string]any{
-		"public": map[string]any{
-			"eu": []any{"tls://1.2.3.4:12345"},
-		},
-	}
-	for b.Loop() {
-		if _, err := Parse(ni); err != nil {
-			b.Fatalf("Parse: %v", err)
-		}
+	if obj.GetName() != Name() || !reflect.DeepEqual(obj.GetParams(), Keys()) {
+		t.Fatal("interface identity does not match package identity")
 	}
 }

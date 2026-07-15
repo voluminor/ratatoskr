@@ -20,7 +20,6 @@ import (
 
 // // // // // // // // // //
 
-// netstackObj — userspace TCP/UDP stack on top of gVisor
 type netstackObj struct {
 	stack     *stack.Stack
 	nic       *nicObj
@@ -87,10 +86,7 @@ func parseAddress(address string) (tcpip.FullAddress, error) {
 
 // //
 
-// DialContext — tcp, tcp6, udp, udp6
 func (s *netstackObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	// gonet dereferences ctx unconditionally (a select on ctx.Done() before the
-	// connect), so a nil ctx must be normalized to Background() to avoid a panic.
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -111,7 +107,6 @@ func (s *netstackObj) DialContext(ctx context.Context, network, address string) 
 	}
 }
 
-// Listen — tcp, tcp6
 func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
 	fa, err := parseAddress(address)
 	if err != nil {
@@ -125,7 +120,6 @@ func (s *netstackObj) Listen(network, address string) (net.Listener, error) {
 	}
 }
 
-// ListenPacket — udp, udp6
 func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, error) {
 	fa, err := parseAddress(address)
 	if err != nil {
@@ -139,7 +133,6 @@ func (s *netstackObj) ListenPacket(network, address string) (net.PacketConn, err
 	}
 }
 
-// MTU returns the MTU of the NIC interface
 func (s *netstackObj) MTU() uint64 {
 	return uint64(s.nic.MTU())
 }

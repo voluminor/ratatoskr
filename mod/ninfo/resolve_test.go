@@ -57,7 +57,6 @@ func TestRegex_bareIPv6(t *testing.T) {
 }
 
 // // // // // // // // // //
-// parsePkYggCandidate
 
 func TestParsePkYggCandidate_valid(t *testing.T) {
 	key := genKey(t)
@@ -98,7 +97,6 @@ func TestParsePkYggCandidate_rejectsSubdomain(t *testing.T) {
 }
 
 // // // // // // // // // //
-// parseHexKey
 
 func TestParseHexKey_valid(t *testing.T) {
 	key := genKey(t)
@@ -127,7 +125,6 @@ func TestParseHexKey_invalidHex(t *testing.T) {
 }
 
 // // // // // // // // // //
-// extractIPv6
 
 func TestExtractIPv6_bracket(t *testing.T) {
 	ip := extractIPv6("[200:abcd::1]:8080")
@@ -154,7 +151,6 @@ func TestExtractIPv6_invalid(t *testing.T) {
 }
 
 // // // // // // // // // //
-// matchYggAddr
 
 func TestMatchYggAddr_match(t *testing.T) {
 	key := genKey(t)
@@ -219,7 +215,6 @@ func TestYggLookupKeyCanonicalizesSubnetHost(t *testing.T) {
 }
 
 // // // // // // // // // //
-// resolveIPv6 context handling
 
 func newResolveCore(t *testing.T) *coremod.Obj {
 	t.Helper()
@@ -373,8 +368,8 @@ func TestAskAddr_nilContextIPv6DoesNotPanic(t *testing.T) {
 	obj.source = coreObj
 	obj.maxLookupTime = 20 * time.Millisecond
 	obj.lookupInterval = time.Millisecond
-	//lint:ignore SA1012 this test verifies the documented nil-context contract.
-	_, err := obj.AskAddr(nil, testYggIPv6(t)) //nolint:staticcheck // Verifies the documented nil-context contract.
+	var ctx context.Context
+	_, err := obj.AskAddr(ctx, testYggIPv6(t))
 	if !errors.Is(err, ErrUnresolvableAddr) {
 		t.Fatalf("expected ErrUnresolvableAddr, got %v", err)
 	}
@@ -425,25 +420,5 @@ func TestResolveIPv6FindsRoutableSubnetInPaths(t *testing.T) {
 	}
 	if !got.Equal(key) {
 		t.Fatal("resolved the wrong subnet key")
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkParseHexKey(b *testing.B) {
-	h := hex.EncodeToString(make([]byte, 32))
-	for b.Loop() {
-		if _, err := parseHexKey(h); err != nil {
-			b.Fatalf("parseHexKey: %v", err)
-		}
-	}
-}
-
-func BenchmarkMatchYggAddr(b *testing.B) {
-	key := make(ed25519.PublicKey, 32)
-	addr := yggaddr.AddrForKey(key)
-	ip := net.IP(addr[:])
-	for b.Loop() {
-		matchYggAddr(key, ip)
 	}
 }

@@ -1,3 +1,4 @@
+// Package ninfo queries and parses Yggdrasil NodeInfo.
 package ninfo
 
 import (
@@ -17,7 +18,7 @@ import (
 
 // // // // // // // // // //
 
-// Obj holds a reference to the running core.
+// Obj queries remote NodeInfo through a Yggdrasil source.
 type Obj struct {
 	source         SourceInterface
 	nodeInfo       yggcore.AddHandlerFunc
@@ -46,20 +47,23 @@ type resolveFlightObj struct {
 	err  error
 }
 
+// ConfigObj contains NodeInfo query and parser settings.
 type ConfigObj struct {
 	// Source is the running core.
 	Source SourceInterface
 
-	// Timing for shared remote NodeInfo flights; 0 → the internal default.
-	// MaxAskTime stops new retries after its deadline; one synchronous upstream
-	// handler already in progress may finish later. MaxLookupTime bounds lookup
-	// flights independently of caller cancellation; <0 disables the corresponding
-	// deadline. AskRetryPause is the wait between attempts (<0 disables retries).
-	// LookupInterval is the initial address-lookup poll interval (<0 is invalid).
-	MaxAskTime     time.Duration
-	AskRetryPause  time.Duration
+	// MaxAskTime bounds retries for one shared NodeInfo query. Zero uses 30 seconds;
+	// a negative value disables the deadline.
+	MaxAskTime time.Duration
+	// AskRetryPause is the delay between query attempts. Zero uses 500ms; a
+	// negative value disables retries.
+	AskRetryPause time.Duration
+	// LookupInterval is the initial address-resolution poll interval. Zero uses
+	// 100ms; a negative value is invalid.
 	LookupInterval time.Duration
-	MaxLookupTime  time.Duration
+	// MaxLookupTime bounds one shared address lookup. Zero uses 30 seconds; a
+	// negative value disables the deadline.
+	MaxLookupTime time.Duration
 
 	// Sigils are trusted custom parsers used for remote NodeInfo. New validates
 	// their names and stores one clone; the registry is immutable afterwards.
@@ -95,8 +99,7 @@ func orDefaultDuration(v, def time.Duration) time.Duration {
 
 // // // // // // // // // //
 
-// New creates an ninfo module.
-// Captures getNodeInfo through the configured source.
+// New captures the source's getNodeInfo handler and creates a query module.
 func New(cfg ConfigObj) (*Obj, error) {
 	if cfg.LookupInterval < 0 {
 		return nil, fmt.Errorf("%w: got %s", ErrInvalidLookupInterval, cfg.LookupInterval)
@@ -172,10 +175,7 @@ func cloneConfiguredSigils(configured []sigils.Interface) ([]sigils.Interface, e
 	return cloned, nil
 }
 
-// Close releases resources held by the module.
-// Close cancels shared work and waits for accepted Ask flights to leave the
-// captured handler. Standalone Close intentionally waits for accepted work; the
-// root ratatoskr object bounds its aggregate shutdown with ConfigObj.CloseTimeout.
+// Close rejects new work and waits for accepted shared queries.
 func (obj *Obj) Close() error {
 	obj.askMu.Lock()
 	obj.closed = true
@@ -205,15 +205,11 @@ func (obj *Obj) isClosed() bool {
 }
 
 func (obj *Obj) closedLocked() bool {
-	// A zero-value Obj (never went through New) has no context; treat as closed.
 	return obj.closed || obj.tasks == nil
 }
 
-// Ask queries a remote node's NodeInfo by its public key. Concurrent callers for
-// the same key share one detached flight. Canceling a caller only stops that
-// caller's wait; the flight remains available to other waiters. MaxAskTime stops
-// retries, but one synchronous upstream call may finish after it. Distinct flights
-// are capped internally.
+// Ask queries NodeInfo by public key. Callers for the same key share work while
+// retaining independent cancellation.
 func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error) {
 	if len(key) != ed25519.PublicKeySize {
 		return nil, fmt.Errorf("%w: got %d, expected %d", ErrInvalidKeyLength, len(key), ed25519.PublicKeySize)
@@ -328,7 +324,7 @@ func (obj *Obj) runAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightO
 	}
 }
 
-// AskAddr resolves an address string to a public key, then calls Ask.
+// AskAddr resolves an address string to a public key and calls Ask.
 // Supported formats:
 //   - "<hex>.pk.ygg" — hex-encoded public key domain
 //   - "[ip6]:port" or "ip6" — yggdrasil IPv6 resolved via lookup

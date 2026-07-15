@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Smoke checks for the live ratatoskr diagnostic stack. Hard failures mean the harness itself or a
-# basic data path is broken; large-payload checks are recorded as diagnostics for MTU/UDP work.
 set -Eeuo pipefail
 
 OUT="${OUT:-/out}"

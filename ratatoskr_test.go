@@ -232,7 +232,6 @@ func (b *blockingCoreObj) Close() error {
 // //
 
 func TestNew_nilConfig(t *testing.T) {
-	// nil Config → random keys
 	node, err := New(ConfigObj{CloseTimeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("New with nil config: %v", err)
@@ -290,7 +289,6 @@ func TestRollbackNewErrorPreservesCauseAndDeadline(t *testing.T) {
 }
 
 func TestNew_nilLogger(t *testing.T) {
-	// nil Logger uses the shared discard logger internally; must not panic.
 	node, err := New(ConfigObj{CloseTimeout: 3 * time.Second})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -359,7 +357,6 @@ func TestClose_idempotent(t *testing.T) {
 	if err := node.Close(); err != nil {
 		t.Logf("second Close: %v", err)
 	}
-	// Must not panic or deadlock
 }
 
 func TestClose_idempotentPreservesError(t *testing.T) {
@@ -533,10 +530,11 @@ func TestClose_contextShutdown(t *testing.T) {
 	}
 
 	cancel()
-	// Wait for the internal shutdown goroutine to call Close()
-	time.Sleep(200 * time.Millisecond)
-
-	// Calling Close() again must be safe
+	select {
+	case <-node.done:
+	case <-time.After(time.Second):
+		t.Fatal("context cancellation did not close the node")
+	}
 	_ = node.Close()
 }
 
@@ -946,36 +944,7 @@ func TestNew_withPeerManager(t *testing.T) {
 		t.Fatal("New mutated the caller's peer manager config")
 	}
 
-	// Peer manager should be active
 	if act := node.PeerManagerActive(); act == nil {
 		t.Error("expected non-nil from PeerManagerActive")
-	}
-}
-
-// //
-
-func BenchmarkNew(b *testing.B) {
-	for b.Loop() {
-		cfg := config.GenerateConfig()
-		cfg.AdminListen = "none"
-		node, err := New(ConfigObj{Config: cfg, CloseTimeout: time.Second})
-		if err != nil {
-			b.Fatalf("New: %v", err)
-		}
-		_ = node.Close()
-	}
-}
-
-func BenchmarkSnapshot(b *testing.B) {
-	cfg := config.GenerateConfig()
-	cfg.AdminListen = "none"
-	node, err := New(ConfigObj{Config: cfg, CloseTimeout: time.Second})
-	if err != nil {
-		b.Fatalf("New: %v", err)
-	}
-	defer func() { _ = node.Close() }()
-
-	for b.Loop() {
-		node.Snapshot()
 	}
 }

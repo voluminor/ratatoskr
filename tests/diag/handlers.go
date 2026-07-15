@@ -11,11 +11,8 @@ import (
 
 // // // // // // // // // //
 
-// maxBodyBytes caps decoded request bodies so an unbounded payload cannot
-// exhaust memory even if this tool is bound to a reachable interface.
 const maxBodyBytes = 64 * 1024
 
-// healthObj is the small readiness response used by scripts and humans.
 type healthObj struct {
 	Status            string `json:"status"`
 	Name              string `json:"name"`
@@ -29,7 +26,6 @@ type healthObj struct {
 	Uptime            string `json:"uptime"`
 }
 
-// statusObj is a generic small response for imperative endpoints.
 type statusObj struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 	"gvisor.dev/gvisor/pkg/tcpip"
@@ -15,22 +16,6 @@ import (
 )
 
 // // // // // // // // // //
-
-type noopLoggerObj struct{}
-
-func (noopLoggerObj) Printf(string, ...interface{}) {}
-func (noopLoggerObj) Println(...interface{})        {}
-func (noopLoggerObj) Infof(string, ...interface{})  {}
-func (noopLoggerObj) Infoln(...interface{})         {}
-func (noopLoggerObj) Warnf(string, ...interface{})  {}
-func (noopLoggerObj) Warnln(...interface{})         {}
-func (noopLoggerObj) Errorf(string, ...interface{}) {}
-func (noopLoggerObj) Errorln(...interface{})        {}
-func (noopLoggerObj) Debugf(string, ...interface{}) {}
-func (noopLoggerObj) Debugln(...interface{})        {}
-func (noopLoggerObj) Traceln(...interface{})        {}
-
-// //
 
 type networkDispatcherObj struct{}
 
@@ -64,19 +49,10 @@ func TestDialContextNilContextDoesNotPanic(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = node.Close() })
 
-	var nilCtx context.Context
-	panicked := make(chan interface{}, 1)
-	go func() {
-		defer func() { panicked <- recover() }()
-		// Unreachable overlay target: with the ctx normalized the dial blocks in
-		// connect until the node is closed; the point is that nil ctx must not panic.
-		_, _ = node.DialContext(nilCtx, "tcp", "[200::1]:1")
-	}()
-	time.Sleep(100 * time.Millisecond)
-	_ = node.Close()
-	if r := <-panicked; r != nil {
-		t.Fatalf("DialContext(nil) panicked: %v", r)
-	}
+	timer := time.AfterFunc(20*time.Millisecond, func() { _ = node.Close() })
+	defer timer.Stop()
+	var ctx context.Context
+	_, _ = node.DialContext(ctx, "tcp", "[200::1]:1")
 }
 
 func TestNewUsesConfiguredMTU(t *testing.T) {
@@ -84,7 +60,7 @@ func TestNewUsesConfiguredMTU(t *testing.T) {
 	cfg.AdminListen = "none"
 	cfg.IfMTU = 4096
 
-	node, err := New(ConfigObj{Config: cfg, Logger: noopLoggerObj{}})
+	node, err := New(ConfigObj{Config: cfg, Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatalf("unexpected new node error: %v", err)
 	}
@@ -96,7 +72,7 @@ func TestNewUsesConfiguredMTU(t *testing.T) {
 }
 
 func TestPublicKeyDoesNotExposeCoreStorage(t *testing.T) {
-	node, err := New(ConfigObj{Logger: noopLoggerObj{}})
+	node, err := New(ConfigObj{Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -118,7 +94,7 @@ func TestNewClampsLowMTU(t *testing.T) {
 	cfg.AdminListen = "none"
 	cfg.IfMTU = 1
 
-	node, err := New(ConfigObj{Config: cfg, Logger: noopLoggerObj{}})
+	node, err := New(ConfigObj{Config: cfg, Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatalf("unexpected new node error: %v", err)
 	}
@@ -173,7 +149,7 @@ func TestParseAddressRejectsIPv4Literal(t *testing.T) {
 
 func TestDisableAdminReturnsStopError(t *testing.T) {
 	stopErr := errors.New("stop admin")
-	node := &Obj{logger: noopLoggerObj{}}
+	node := &Obj{}
 	node.adminSocket.name = "admin"
 	node.adminSocket.active = true
 	node.adminSocket.stopFn = func() error { return stopErr }
@@ -190,7 +166,7 @@ func TestDisableAdminReturnsStopError(t *testing.T) {
 // //
 
 func TestObj_CloseDoesNotReenterNIC(t *testing.T) {
-	node, err := New(ConfigObj{Logger: noopLoggerObj{}})
+	node, err := New(ConfigObj{Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatalf("unexpected new node error: %v", err)
 	}

@@ -1,3 +1,4 @@
+// Package core embeds a Yggdrasil node behind standard Go networking APIs.
 package core
 
 import (
@@ -7,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"net/url"
-	"regexp"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -36,15 +35,13 @@ func normalizeMTU(requested, max uint64) uint64 {
 	if mtu < minimumMTU {
 		mtu = minimumMTU
 	}
-	// Clamp to max last so the result never exceeds it.
 	if mtu > max {
 		mtu = max
 	}
 	return mtu
 }
 
-// Obj — Yggdrasil node with a userspace TCP/UDP stack.
-// Provides standard Go networking methods: DialContext, Listen, ListenPacket
+// Obj is a Yggdrasil node with a userspace TCP/IP stack.
 type Obj struct {
 	corePtr     atomic.Pointer[yggcore.Core]
 	nodeCfg     *config.NodeConfig
@@ -57,8 +54,7 @@ type Obj struct {
 	closeErr    error
 }
 
-// New creates and starts the Yggdrasil node.
-// For proper shutdown, the caller must call Close()
+// New creates and starts a node. The caller must close the returned object.
 func New(cfg ConfigObj) (*Obj, error) {
 	log := common.NormalizeLogger(cfg.Logger)
 
@@ -67,9 +63,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 		nodeCfg = config.GenerateConfig()
 		nodeCfg.AdminListen = "none"
 	} else {
-		// Take ownership of a copy so post-New caller mutations cannot race the
-		// node. Both lazily-read multicast settings and nested NodeInfo values are
-		// cloned.
 		cloned := *nodeCfg
 		cloned.MulticastInterfaces = slices.Clone(nodeCfg.MulticastInterfaces)
 		var err error
@@ -87,7 +80,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 		adminSocket: componentObj[*admin.Obj]{name: "admin"},
 	}
 
-	// Yggdrasil core
 	opts, err := buildCoreOptions(nodeCfg)
 	if err != nil {
 		return nil, err
@@ -98,7 +90,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 	}
 	obj.corePtr.Store(c)
 
-	// Network stack
 	ns, err := newNetstack(c, log, nodeCfg.IfMTU)
 	if err != nil {
 		c.Stop()
@@ -115,10 +106,8 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 // //
 
-// Close stops the node; safe to call multiple times. It performs a complete
-// standalone teardown and may therefore wait for upstream core.Stop(). The root
-// ratatoskr package provides the optional hard shutdown deadline for applications
-// that need a bounded return even if an upstream version stops responding.
+// Close stops the node and all components it owns. Repeated calls return the
+// same result.
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
 		c := o.corePtr.Swap(nil)
@@ -130,8 +119,6 @@ func (o *Obj) Close() error {
 	return o.closeErr
 }
 
-// closeOwned releases the components this module owns outright. They do not block
-// on the upstream core, so they are torn down synchronously before it is stopped.
 func (o *Obj) closeOwned() []error {
 	var errs []error
 	if err := o.multicast.disable(); err != nil {
@@ -143,10 +130,6 @@ func (o *Obj) closeOwned() []error {
 	return errs
 }
 
-// teardown performs the ordered, blocking part of shutdown: stop the core, then
-// destroy the netstack (which aborts every registered endpoint, including
-// listeners the caller opened via Listen/ListenPacket). Ordered so ipv6rwc.Read
-// unblocks and the reload-critical sockets are freed first.
 func (o *Obj) teardown(c *yggcore.Core, ns *netstackObj) {
 	if c != nil {
 		c.Stop()
@@ -158,7 +141,7 @@ func (o *Obj) teardown(c *yggcore.Core, ns *netstackObj) {
 
 // //
 
-// DialContext opens a connection to a Yggdrasil address; compatible with http.Transport.DialContext
+// DialContext opens a TCP or UDP connection to a Yggdrasil address.
 func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -167,8 +150,7 @@ func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Con
 	return ns.DialContext(ctx, network, address)
 }
 
-// Listen creates a TCP listener; ":port" or "[ipv6]:port".
-// Aborted automatically on Close() when the netstack is destroyed.
+// Listen creates a TCP listener that is aborted when the node closes.
 func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -177,8 +159,7 @@ func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	return ns.Listen(network, address)
 }
 
-// ListenPacket creates a UDP listener; ":port" or "[ipv6]:port".
-// Aborted automatically on Close() when the netstack is destroyed.
+// ListenPacket creates a UDP endpoint that is aborted when the node closes.
 func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -189,7 +170,7 @@ func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 
 // //
 
-// Address — node IPv6 address in the 200::/7 range
+// Address returns the node IPv6 address in 200::/7.
 func (o *Obj) Address() net.IP {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -199,7 +180,7 @@ func (o *Obj) Address() net.IP {
 	return net.IP(addr[:])
 }
 
-// Subnet — routable /64 subnet of the node in the 300::/7 range
+// Subnet returns the node's routable /64 subnet in 300::/7.
 func (o *Obj) Subnet() net.IPNet {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -208,7 +189,7 @@ func (o *Obj) Subnet() net.IPNet {
 	return c.Subnet()
 }
 
-// PublicKey — ed25519 public key of the node (32 bytes)
+// PublicKey returns an owned copy of the node's Ed25519 public key.
 func (o *Obj) PublicKey() ed25519.PublicKey {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -217,7 +198,7 @@ func (o *Obj) PublicKey() ed25519.PublicKey {
 	return slices.Clone(c.PublicKey())
 }
 
-// MTU returns the MTU of the NIC interface
+// MTU returns the current virtual interface MTU.
 func (o *Obj) MTU() uint64 {
 	ns := o.netstackPtr.Load()
 	if ns == nil {
@@ -227,15 +208,6 @@ func (o *Obj) MTU() uint64 {
 }
 
 // //
-
-func (o *Obj) RetryPeers() error {
-	c := o.corePtr.Load()
-	if c == nil {
-		return ErrNotAvailable
-	}
-	c.RetryPeersNow()
-	return nil
-}
 
 // SetAdmin exposes Yggdrasil's low-level handler-registration hook. It is unsafe
 // to call concurrently with another SetAdmin, EnableAdmin, or EnableMulticast:
@@ -249,12 +221,14 @@ func (o *Obj) SetAdmin(a yggcore.AddHandler) error {
 	return c.SetAdmin(a)
 }
 
+// SendLookup requests a path lookup for key when the node is available.
 func (o *Obj) SendLookup(key ed25519.PublicKey) {
 	if c := o.corePtr.Load(); c != nil {
 		c.SendLookup(key)
 	}
 }
 
+// GetSelf returns the node's current routing information.
 func (o *Obj) GetSelf() yggcore.SelfInfo {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -263,6 +237,7 @@ func (o *Obj) GetSelf() yggcore.SelfInfo {
 	return c.GetSelf()
 }
 
+// GetSessions returns the node's current encrypted sessions.
 func (o *Obj) GetSessions() []yggcore.SessionInfo {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -271,6 +246,7 @@ func (o *Obj) GetSessions() []yggcore.SessionInfo {
 	return c.GetSessions()
 }
 
+// GetTree returns the node's current spanning-tree entries.
 func (o *Obj) GetTree() []yggcore.TreeEntryInfo {
 	c := o.corePtr.Load()
 	if c == nil {
@@ -279,184 +255,11 @@ func (o *Obj) GetTree() []yggcore.TreeEntryInfo {
 	return c.GetTree()
 }
 
+// GetPaths returns the node's current path-cache entries.
 func (o *Obj) GetPaths() []yggcore.PathEntryInfo {
 	c := o.corePtr.Load()
 	if c == nil {
 		return nil
 	}
 	return c.GetPaths()
-}
-
-// AddPeer adds a peer; URI: "tcp://...", "quic://...", etc.
-func (o *Obj) AddPeer(uri string) error {
-	c := o.corePtr.Load()
-	if c == nil {
-		return ErrNotAvailable
-	}
-	u, err := url.Parse(uri)
-	if err != nil {
-		return fmt.Errorf("url.Parse: %w", err)
-	}
-	return c.AddPeer(u, "")
-}
-
-func (o *Obj) RemovePeer(uri string) error {
-	c := o.corePtr.Load()
-	if c == nil {
-		return ErrNotAvailable
-	}
-	u, err := url.Parse(uri)
-	if err != nil {
-		return fmt.Errorf("url.Parse: %w", err)
-	}
-	return c.RemovePeer(u, "")
-}
-
-// GetPeers — all peers (connected and configured)
-func (o *Obj) GetPeers() []yggcore.PeerInfo {
-	c := o.corePtr.Load()
-	if c == nil {
-		return nil
-	}
-	return c.GetPeers()
-}
-
-// //
-
-// EnableMulticast enables mDNS discovery on the local network.
-// Interfaces are taken from NodeConfig.MulticastInterfaces
-func (o *Obj) EnableMulticast() error {
-	err := o.multicast.enable(func() (*multicast.Multicast, func() error, error) {
-		c := o.corePtr.Load()
-		if c == nil {
-			return nil, nil, ErrNotAvailable
-		}
-		options := make([]multicast.SetupOption, 0, len(o.nodeCfg.MulticastInterfaces))
-		for _, intf := range o.nodeCfg.MulticastInterfaces {
-			re, err := regexp.Compile(intf.Regex)
-			if err != nil {
-				return nil, nil, fmt.Errorf("invalid multicast regex %q: %w", intf.Regex, err)
-			}
-			options = append(options, multicast.MulticastInterface{
-				Regex:    re,
-				Beacon:   intf.Beacon,
-				Listen:   intf.Listen,
-				Port:     intf.Port,
-				Priority: uint8(intf.Priority),
-				Password: intf.Password,
-			})
-		}
-		mc, err := multicast.New(c, o.logger, options...)
-		if err != nil {
-			return nil, nil, fmt.Errorf("multicast.New: %w", err)
-		}
-		return mc, mc.Stop, nil
-	})
-	if err != nil {
-		return err
-	}
-	o.adminMu.Lock()
-	o.attachMulticastAdminHandler()
-	o.adminMu.Unlock()
-	return nil
-}
-
-func (o *Obj) DisableMulticast() error {
-	return o.multicast.disable()
-}
-
-// //
-
-func (o *Obj) newAdminSocket(addr string) (*admin.Obj, func() error, error) {
-	c := o.corePtr.Load()
-	if c == nil {
-		return nil, nil, ErrNotAvailable
-	}
-	as, err := admin.New(admin.ConfigObj{
-		Core:    c,
-		Logger:  o.logger,
-		Address: addr,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("admin.New: %w", err)
-	}
-	if as == nil {
-		return nil, nil, fmt.Errorf("%w for address %q", ErrAdminDisabled, addr)
-	}
-	return as, as.Stop, nil
-}
-
-// EnableAdmin starts the unsafe upstream admin socket; "unix:///path" or
-// "tcp://host:port". Handler registration can race with requests, Stop does not
-// close accepted connections, and bind or Unix-socket cleanup failures terminate
-// the process with os.Exit(1). Use only a protected local endpoint.
-func (o *Obj) EnableAdmin(addr string) error {
-	o.adminMu.Lock()
-	defer o.adminMu.Unlock()
-
-	err := o.adminSocket.enable(func() (*admin.Obj, func() error, error) {
-		return o.newAdminSocket(addr)
-	})
-	if err != nil {
-		return err
-	}
-	o.attachMulticastAdminHandler()
-	return nil
-}
-
-func (o *Obj) DisableAdmin() error {
-	o.adminMu.Lock()
-	defer o.adminMu.Unlock()
-
-	return o.adminSocket.disable()
-}
-
-// //
-
-// attachMulticastAdminHandler wires the upstream diagnostic command when both
-// components are active. The admin adapter documents the inherited map race.
-// Caller must hold adminMu.
-func (o *Obj) attachMulticastAdminHandler() {
-	as, adminActive := o.adminSocket.get()
-	mc, multicastActive := o.multicast.get()
-	if adminActive && multicastActive {
-		as.AttachMulticast(mc)
-	}
-}
-
-// //
-
-func buildCoreOptions(cfg *config.NodeConfig) ([]yggcore.SetupOption, error) {
-	n := 2 + len(cfg.Listen) + len(cfg.Peers) + len(cfg.AllowedPublicKeys)
-	for _, peers := range cfg.InterfacePeers {
-		n += len(peers)
-	}
-	opts := make([]yggcore.SetupOption, 0, n)
-	opts = append(opts, yggcore.NodeInfo(cfg.NodeInfo))
-	opts = append(opts, yggcore.NodeInfoPrivacy(cfg.NodeInfoPrivacy))
-	for _, addr := range cfg.Listen {
-		opts = append(opts, yggcore.ListenAddress(addr))
-	}
-	for _, peer := range cfg.Peers {
-		opts = append(opts, yggcore.Peer{URI: peer})
-	}
-	for intf, peers := range cfg.InterfacePeers {
-		for _, peer := range peers {
-			opts = append(opts, yggcore.Peer{URI: peer, SourceInterface: intf})
-		}
-	}
-	// A malformed AllowedPublicKey is rejected rather than skipped: silently
-	// dropping every invalid entry can leave the allowlist empty, which upstream
-	// treats as "allow all inbound peering" — a typo must not open the node.
-	for _, allowed := range cfg.AllowedPublicKeys {
-		k, err := hex.DecodeString(allowed)
-		if err != nil {
-			return nil, fmt.Errorf("%w %q: %w", ErrInvalidAllowedPublicKey, allowed, err)
-		}
-		if len(k) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("%w %q: got %d bytes, expected %d", ErrInvalidAllowedPublicKey, allowed, len(k), ed25519.PublicKeySize)
-		}
-		opts = append(opts, yggcore.AllowedPublicKey(k))
-	}
-	return opts, nil
 }

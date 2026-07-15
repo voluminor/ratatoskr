@@ -10,7 +10,6 @@ import (
 
 // // // // // // // // // //
 
-// peerResultObj — probing result for a single peer
 type peerResultObj struct {
 	URI     string
 	Proto   string
@@ -18,8 +17,7 @@ type peerResultObj struct {
 	Latency time.Duration
 }
 
-// buildResults matches candidates against GetPeers(); missing ones → Up == false
-func buildResults(candidates []peerEntryObj, peers []yggcore.PeerInfo) []peerResultObj {
+func buildResults(candidates []PeerEntryObj, peers []yggcore.PeerInfo) []peerResultObj {
 	peerMap := make(map[string]yggcore.PeerInfo, len(peers))
 	for _, p := range peers {
 		key := normalizePeerURI(p.URI)
@@ -71,7 +69,6 @@ func comparePeerResults(a, b peerResultObj) int {
 	return cmp.Compare(normalizePeerURI(a.URI), normalizePeerURI(b.URI))
 }
 
-// selectBest — top-N peers per protocol among Up==true, sorted by latency
 func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
 	if maxPerProto <= 0 {
 		return nil
@@ -99,7 +96,6 @@ func selectBest(results []peerResultObj, maxPerProto int) []peerResultObj {
 	return selected
 }
 
-// countUp — count of Up == true
 func countUp(results []peerResultObj) int {
 	n := 0
 	for _, r := range results {

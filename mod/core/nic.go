@@ -26,9 +26,7 @@ var writeBufPool = sync.Pool{
 	},
 }
 
-// nicObj — bridge between gVisor and Yggdrasil at the IPv6 packet level
 type nicObj struct {
-	ns         *netstackObj
 	ipv6rwc    *ipv6rwc.ReadWriteCloser
 	dispatcher atomic.Pointer[stack.NetworkDispatcher]
 	mtu        atomic.Uint32
@@ -43,7 +41,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Er
 	mtu := normalizeMTU(ifMTU, rwc.MaxMTU())
 	rwc.SetMTU(mtu)
 	nic := &nicObj{
-		ns:       s,
 		ipv6rwc:  rwc,
 		done:     make(chan struct{}),
 		readDone: make(chan struct{}),
@@ -54,7 +51,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Er
 		return nil, err
 	}
 
-	// Read packets from Yggdrasil → deliver to netstack
 	go func() {
 		defer close(nic.readDone)
 		readBuf := make([]byte, nic.ipv6rwc.MaxMTU())
@@ -78,7 +74,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Er
 		}
 	}()
 
-	// Route for Yggdrasil subnet 0200::/7
 	_, snet, err := net.ParseCIDR("0200::/7")
 	if err != nil {
 		nic.Close()
@@ -94,7 +89,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Er
 	}
 	s.stack.AddRoute(tcpip.Route{Destination: subnet, NIC: 1})
 
-	// Register the local address (HandleLocal is always enabled)
 	ip := ygg.Address()
 	if err := s.stack.AddProtocolAddress(
 		1,
@@ -142,14 +136,12 @@ func (*nicObj) Wait()                                        {}
 func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 	vl, offset := pkt.AsViewList()
 	front := vl.Front()
-	// Fast path: single View — send without copying
 	if front != nil && front.Next() == nil {
 		if _, err := e.ipv6rwc.Write(front.AsSlice()[offset:]); err != nil {
 			return &tcpip.ErrAborted{}
 		}
 		return nil
 	}
-	// Multiple Views — assemble into a pool buffer
 	bufPtr := writeBufPool.Get().(*[]byte)
 	defer writeBufPool.Put(bufPtr)
 	buf := *bufPtr

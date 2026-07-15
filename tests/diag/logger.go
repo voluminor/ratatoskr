@@ -8,7 +8,6 @@ import (
 
 // // // // // // // // // //
 
-// loggerObj adapts the standard logger to yggdrasil-go's logger contract.
 type loggerObj struct {
 	base *log.Logger
 }

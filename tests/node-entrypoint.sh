@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build and run the ratatoskr diagnostic node entirely from tmp/tests-mounted state.
 set -Eeuo pipefail
 
 SRC="${SRC:-/src}"

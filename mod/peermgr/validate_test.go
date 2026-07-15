@@ -103,8 +103,6 @@ func TestValidatePeers_missingHostRejected(t *testing.T) {
 }
 
 func TestValidatePeers_unusualSchemeAccepted(t *testing.T) {
-	// Schemes are no longer allow-listed; an unusual scheme is accepted and grouped
-	// by its scheme, with node.AddPeer rejecting it at probe time.
 	res, errs := ValidatePeers([]string{"ftp://host:21"})
 	if len(errs) != 0 {
 		t.Fatalf("expected no validation error, got: %v", errs)
@@ -117,8 +115,8 @@ func TestValidatePeers_unusualSchemeAccepted(t *testing.T) {
 func TestValidatePeers_mixedErrors(t *testing.T) {
 	peers := []string{
 		"tls://good:1",
-		"ftp://bad:21", // unusual scheme, now accepted
-		"tls://good:1", // duplicate
+		"ftp://bad:21",
+		"tls://good:1",
 		"tls://good2:2",
 	}
 	res, errs := ValidatePeers(peers)
@@ -184,28 +182,5 @@ func TestValidatePeers_requiresStructureButAllowsUnknownSchemes(t *testing.T) {
 	}
 	if len(valid) != 2 {
 		t.Fatalf("valid = %d, want unknown network and path transports", len(valid))
-	}
-}
-
-// //
-
-func BenchmarkValidatePeers_small(b *testing.B) {
-	peers := []string{
-		"tls://peer1.example.com:4443",
-		"tcp://peer2.example.com:1234",
-		"quic://peer3.example.com:9000",
-	}
-	for b.Loop() {
-		ValidatePeers(peers)
-	}
-}
-
-func BenchmarkValidatePeers_large(b *testing.B) {
-	peers := make([]string, 100)
-	for i := range peers {
-		peers[i] = "tls://host" + string(rune('a'+i%26)) + ":1234"
-	}
-	for b.Loop() {
-		ValidatePeers(peers)
 	}
 }

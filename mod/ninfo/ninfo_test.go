@@ -48,7 +48,6 @@ func TestNewRequiresSource(t *testing.T) {
 }
 
 // // // // // // // // // //
-// Immutable custom sigils
 
 func TestCloneConfiguredSigilsOwnsOneClone(t *testing.T) {
 	var clones atomic.Int64
@@ -89,7 +88,6 @@ func TestCloneConfiguredSigilsRejectsInvalidSet(t *testing.T) {
 }
 
 // // // // // // // // // //
-// Ask lifecycle
 
 func TestAsk_afterCloseReturnsErrClosed(t *testing.T) {
 	obj := newTestObj()

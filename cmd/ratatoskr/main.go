@@ -12,6 +12,8 @@ import (
 	rsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/target/settings"
 )
 
+// // // // // // // // // //
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)

@@ -3,13 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
-
-	"gopkg.in/yaml.v3"
 )
 
 // // // // // // // // // //
 
-type ConfigObj struct {
+type configObj struct {
 	PrivateKey string   `yaml:"private_key"`
 	Hostname   string   `yaml:"hostname"`
 	Peers      []string `yaml:"peers"`
@@ -19,12 +17,12 @@ type ConfigObj struct {
 
 // //
 
-func loadConfig(path string) (*ConfigObj, error) {
+func loadConfig(path string) (*configObj, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config %s: %w", path, err)
 	}
-	var cfg ConfigObj
+	var cfg configObj
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}

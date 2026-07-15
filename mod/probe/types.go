@@ -7,21 +7,26 @@ import (
 
 // // // // // // // // // //
 
-// NodeObj is a node in the network topology tree.
-// Used by Tree() (BFS), Path() and Trace() (spanning tree).
+// NodeObj is one node in a discovered topology path or tree.
 type NodeObj struct {
-	Key      ed25519.PublicKey
-	Parent   ed25519.PublicKey
-	Sequence uint64 // spanning tree mode only
-	Depth    int
+	// Key is the node's public key.
+	Key ed25519.PublicKey
+	// Parent is the parent node's public key.
+	Parent ed25519.PublicKey
+	// Sequence is populated for spanning-tree paths.
+	Sequence uint64
+	// Depth is the distance from the root.
+	Depth int
 	// RTT is approximate for remote nodes: measures debug_remoteGetPeers round-trip
 	// including multi-hop traversal, not pure network latency.
-	RTT         time.Duration
-	Unreachable bool // did not respond to peer query (Tree only)
-	Children    []*NodeObj
+	RTT time.Duration
+	// Unreachable reports a failed remote peer query during Tree.
+	Unreachable bool
+	// Children contains the next discovered depth level.
+	Children []*NodeObj
 }
 
-// Find recursively searches for a node by key. Returns nil if not found.
+// Find returns the first subtree node with key.
 func (n *NodeObj) Find(key ed25519.PublicKey) *NodeObj {
 	if n == nil {
 		return nil
@@ -37,7 +42,7 @@ func (n *NodeObj) Find(key ed25519.PublicKey) *NodeObj {
 	return nil
 }
 
-// Flatten returns a depth-first flat list of all nodes in the subtree.
+// Flatten returns the subtree in depth-first order.
 func (n *NodeObj) Flatten() []*NodeObj {
 	if n == nil {
 		return nil
@@ -54,7 +59,7 @@ func (n *NodeObj) flattenInto(out *[]*NodeObj) {
 	}
 }
 
-// PathTo returns [root, ..., target] or nil if the key is not found.
+// PathTo returns the path from this node to key.
 func (n *NodeObj) PathTo(key ed25519.PublicKey) []*NodeObj {
 	if n == nil {
 		return nil
@@ -85,8 +90,11 @@ func (n *NodeObj) pathTo(key ed25519.PublicKey, out *[]*NodeObj) bool {
 
 // HopObj is a single hop in the port-level route.
 type HopObj struct {
-	Key   ed25519.PublicKey // nil if port could not be resolved
-	Port  uint64
+	// Key is nil when Port cannot be mapped to a peer.
+	Key ed25519.PublicKey
+	// Port is the Yggdrasil pathfinder port.
+	Port uint64
+	// Index is the zero-based position in the path.
 	Index int
 }
 
@@ -94,26 +102,38 @@ type HopObj struct {
 
 // TraceResultObj is the result of Trace(). Both fields may be populated.
 type TraceResultObj struct {
+	// TreePath is the available spanning-tree route.
 	TreePath []*NodeObj
-	Hops     []HopObj
+	// Hops is the available pathfinder route.
+	Hops []HopObj
 }
 
 // //
 
 // TreeResultObj is the result of Tree() and TreeChan().
 type TreeResultObj struct {
-	Root      *NodeObj
-	Total     int // excluding root
+	// Root is the local node.
+	Root *NodeObj
+	// Total excludes Root.
+	Total int
+	// Truncated reports that Limit stopped discovery.
 	Truncated bool
-	Limit     int // maximum discovered nodes, excluding root
+	// Limit is the maximum discovered-node count excluding Root.
+	Limit int
 }
 
 // TreeProgressObj is emitted after each BFS depth level.
 type TreeProgressObj struct {
-	Depth     int
-	Found     int  // nodes at this depth level
-	Total     int  // cumulative total
-	Done      bool // last message — scan complete
+	// Depth is the completed BFS depth.
+	Depth int
+	// Found is the number of nodes at Depth.
+	Found int
+	// Total is the cumulative count excluding the root.
+	Total int
+	// Done marks the final progress value.
+	Done bool
+	// Truncated reports that Limit stopped discovery.
 	Truncated bool
-	Limit     int // maximum discovered nodes, excluding root
+	// Limit is the maximum discovered-node count excluding the root.
+	Limit int
 }

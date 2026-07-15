@@ -1,3 +1,4 @@
+// Package peermgr maintains a bounded, latency-selected Yggdrasil peer set.
 package peermgr
 
 import (
@@ -26,12 +27,12 @@ const (
 
 // //
 
-// ConfigObj — peer manager parameters
+// ConfigObj contains peer-manager dependencies, candidates, and scheduling.
 type ConfigObj struct {
 	// Node is the peer-capable node managed by this object.
 	Node NodeInterface
 
-	// List of candidate URIs ("tls://host:port", "tcp://...", "quic://...", etc.)
+	// Peers lists candidate Yggdrasil peer URIs.
 	Peers []string
 
 	// Peer connection wait timeout per optimize cycle. 0 → 10s; <0 is invalid.
@@ -82,9 +83,7 @@ type ConfigObj struct {
 	Logger yggcore.Logger
 }
 
-// NodeInterface is the minimal node contract peermgr needs: it manages a curated
-// peer set and reads peer state, nothing more. Any node implementation can be
-// supplied without pulling in the whole core surface.
+// NodeInterface is the node contract required for peer selection.
 type NodeInterface interface {
 	AddPeer(uri string) error
 	RemovePeer(uri string) error
@@ -93,10 +92,10 @@ type NodeInterface interface {
 
 // // // // // // // // // //
 
-// Obj — peer manager
+// Obj owns and maintains a selected peer set.
 type Obj struct {
 	cfg         ConfigObj
-	peers       []peerEntryObj
+	peers       []PeerEntryObj
 	probeState  map[string]probeStateObj
 	tasks       *common.TaskGroupObj
 	active      []string
@@ -189,7 +188,7 @@ func newObj(cfg ConfigObj) (*Obj, error) {
 
 // // // // // // // // // //
 
-// New validates the configuration and starts the manager asynchronously.
+// New validates cfg and starts peer management asynchronously.
 func New(cfg ConfigObj) (*Obj, error) {
 	mgr, err := newObj(cfg)
 	if err != nil {
@@ -201,8 +200,8 @@ func New(cfg ConfigObj) (*Obj, error) {
 	return mgr, nil
 }
 
-// Close terminally stops the manager and removes its managed peers. Repeated
-// calls retry only peers whose earlier removal failed.
+// Close stops the manager and removes owned peers. Failed removals remain owned
+// for the next Close call.
 func (m *Obj) Close() error {
 	m.closeMu.Lock()
 	defer m.closeMu.Unlock()
@@ -228,7 +227,7 @@ func (m *Obj) Close() error {
 	return errors.Join(errs...)
 }
 
-// Active — copy of the current active peer list
+// Active returns a copy of the currently managed peer URIs.
 func (m *Obj) Active() []string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -239,21 +238,19 @@ func (m *Obj) Active() []string {
 
 // //
 
-// Optimize — unscheduled re-evaluation; blocks until done
+// Optimize runs one unscheduled selection cycle.
 func (m *Obj) Optimize() error {
 	err, ok := m.tasks.Do(m.optimizeLocked)
 	if !ok {
 		return ErrClosed
 	}
-	// Optimize has no caller context of its own, so cancellation of the task
-	// group's lifecycle context means Close started during this call.
-	if errors.Is(err, context.Canceled) && m.tasks.Context().Err() != nil {
+	if errors.Is(err, context.Canceled) {
 		return ErrClosed
 	}
 	return err
 }
 
-func maxSelectablePeers(peers []peerEntryObj, maxPerProto int) int {
+func maxSelectablePeers(peers []PeerEntryObj, maxPerProto int) int {
 	perProtocol := make(map[string]int)
 	for _, peer := range peers {
 		perProtocol[peer.Scheme]++

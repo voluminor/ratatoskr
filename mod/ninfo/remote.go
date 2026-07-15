@@ -13,18 +13,25 @@ import (
 
 // SoftwareObj holds build metadata exposed when NodeInfoPrivacy is off.
 type SoftwareObj struct {
-	Name     string
-	Version  string
+	// Name is the remote build name.
+	Name string
+	// Version is the remote build version.
+	Version string
+	// Platform is the remote operating-system identifier.
 	Platform string
-	Arch     string
+	// Arch is the remote architecture identifier.
+	Arch string
 }
 
 // //
 
 // AskResultObj is the result of a single getNodeInfo request.
 type AskResultObj struct {
-	RTT      time.Duration
-	Node     *ParsedObj
+	// RTT is the duration of the successful upstream request.
+	RTT time.Duration
+	// Node is the parsed remote NodeInfo.
+	Node *ParsedObj
+	// Software is nil when no build metadata was exposed.
 	Software *SoftwareObj
 }
 
@@ -55,7 +62,6 @@ func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
 		return nil, ErrUnexpectedResponse
 	}
 
-	// A single-key query yields exactly one entry; take it without scanning.
 	for _, v := range resp {
 		return v, nil
 	}

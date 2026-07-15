@@ -1,15 +1,12 @@
 package probe
 
 import (
-	"crypto/ed25519"
-	"crypto/rand"
 	"testing"
 
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
-// resolveHops
 
 func TestResolveHops_allResolved(t *testing.T) {
 	keys := genKeyN(t, 3)
@@ -74,7 +71,6 @@ func TestResolveHops_empty(t *testing.T) {
 }
 
 // // // // // // // // // //
-// toKeyArray
 
 func TestToKeyArray(t *testing.T) {
 	key := genKey(t)
@@ -92,32 +88,5 @@ func TestToKeyArray_mapEquality(t *testing.T) {
 	b := toKeyArray(key)
 	if a != b {
 		t.Fatal("same key should produce equal arrays")
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkToKeyArray(b *testing.B) {
-	pk, _, _ := ed25519.GenerateKey(rand.Reader)
-	for b.Loop() {
-		toKeyArray(pk)
-	}
-}
-
-func BenchmarkResolveHops(b *testing.B) {
-	peers := make([]yggcore.PeerInfo, 50)
-	for i := range peers {
-		pk, _, _ := ed25519.GenerateKey(rand.Reader)
-		peers[i] = yggcore.PeerInfo{Key: pk, Port: uint64(i + 1), Up: true}
-	}
-	ports := make([]uint64, 30)
-	for i := range ports {
-		ports[i] = uint64(i + 1)
-	}
-	pk, _, _ := ed25519.GenerateKey(rand.Reader)
-	path := yggcore.PathEntryInfo{Key: pk, Path: ports}
-
-	for b.Loop() {
-		resolveHops(path, peers)
 	}
 }

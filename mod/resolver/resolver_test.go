@@ -18,7 +18,6 @@ import (
 
 // // // // // // // // // //
 
-// failDialerObj — proxy.ContextDialer that always returns an error
 type failDialerObj struct{}
 
 func (failDialerObj) DialContext(_ context.Context, _, _ string) (net.Conn, error) {
@@ -847,29 +846,7 @@ func TestResolvePublicKeyDomain_subdomainRejected(t *testing.T) {
 
 // //
 
-func BenchmarkResolve_pkYgg(b *testing.B) {
-	r := newTestResolverObj(failDialerObj{}, "", ConfigObj{})
-	pk, _, _ := ed25519.GenerateKey(rand.Reader)
-	name := hex.EncodeToString(pk) + common.PublicKeyDomainSuffix
-	ctx := context.Background()
-	for b.Loop() {
-		if _, _, err := r.Resolve(ctx, name); err != nil {
-			b.Fatalf("Resolve: %v", err)
-		}
-	}
-}
-
-func BenchmarkResolve_ipLiteral(b *testing.B) {
-	r := newTestResolverObj(failDialerObj{}, "", ConfigObj{})
-	ctx := context.Background()
-	for b.Loop() {
-		if _, _, err := r.Resolve(ctx, "200::1"); err != nil {
-			b.Fatalf("Resolve: %v", err)
-		}
-	}
-}
-
-func BenchmarkResolveDNS_coldHerd(b *testing.B) {
+func BenchmarkResolveDNSColdHerd(b *testing.B) {
 	const concurrency = 64
 	server := newDNSServer(b, 200*time.Microsecond)
 	r := newTestResolverObj(udpDialerObj{}, server.addr(), ConfigObj{
@@ -886,14 +863,4 @@ func BenchmarkResolveDNS_coldHerd(b *testing.B) {
 	}
 	b.StopTimer()
 	b.ReportMetric(float64(server.queryCount())/float64(b.N), "dns_queries/op")
-}
-
-func BenchmarkResolvePublicKey(b *testing.B) {
-	pk, _, _ := ed25519.GenerateKey(rand.Reader)
-	name := hex.EncodeToString(pk) + common.PublicKeyDomainSuffix
-	for b.Loop() {
-		if _, _, err := resolvePublicKeyDomain(name); err != nil {
-			b.Fatalf("resolvePublicKeyDomain: %v", err)
-		}
-	}
 }

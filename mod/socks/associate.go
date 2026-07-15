@@ -33,8 +33,6 @@ const (
 var errAssociateInvalidTarget = errors.New("SOCKS UDP associate target is invalid")
 var errAssociateInvalidClientSpec = errors.New("SOCKS UDP associate client domain is unresolved")
 
-// associateBufferPool recycles the 64 KiB per-target relay buffers so targets
-// that open, go idle, and expire do not churn the allocator under load.
 var associateBufferPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, associatePacketBufferSize)
@@ -43,29 +41,24 @@ var associateBufferPool = sync.Pool{
 }
 
 type associateWorkerPoolObj struct {
-	jobs      chan func()
-	workers   sync.WaitGroup
-	startOnce sync.Once
-	mu        sync.RWMutex
-	closed    bool
+	jobs    chan func()
+	workers sync.WaitGroup
+	mu      sync.RWMutex
+	closed  bool
 }
 
 func newAssociateWorkerPool() *associateWorkerPoolObj {
-	return &associateWorkerPoolObj{jobs: make(chan func(), associateJobQueueSize)}
-}
-
-func (p *associateWorkerPoolObj) start() {
-	p.startOnce.Do(func() {
-		p.workers.Add(associateWorkerCount)
-		for range associateWorkerCount {
-			go func() {
-				defer p.workers.Done()
-				for job := range p.jobs {
-					job()
-				}
-			}()
-		}
-	})
+	p := &associateWorkerPoolObj{jobs: make(chan func(), associateJobQueueSize)}
+	p.workers.Add(associateWorkerCount)
+	for range associateWorkerCount {
+		go func() {
+			defer p.workers.Done()
+			for job := range p.jobs {
+				job()
+			}
+		}()
+	}
+	return p
 }
 
 func (p *associateWorkerPoolObj) submit(job func()) bool {
@@ -77,7 +70,6 @@ func (p *associateWorkerPoolObj) submit(job func()) bool {
 	if p.closed {
 		return false
 	}
-	p.start()
 	select {
 	case p.jobs <- job:
 		return true
@@ -101,7 +93,6 @@ func (p *associateWorkerPoolObj) close() {
 
 // //
 
-// associateSessionObj owns one UDP relay created by a SOCKS UDP ASSOCIATE request.
 type associateSessionObj struct {
 	owner            *Obj
 	ctx              context.Context
@@ -122,8 +113,6 @@ type associateSessionObj struct {
 	dialTimeout      time.Duration
 	idleTimeout      time.Duration
 
-	// clientUDP is owned by the single run() goroutine: set exactly once, then only
-	// read (including by the forward() goroutines it is published to). No lock needed.
 	clientUDP *net.UDPAddr
 
 	targetMu  sync.Mutex
@@ -191,8 +180,6 @@ func (q *associatePacketQueueObj) signal() {
 	}
 }
 
-// enqueue copies payload only after both limits admit it. full distinguishes
-// overload from a target that is already closing.
 func (q *associatePacketQueueObj) enqueue(payload []byte) (ok, full bool) {
 	if q == nil {
 		return false, false
@@ -271,15 +258,6 @@ func associateListenAddr(addr net.Addr) *net.UDPAddr {
 	return &net.UDPAddr{IP: tcpAddr.IP, Port: 0, Zone: tcpAddr.Zone}
 }
 
-// controlConnIP returns the IP of the SOCKS control connection. It is used to
-// pin the UDP relay to the host that set up the association, so on a non-loopback
-// listener another host cannot seize the relay by racing the first datagram.
-//
-// This is the standard SOCKS5 UDP-ASSOCIATE trust model (RFC 1928 has no
-// first-datagram token): the relay is scoped by source address only. On a loopback
-// TCP or Unix-socket listener the control IP is 127.0.0.1 or absent, so a
-// co-located local process can still claim the relay — that is the accepted trust
-// boundary of a local proxy, not a defect.
 func controlConnIP(writer io.Writer) net.IP {
 	conn, ok := writer.(net.Conn)
 	if !ok {
@@ -564,9 +542,6 @@ func cloneAssociateDatagram(packet statute.Datagram) statute.Datagram {
 	return clone
 }
 
-// route returns an existing target immediately. A cache miss is marked pending
-// and submitted to this server's bounded worker pool; the first datagram is copied
-// into that job so the session read loop can continue serving established targets.
 func (s *associateSessionObj) route(packet statute.Datagram) (*associateTargetObj, error) {
 	key, err := associateTargetKey(packet.DstAddr)
 	if err != nil {
@@ -634,14 +609,9 @@ func (s *associateSessionObj) acceptClient(addr *net.UDPAddr) bool {
 	if !associateSpecAllowsClient(s.clientSpec, addr) {
 		return false
 	}
-	// Pin to the control connection's host: a datagram from a different IP cannot
-	// claim the relay, even when the client declared an unspecified address.
 	if s.controlIP != nil && (addr == nil || !s.controlIP.Equal(addr.IP)) {
 		return false
 	}
-	// Bind the client on the first accepted datagram. clientUDP is set once here
-	// (run() is the sole caller) and never mutated after, so the forward()
-	// goroutines can read it without a lock or a per-datagram copy.
 	if s.clientUDP == nil {
 		s.clientUDP = cloneUDPAddr(addr)
 		return true
@@ -651,8 +621,6 @@ func (s *associateSessionObj) acceptClient(addr *net.UDPAddr) bool {
 
 func (s *associateSessionObj) createTarget(packet statute.Datagram, key associateTargetKeyObj) (*associateTargetObj, error) {
 
-	// Worker jobs for distinct keys run concurrently, while lookup/insert/delete
-	// stays serialized by targetMu.
 	s.targetMu.Lock()
 	if target, ok := s.targets[key]; ok {
 		s.targetMu.Unlock()
@@ -668,8 +636,6 @@ func (s *associateSessionObj) createTarget(packet statute.Datagram, key associat
 	}
 	s.targetMu.Unlock()
 
-	// The server-wide cap is acquired before DNS so saturation cannot amplify
-	// resolver work across many sessions.
 	if !s.acquireTargetSlot() {
 		return nil, ErrAssociateTargetLimit
 	}
@@ -703,9 +669,6 @@ func (s *associateSessionObj) createTarget(packet statute.Datagram, key associat
 		out:       newAssociatePacketQueue(s.maxQueuedPackets, s.maxQueuedBytes),
 	}
 
-	// A concurrent close() may have snapshotted targets between dial start and now.
-	// If the session is already closed, nothing will ever close this target, so
-	// release its resources here (conn + global slot) instead of inserting it.
 	s.targetMu.Lock()
 	if s.closed {
 		s.targetMu.Unlock()
@@ -743,8 +706,6 @@ func (s *associateSessionObj) close() {
 		s.cancel()
 		_ = s.relay.Close()
 		s.targetMu.Lock()
-		// Mark closed under the lock so any concurrent target() insert that runs
-		// after this snapshot observes it and cleans up its own dialed conn.
 		s.closed = true
 		targets := make([]*associateTargetObj, 0, len(s.targets))
 		for _, target := range s.targets {
@@ -767,8 +728,6 @@ func (s *associateSessionObj) deleteTarget(target *associateTargetObj) {
 
 // //
 
-// touch arms the target's idle deadline; an idle target self-expires and releases
-// its goroutine, upstream conn, socket slot, and pooled buffer.
 func (t *associateTargetObj) touch() {
 	_ = t.conn.SetReadDeadline(time.Now().Add(associateTargetIdleTimeout))
 }
@@ -782,8 +741,6 @@ func (t *associateTargetObj) forward() {
 	bufp := associateBufferPool.Get().(*[]byte)
 	defer associateBufferPool.Put(bufp)
 	buf := *bufp
-	// Write the fixed SOCKS UDP header once, then read each upstream datagram
-	// directly after it, so a relayed packet needs no per-datagram allocation.
 	hlen := copy(buf, t.header)
 	for {
 		t.touch()

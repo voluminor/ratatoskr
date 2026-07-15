@@ -1,207 +1,221 @@
-# mod/core
+# Core
 
-Yggdrasil node with a userspace TCP/UDP stack. Wraps `yggcore.Core` and gVisor netstack, providing standard
-Go interfaces for networking: `net.Conn`, `net.Listener`, `net.PacketConn`.
+Package `core` embeds a Yggdrasil node and exposes TCP and UDP through standard
+Go networking interfaces backed by gVisor.
+
+Key contracts:
+
+- `DialContext`, `Listen`, and `ListenPacket` operate on Yggdrasil IPv6 addresses.
+- `Close() error` is idempotent and closes owned listeners and packet endpoints.
+- `ConfigObj.Config` may be nil; this generates a node with random keys.
+- the optional admin socket is an unsafe upstream pass-through; read the
+  [admin warning](admin/README.md) before enabling it.
 
 ## Contents
 
-- [Overview](#overview)
-- [Initialization](#initialization)
-- [Network operations](#network-operations)
-    - [DialContext](#dialcontext)
-    - [Listen](#listen)
-    - [ListenPacket](#listenpacket)
-- [Node information](#node-information)
-- [Peer management](#peer-management)
-- [Components](#components)
-    - [Multicast](#multicast)
-    - [Admin socket](#admin-socket)
+- [Architecture](#architecture)
+- [Construction](#construction)
+- [Networking](#networking)
+- [Identity and peers](#identity-and-peers)
+- [Optional components](#optional-components)
+  - [Multicast](#multicast)
+  - [Admin socket](#admin-socket)
 - [Shutdown](#shutdown)
+- [Concurrency and ownership](#concurrency-and-ownership)
 - [Errors](#errors)
 
----
-
-## Overview
+## Architecture
 
 ```mermaid
-flowchart TB
-    subgraph Obj["Obj — Yggdrasil node"]
-        direction TB
-        New["New(cfg)"]
-        Dial["DialContext(ctx, net, addr)"]
-        Lis["Listen(net, addr)"]
-        LisP["ListenPacket(net, addr)"]
-        Peers["AddPeer / RemovePeer / GetPeers"]
-        MC["EnableMulticast / DisableMulticast"]
-        Adm["EnableAdmin / DisableAdmin"]
-        Close["Close()"]
-    end
-
-    subgraph Netstack["netstackObj — gVisor"]
-        TCP["TCP"]
-        UDP["UDP"]
-    end
-
-    subgraph NIC["nicObj — LinkEndpoint"]
-        RW["ipv6rwc"]
-    end
-
-    subgraph Core["yggcore.Core"]
-        Routing["routing"]
-    end
-
-    Dial --> Netstack
-    Lis --> TCP
-    LisP --> UDP
-    Netstack --> NIC
-    NIC --> Core
+flowchart TD
+  API["core.Obj<br/>lifecycle and Go network API"]
+  Stack["gVisor netstack<br/>TCP, UDP, ICMPv6"]
+  NIC["gVisor LinkEndpoint"]
+  RWC["Yggdrasil ipv6rwc"]
+  YGG["yggcore.Core<br/>routing and peers"]
+  API --> Stack
+  Stack --> NIC
+  NIC --> RWC
+  RWC --> YGG
 ```
 
-Layers from bottom to top:
+The implementation is separated by responsibility:
 
-1. **yggcore.Core** — routing and peer management
-2. **ipv6rwc** — packet I/O between Yggdrasil and NIC
-3. **nicObj** — implements gVisor `stack.LinkEndpoint`, bridges ipv6rwc and netstack
-4. **netstackObj** — TCP/UDP protocols on top of gVisor
-5. **Obj** — public API, lifecycle, component management
+- [`node.go`](node.go) owns construction, shutdown, networking, and identity.
+- [`peers.go`](peers.go) contains runtime peer operations.
+- [`multicast.go`](multicast.go) controls local peer discovery.
+- [`admin.go`](admin.go) connects the core to the admin adapter.
+- [`netstack.go`](netstack.go) and [`nic.go`](nic.go) bridge gVisor to Yggdrasil.
+- [`options.go`](options.go) translates `config.NodeConfig` into upstream options.
 
----
-
-## Initialization
+## Construction
 
 ```go
-obj, err := core.New(core.ConfigObj{
-Config: nodeCfg, // *config.NodeConfig; nil — random keys
-Logger: logger, // nil — logs are discarded
-})
-defer obj.Close()
+package main
+
+import (
+  "log"
+
+  ratcore "github.com/voluminor/ratatoskr/mod/core"
+  "github.com/yggdrasil-network/yggdrasil-go/src/config"
+)
+
+func main() {
+  nodeConfig := config.GenerateConfig()
+  nodeConfig.AdminListen = "none"
+
+  node, err := ratcore.New(ratcore.ConfigObj{Config: nodeConfig})
+  if err != nil {
+    log.Fatal(err)
+  }
+  defer func() {
+    if err := node.Close(); err != nil {
+      log.Printf("close node: %v", err)
+    }
+  }()
+}
 ```
 
-`New` creates a `yggcore.Core`, then sets up netstack with gVisor. After successful creation the node is ready to accept
-connections and connect to peers.
+`Logger == nil` discards logs. Construction copies the node-config struct,
+copies `MulticastInterfaces`, and deep-clones JSON-shaped `NodeInfo`. Cyclic or
+unsupported `NodeInfo` values return `ErrInvalidNodeInfo`.
 
----
+The configured MTU is clamped to the upstream maximum. A non-zero value below
+the IPv6 minimum of 1280 is raised to 1280 unless the upstream maximum itself is
+lower. Zero selects the upstream maximum.
 
-## Network operations
+## Networking
 
-All methods are compatible with standard Go interfaces. Supported networks: `tcp`, `tcp6`, `udp`, `udp6`.
+Supported network names and address forms:
 
-### DialContext
+| Method         | Networks                     | Address examples          |
+|----------------|------------------------------|---------------------------|
+| `DialContext`  | `tcp`, `tcp6`, `udp`, `udp6` | `[200:...]:443`           |
+| `Listen`       | `tcp`, `tcp6`                | `:8080`, `[200:...]:8080` |
+| `ListenPacket` | `udp`, `udp6`                | `:9000`, `[200:...]:9000` |
 
 ```go
-DialContext(ctx context.Context, network, address string) (net.Conn, error)
+listener, err := node.Listen("tcp", ":8080")
+if err != nil {
+return err
+}
+defer listener.Close()
+
+conn, err := node.DialContext(ctx, "tcp", "[200:db8::1]:8080")
+if err != nil {
+return err
+}
+defer conn.Close()
 ```
 
-Connects to an Yggdrasil address. Compatible with `http.Transport.DialContext`.
+An omitted `DialContext` context is treated as `context.Background()`. Closing
+the node aborts endpoints owned by the gVisor stack. Networking calls made after
+shutdown return `ErrNotAvailable`.
 
-### Listen
+## Identity and peers
+
+| Method        | Result                         |
+|---------------|--------------------------------|
+| `Address()`   | node address in `200::/7`      |
+| `Subnet()`    | routable `/64` in `300::/7`    |
+| `PublicKey()` | owned 32-byte Ed25519 key copy |
+| `MTU()`       | active virtual-interface MTU   |
+
+After shutdown these accessors return their zero values.
 
 ```go
-Listen(network, address string) (net.Listener, error)
+if err := node.AddPeer("tls://203.0.113.10:443"); err != nil {
+return err
+}
+peers := node.GetPeers()
+if err := node.RemovePeer("tls://203.0.113.10:443"); err != nil {
+return err
+}
 ```
 
-Creates a TCP listener. Address format: `:port` or `[ipv6]:port`. The listener is automatically closed on `Close()`.
+`RetryPeers` asks upstream Yggdrasil to retry configured peers immediately.
+`GetPeers` includes configured and connected peers.
 
-### ListenPacket
+## Optional components
 
-```go
-ListenPacket(network, address string) (net.PacketConn, error)
-```
+Multicast and admin use the same lifecycle contract:
 
-Creates a UDP listener. Address format is the same as `Listen`. Automatically closed on `Close()`.
-
----
-
-## Node information
-
-| Method        | Returns             | Description                                |
-|---------------|---------------------|--------------------------------------------|
-| `Address()`   | `net.IP`            | Node's IPv6 address in the `200::/7` range |
-| `Subnet()`    | `net.IPNet`         | Routable `/64` subnet                      |
-| `PublicKey()` | `ed25519.PublicKey` | Node's public key (32 bytes)               |
-| `MTU()`       | `uint64`            | Network interface MTU                      |
-
----
-
-## Peer management
-
-```go
-obj.AddPeer("tls://203.0.113.55:443")
-obj.RemovePeer("tls://203.0.113.55:443")
-peers := obj.GetPeers() // []yggcore.PeerInfo
-obj.RetryPeers()        // re-trigger connection attempts to configured peers
-```
-
-URI formats: `tcp://`, `tls://`, `quic://`, `ws://`, `wss://`.
-
----
-
-## Components
-
-Multicast and Admin socket are toggleable components with double-enable protection. Each component
-is thread-safe
-and supports the `Enable → Disable → Enable` cycle.
+- enabling an active component returns `ErrAlreadyEnabled`;
+- disabling an inactive component succeeds;
+- a component can be enabled again after disable;
+- a stop error is returned, but the component is still marked inactive.
 
 ### Multicast
 
-```go
-obj.EnableMulticast() // mDNS discovery on the local network
-obj.DisableMulticast()
-```
+`EnableMulticast` uses `Config.MulticastInterfaces`. Each `Regex` is compiled
+when multicast starts, so an invalid pattern is returned to the caller rather
+than ignored.
 
-Interfaces for discovery are taken from `NodeConfig.MulticastInterfaces`. Interface patterns are compiled as
-regular
-expressions.
+```go
+if err := node.EnableMulticast(); err != nil {
+return err
+}
+defer node.DisableMulticast()
+```
 
 ### Admin socket
 
 ```go
-obj.EnableAdmin("unix:///tmp/ygg.sock")
-obj.EnableAdmin("tcp://127.0.0.1:9001")
-obj.DisableAdmin()
+if err := node.EnableAdmin("unix:///run/ratatoskr/admin.sock"); err != nil {
+return err
+}
+defer node.DisableAdmin()
 ```
 
-`EnableAdmin` delegates through [`mod/core/admin`](admin/README.md), a thin pass-through to the upstream Yggdrasil
-admin socket. It intentionally inherits upstream behavior instead of maintaining a second server implementation.
-
-The socket is unsafe operational tooling: it has no authentication, deadlines, or request-size limit; handler
-registration can race with requests; accepted keepalive connections survive `DisableAdmin`; and bind or Unix-socket
-cleanup failures can terminate the process with `os.Exit(1)`. Use only a protected Unix socket or loopback endpoint
-with trusted clients. The admin package README documents the complete limitations.
-
----
+Admin has no authentication, deadlines, or request-size limit. Handler
+registration can race with requests, accepted keepalive connections survive
+`DisableAdmin`, and upstream bind or Unix-socket cleanup failures can terminate
+the host process with `os.Exit(1)`. Use only a protected local endpoint. The
+[admin package README](admin/README.md) lists the complete inherited behavior.
 
 ## Shutdown
 
-```go
-err := obj.Close() // safe for repeated calls
-```
-
-Shutdown order:
-
 ```mermaid
-flowchart LR
-    A["DisableMulticast"] --> B["DisableAdmin"]
-  B --> D["Stop yggcore.Core"]
-  D --> E["Close netstack (aborts listeners)"]
+flowchart TD
+  Close["Close"]
+  Multicast["stop multicast"]
+  Admin["stop admin listener"]
+  Core["stop yggcore.Core"]
+  Stack["destroy gVisor netstack"]
+  Endpoints["abort remaining endpoints"]
+  Close --> Multicast
+  Multicast --> Admin
+  Admin --> Core
+  Core --> Stack
+  Stack --> Endpoints
 ```
 
-As a standalone module, `Close` waits for upstream `core.Stop()` to finish. The
-root `ratatoskr` package adds the optional total shutdown deadline used by embedded
-applications.
+Standalone `core.Obj.Close` waits for upstream `Core.Stop`. Applications that
+need a total shutdown deadline should use the root package lifecycle wrapper.
 
----
+## Concurrency and ownership
+
+Public operations are safe to race with `Close`; unavailable operations return
+zero values or `ErrNotAvailable` as described above. Component transitions are
+serialized. `PublicKey` returns a copy.
+
+`SetAdmin` is intentionally unsafe. Upstream handler registration is not
+synchronized with request processing. Call it only during trusted construction,
+never concurrently with `EnableAdmin` or `EnableMulticast`.
 
 ## Errors
 
-| Variable                     | Description                              |
-|------------------------------|------------------------------------------|
-| `ErrNotAvailable`            | Netstack is not initialized              |
-| `ErrAlreadyEnabled`          | Component is already enabled             |
-| `ErrAdminDisabled`           | Admin socket is not active               |
-| `ErrUnsupportedNetwork`      | Unsupported network type (not tcp/udp)   |
-| `ErrPortRequired`            | Address is missing a port                |
-| `ErrPortOutOfRange`          | Port is out of the 0–65535 range         |
-| `ErrInvalidAddress`          | Invalid IP address                       |
-| `ErrIPv6Only`                | Only IPv6 addresses are supported        |
-| `ErrInvalidAllowedPublicKey` | Malformed AllowedPublicKeys entry        |
+All errors support `errors.Is` when wrapped.
+
+| Error                        | Meaning                                        |
+|------------------------------|------------------------------------------------|
+| `ErrNotAvailable`            | node or netstack is unavailable                |
+| `ErrAlreadyEnabled`          | optional component is already active           |
+| `ErrAdminDisabled`           | upstream treated the admin address as disabled |
+| `ErrUnsupportedNetwork`      | network name is unsupported for the operation  |
+| `ErrPortRequired`            | address omitted its port                       |
+| `ErrPortOutOfRange`          | port is outside `0..65535`                     |
+| `ErrInvalidAddress`          | host is not an IP literal                      |
+| `ErrIPv6Only`                | host is IPv4                                   |
+| `ErrInvalidNodeInfo`         | NodeInfo cannot be safely cloned               |
+| `ErrInvalidAllowedPublicKey` | allowlist key is invalid hex or not 32 bytes   |

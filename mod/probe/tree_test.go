@@ -62,7 +62,6 @@ func (s *treeSourceObj) GetPaths() []yggcore.PathEntryInfo {
 }
 
 // // // // // // // // // //
-// Tree / Trace
 
 func newTreeTestObj() *Obj {
 	return &Obj{
@@ -270,7 +269,6 @@ func TestEffectiveConcurrency(t *testing.T) {
 }
 
 // // // // // // // // // //
-// scanLevel
 
 func TestScanLevel_totalLimit(t *testing.T) {
 	keys := genKeyN(t, 4)

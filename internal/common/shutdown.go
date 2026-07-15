@@ -6,9 +6,11 @@ import (
 	"time"
 )
 
-// NamedCloseObj identifies one shutdown operation in joined errors.
+// NamedCloseObj associates a shutdown function with its error prefix.
 type NamedCloseObj struct {
-	Name  string
+	// Name prefixes an error returned by Close.
+	Name string
+	// Close performs the shutdown operation. A nil function succeeds.
 	Close func() error
 }
 
@@ -41,9 +43,9 @@ func appendCloseError(errs []error, result closeResultObj) []error {
 	return append(errs, fmt.Errorf("%s: %w", result.name, result.err))
 }
 
-// CloseWithDeadline closes before concurrently, then final exactly once. The
-// shared budget covers both phases. If it expires, final is still started in a
-// detached goroutine and timedOut is true; already observed errors are returned.
+// CloseWithDeadline closes before concurrently and then starts final. The
+// shared timeout covers both phases. Timed-out operations continue in owned
+// goroutines, while the function returns errors observed before the deadline.
 func CloseWithDeadline(timeout time.Duration, before []NamedCloseObj, final NamedCloseObj) (err error, timedOut bool) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()

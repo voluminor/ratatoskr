@@ -1,7 +1,12 @@
-# mod/socks
+# SOCKS5 server
 
-SOCKS5 proxy over Yggdrasil. Allows regular applications to access the Yggdrasil network via the standard
-SOCKS5 protocol.
+Package `socks` exposes a caller-supplied Yggdrasil dialer through SOCKS5 over
+TCP or a private Unix socket.
+
+Defaults are 256 accepted connections, 1024 UDP targets per server, 128 targets
+per session, 64 queued packets and 64 KiB per target, a 10-second handshake and
+dial timeout, and a 5-minute TCP idle timeout. The per-principal UDP target limit
+is intentionally unlimited unless configured.
 
 ## Contents
 
@@ -18,7 +23,7 @@ SOCKS5 protocol.
 ## Overview
 
 ```mermaid
-flowchart LR
+flowchart TD
     App["application"] -->|" SOCKS5 "| Proxy["socks.Obj"]
     Proxy -->|" DialContext "| Ygg["Yggdrasil"]
 
@@ -42,21 +47,24 @@ and establishes a connection through the Yggdrasil dialer.
 
 ```go
 s, err := socks.New(socks.ConfigObj{
-    Network:           node, // proxy.ContextDialer, usually core.Obj
-    Addr:              "127.0.0.1:1080", // or a socket in a private directory
-    Resolver:          resolver,         // name resolver (.pk.ygg, DNS)
-    Verbose:           false,
-    Logger:            logger,
-    MaxConnections:    100, // 0 — safe default, <0 — unlimited
-    HandshakeTimeout:  10 * time.Second,
-    DialTimeout:       10 * time.Second,
-    TunnelIdleTimeout: 5 * time.Minute,
-    MaxAssociateTargetsPerSession: 128, // 0 — safe default, <0 — no per-session cap
-MaxAssociateTargetsPerPrincipal: 0,     // <=0 — unlimited; server cap remains
-MaxAssociateQueuedPacketsPerTarget: 64,       // 0 — 64, <0 — unlimited
-MaxAssociateQueuedBytesPerTarget:   64 << 10, // 0 — 64 KiB, <0 — unlimited
-    Credentials:       credentials, // optional username/password auth
+    Network:                              node,
+    Addr:                                 "127.0.0.1:1080",
+    Resolver:                             resolver,
+    Logger:                               logger,
+    MaxConnections:                       100,
+    HandshakeTimeout:                     10 * time.Second,
+    DialTimeout:                          10 * time.Second,
+    TunnelIdleTimeout:                    5 * time.Minute,
+    MaxAssociateTargetsPerSession:         128,
+    MaxAssociateTargetsPerPrincipal:       64,
+    MaxAssociateQueuedPacketsPerTarget:    64,
+    MaxAssociateQueuedBytesPerTarget:      64 << 10,
+    Credentials:                           credentials,
 })
+if err != nil {
+    return err
+}
+defer func() { _ = s.Close() }()
 ```
 
 Creates and starts a SOCKS5 proxy. Close it with `Close`.
@@ -100,13 +108,13 @@ The listener type is determined by the address:
 | `/run/user/1000/ratatoskr/ygg.sock` | Unix socket |
 | `./private/local.sock`              | Unix socket |
 
-Rule: if the address starts with `/` or `.` — Unix socket, otherwise TCP.
+An address starting with `/` or `.` selects a Unix socket. Every other address selects TCP.
 
 ---
 
 ## Connection limiting
 
-The listener is always wrapped in a `limitedListenerObj` backed by a `common.DynamicLimitObj` — a runtime-adjustable
+The listener is always wrapped in a `limitedListenerObj` backed by a `common.DynamicLimitObj`, a runtime-adjustable
 semaphore, so `SetMaxConnections` can change the limit while the proxy runs. `MaxConnections: 0` uses the safe default
 (`256`); a negative value makes the limit unlimited, and `Accept` never blocks on it.
 
@@ -129,7 +137,7 @@ the target remains usable for later packets.
 `Snapshot()` also reports active, pending, and rejected targets. Counters are cumulative and are not reset by reads.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Accept["Accept()"] --> Sem{"semaphore free?"}
     Sem -->|" yes "| Conn["accept connection"]
     Sem -->|" no "| Block["wait"]
@@ -160,7 +168,7 @@ flowchart TB
     Check -->|" socket "| Remove["os.Remove → retry"]
 ```
 
-- If the socket is held by a live process — error
+- If a live process holds the socket, startup fails.
 - The parent directory must exist, must not be a symlink, and must be private (`0700` or stricter)
 - A stale socket is removed only after `ECONNREFUSED` and a same-inode check
 - Symlinks and other non-socket paths are refused, never removed (`ErrSymlinkRefusal` / `ErrSocketRefusal`)

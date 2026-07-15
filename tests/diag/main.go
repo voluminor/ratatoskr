@@ -14,7 +14,7 @@ import (
 
 // // // // // // // // // //
 
-func buildNodeConfig(cfg ConfigObj) *yggconfig.NodeConfig {
+func buildNodeConfig(cfg configObj) *yggconfig.NodeConfig {
 	nodeCfg := yggconfig.GenerateConfig()
 	nodeCfg.AdminListen = "none"
 	nodeCfg.Peers = append([]string(nil), cfg.Peers...)
@@ -28,7 +28,7 @@ func buildNodeConfig(cfg ConfigObj) *yggconfig.NodeConfig {
 	return nodeCfg
 }
 
-func run(ctx context.Context, cfg ConfigObj, timeout time.Duration) error {
+func run(ctx context.Context, cfg configObj, timeout time.Duration) error {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	log := newLogger(cfg.Name)

@@ -3,7 +3,6 @@ package probe
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -17,7 +16,6 @@ import (
 )
 
 // // // // // // // // // //
-// parseRemotePeersResponse
 
 func newRemoteTestObj(handler yggcore.AddHandlerFunc) *Obj {
 	return &Obj{
@@ -231,7 +229,6 @@ func TestCallRemotePeers_detachedCallSurvivesCallerCancel(t *testing.T) {
 	if err := <-errCh; !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected caller cancellation, got %v", err)
 	}
-	// The detached call keeps running to completion after the caller left.
 	close(release)
 	select {
 	case <-finished:
@@ -590,7 +587,6 @@ func TestCallRemotePeers_timeoutReturnsButKeepsUnderlyingCallOwned(t *testing.T)
 }
 
 // // // // // // // // // //
-// AdminCaptureObj
 
 func TestAdminCapture(t *testing.T) {
 	capture := common.NewAdminCapture()
@@ -603,26 +599,5 @@ func TestAdminCapture(t *testing.T) {
 	}
 	if capture.Handlers["missing"] != nil {
 		t.Fatal("unexpected handler for missing key")
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkParseRemotePeersResponse(b *testing.B) {
-	keys := make([]string, 20)
-	for i := range keys {
-		pk, _, _ := ed25519.GenerateKey(rand.Reader)
-		keys[i] = hex.EncodeToString(pk)
-	}
-	inner, _ := json.Marshal(struct {
-		Keys []string `json:"keys"`
-	}{Keys: keys})
-	resp := yggcore.DebugGetPeersResponse{
-		"node1": json.RawMessage(inner),
-	}
-	for b.Loop() {
-		if _, _, err := parseRemotePeersResponse(resp, DefaultMaxPeersPerNode); err != nil {
-			b.Fatalf("parseRemotePeersResponse: %v", err)
-		}
 	}
 }

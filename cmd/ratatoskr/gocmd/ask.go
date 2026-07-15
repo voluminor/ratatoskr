@@ -68,7 +68,6 @@ func askRun(cfg *gsettings.GoAskObj) error {
 		return err
 	}
 
-	// Query NodeInfo
 	var result *ninfo.AskResultObj
 	var askErr error
 
@@ -153,16 +152,16 @@ func askWaitPeers(ctx context.Context, node *ratatoskr.Obj, total int) error {
 
 // // // // // // // // // //
 
-type askResultJSON struct {
-	Target   string         `json:"target"`
-	RTT      float64        `json:"rtt_ms"`
-	Version  string         `json:"version,omitempty"`
-	Software *askSoftJSON   `json:"software,omitempty"`
-	Sigils   map[string]any `json:"sigils,omitempty"`
-	Extra    map[string]any `json:"extra,omitempty"`
+type askResultJSONObj struct {
+	Target   string          `json:"target"`
+	RTT      float64         `json:"rtt_ms"`
+	Version  string          `json:"version,omitempty"`
+	Software *askSoftJSONObj `json:"software,omitempty"`
+	Sigils   map[string]any  `json:"sigils,omitempty"`
+	Extra    map[string]any  `json:"extra,omitempty"`
 }
 
-type askSoftJSON struct {
+type askSoftJSONObj struct {
 	Name     string `json:"name,omitempty"`
 	Version  string `json:"version,omitempty"`
 	Platform string `json:"platform,omitempty"`
@@ -181,7 +180,7 @@ func outputAsk(target string, result *ninfo.AskResultObj, format gsettings.GoAsk
 // //
 
 func outputAskJSON(target string, result *ninfo.AskResultObj) error {
-	out := askResultJSON{
+	out := askResultJSONObj{
 		Target:  target,
 		RTT:     float64(result.RTT.Microseconds()) / 1000.0,
 		Version: result.Node.Version,
@@ -189,7 +188,7 @@ func outputAskJSON(target string, result *ninfo.AskResultObj) error {
 	}
 
 	if result.Software != nil {
-		out.Software = &askSoftJSON{
+		out.Software = &askSoftJSONObj{
 			Name:     result.Software.Name,
 			Version:  result.Software.Version,
 			Platform: result.Software.Platform,

@@ -19,18 +19,13 @@ import (
 // // // // // // // // // //
 
 const (
-	// envDiagToken, when non-empty at startup, requires a matching X-Diag-Token
-	// header on every state-changing endpoint.
-	envDiagToken = "RTS_DIAG_TOKEN"
-	// envDiagDebug enables the pprof/expvar debug listener regardless of config.
-	envDiagDebug = "RTS_DIAG_DEBUG"
-	// diagTokenHeader carries the shared secret for mutating endpoints.
+	envDiagToken    = "RTS_DIAG_TOKEN"
+	envDiagDebug    = "RTS_DIAG_DEBUG"
 	diagTokenHeader = "X-Diag-Token"
 )
 
-// serverObj owns diagnostic HTTP surfaces and echo listeners.
 type serverObj struct {
-	cfg         ConfigObj
+	cfg         configObj
 	node        *ratatoskr.Obj
 	log         loggerObj
 	startedAt   time.Time
@@ -45,7 +40,7 @@ type serverObj struct {
 	gomaxprocs  gomaxprocsControllerObj
 }
 
-func newServer(cfg ConfigObj, node *ratatoskr.Obj, log loggerObj, shutdown context.CancelFunc) *serverObj {
+func newServer(cfg configObj, node *ratatoskr.Obj, log loggerObj, shutdown context.CancelFunc) *serverObj {
 	return &serverObj{
 		cfg:         cfg,
 		node:        node,
@@ -58,7 +53,6 @@ func newServer(cfg ConfigObj, node *ratatoskr.Obj, log loggerObj, shutdown conte
 	}
 }
 
-// requirePOST rejects non-POST requests on state-changing endpoints.
 func requirePOST(w http.ResponseWriter, r *http.Request) bool {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
@@ -68,8 +62,6 @@ func requirePOST(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// guardMutation enforces POST and, when a token is configured, a matching
-// X-Diag-Token header using a constant-time comparison.
 func (s *serverObj) guardMutation(w http.ResponseWriter, r *http.Request) bool {
 	if !requirePOST(w, r) {
 		return false

@@ -103,7 +103,6 @@ func main() {
 		_, _ = w.Write(png)
 	})
 
-	// Plain HTTP servers
 	for _, port := range cfg.HTTPPorts {
 		l, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 		if err != nil {
@@ -119,7 +118,6 @@ func main() {
 		fmt.Printf("HTTP       http://%s:%d/\n", cfg.Hostname, port)
 	}
 
-	// Yggdrasil HTTP servers
 	for _, port := range cfg.YggPorts {
 		addr := fmt.Sprintf("[%s]:%d", yggAddr, port)
 		l, err := node.Listen("tcp", addr)
@@ -147,7 +145,7 @@ func serveHTTP(server *http.Server, listener net.Listener, logger interface{ Err
 
 // //
 
-func buildMux(wwwPath string, info *InfoHandlerObj, isYgg bool, qr, trace, tree, treeWS http.Handler) *http.ServeMux {
+func buildMux(wwwPath string, info *infoHandlerObj, isYgg bool, qr, trace, tree, treeWS http.Handler) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/yggdrasil-server.json", info.Handler(isYgg))
 	mux.Handle("/ygg-qr.png", qr)

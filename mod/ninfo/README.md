@@ -1,14 +1,20 @@
-# mod/ninfo
+# NodeInfo
 
 NodeInfo operations for Yggdrasil nodes: querying remote nodes and parsing responses with built-in or custom sigils.
 
-The module captures the `getNodeInfo` handler from `yggcore.Core`, wraps it with address resolution, sigil extraction,
-and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handled by `sigil_core`.
+The module captures the `getNodeInfo` handler from `yggcore.Core`, then adds
+address resolution, bounded shared queries, and sigil parsing. Publishing local
+NodeInfo is handled by [`sigil_core`](../sigils/sigil_core/README.md).
+
+Key limits are 64 distinct NodeInfo queries, 64 distinct address lookups, and
+16 KiB per NodeInfo response. Same-key callers share work without sharing caller
+cancellation.
 
 ## Table of contents
 
 - [Overview](#overview)
 - [Initialization](#initialization)
+- [Shutdown](#shutdown)
 - [Querying remote nodes](#querying-remote-nodes)
     - [Ask](#ask)
     - [AskAddr](#askaddr)
@@ -25,8 +31,8 @@ and ratatoskr metadata parsing. Publishing (assembling local NodeInfo) is handle
 ## Overview
 
 ```mermaid
-flowchart LR
-  subgraph Obj["Obj — query & parse"]
+flowchart TD
+    subgraph Obj["Obj: query and parse"]
         New["New(ConfigObj)"]
         AskAddr["AskAddr(ctx, addr)"]
         Ask["Ask(ctx, key)"]
@@ -38,8 +44,8 @@ flowchart LR
 
     AskAddr -->|"resolve addr → key"| Ask
     Ask --> AskResult["AskResultObj\n{RTT, Node, Software}"]
-  AskResult -.->|" .Node "| ParsedObj["ParsedObj\n{Version, Sigils, SigilNames, Extra}"]
-  ConfigSigils["ConfigObj.Sigils"] -.-> New
+    AskResult -.->|"Node"| ParsedObj["ParsedObj<br/>Version, Sigils, SigilNames, Extra"]
+    ConfigSigils["ConfigObj.Sigils"] -.-> New
 
     Parse --> ParsedObj
 ```
@@ -65,8 +71,11 @@ after its deadline, but the synchronous upstream `getNodeInfo` handler cannot be
 completion by one in-progress upstream call (currently about six seconds). `Sigils` contains immutable parser prototypes
 for custom remote metadata; `New` validates and clones them before accepting work.
 
-`Close()` rejects new work, cancels the shared module context, and waits for accepted `Ask` and IPv6-resolution flights.
-The root `ratatoskr.Obj` applies its own aggregate close timeout; standalone `ninfo.Close` deliberately waits.
+## Shutdown
+
+`Close()` rejects new work, cancels the shared module context, and waits for
+accepted `Ask` and IPv6-resolution flights. The root `ratatoskr.Obj` applies its
+aggregate close timeout; standalone `ninfo.Close` deliberately waits.
 
 ---
 
@@ -112,7 +121,7 @@ At most 64 distinct address flights run at once, and excess distinct addresses r
 cancellation detaches only that waiter. The flight itself is bounded by `MaxLookupTime` (default 30s) or `Close`.
 
 ```mermaid
-flowchart LR
+flowchart TD
     addr["addr string"]
     addr --> pkYgg{"*.pk.ygg?"}
     addr --> hex{"64-char hex?"}
@@ -130,9 +139,9 @@ flowchart LR
 
 ```go
 type AskResultObj struct {
-RTT      time.Duration
-Node     *ParsedObj
-Software *SoftwareObj // nil when NodeInfoPrivacy is on
+    RTT      time.Duration
+    Node     *ParsedObj
+    Software *SoftwareObj
 }
 ```
 
@@ -141,10 +150,10 @@ Software *SoftwareObj // nil when NodeInfoPrivacy is on
 
 ```go
 type SoftwareObj struct {
-Name     string
-Version  string
-Platform string
-Arch     string
+    Name     string
+    Version  string
+    Platform string
+    Arch     string
 }
 ```
 
@@ -161,7 +170,8 @@ Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj
 Inspects arbitrary NodeInfo received from a remote node. Always returns a non-nil `*ParsedObj`.
 
 1. Copies all keys from `nodeInfo` into `Extra`.
-2. Looks for the `ratatoskr` metadata key. If missing or malformed — returns early with everything in `Extra`.
+2. Looks for the `ratatoskr` metadata key. If it is missing or malformed, parsing returns early with everything in
+   `Extra`.
 3. Parses the metadata string via `sigil_core.ParseInfo` to get the version and sigil list.
 4. For each declared sigil, looks up a parser: built-in parsers via `target.Parse` first, falling back to
    user-provided `sg` (built-in names are reserved, so user sigils cannot override them).
@@ -173,11 +183,10 @@ User-provided sigils are cloned via `Clone()` before parsing, so the caller's te
 
 ```go
 type ParsedObj struct {
-Version string
-Sigils  map[string]sigils.Interface
-// SigilNames preserves valid metadata names this build cannot parse.
-SigilNames []string
-Extra      map[string]any
+    Version    string
+    Sigils     map[string]sigils.Interface
+    SigilNames []string
+    Extra      map[string]any
 }
 ```
 

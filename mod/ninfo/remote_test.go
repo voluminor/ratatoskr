@@ -9,7 +9,6 @@ import (
 )
 
 // // // // // // // // // //
-// AdminCaptureObj
 
 func TestAdminCapture(t *testing.T) {
 	cap := common.NewAdminCapture()
@@ -26,7 +25,6 @@ func TestAdminCapture(t *testing.T) {
 }
 
 // // // // // // // // // //
-// extractSoftware
 
 func TestExtractSoftware_allFields(t *testing.T) {
 	extra := map[string]any{
@@ -86,7 +84,6 @@ func TestExtractSoftware_nonString_ignored(t *testing.T) {
 }
 
 // // // // // // // // // //
-// callNodeInfo response parsing
 
 func TestCallNodeInfo_wrongType(t *testing.T) {
 	obj := &Obj{
@@ -126,20 +123,5 @@ func TestCallNodeInfo_validResponse(t *testing.T) {
 	}
 	if string(raw) != `{"name":"test"}` {
 		t.Fatalf("unexpected raw: %s", raw)
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkExtractSoftware(b *testing.B) {
-	for b.Loop() {
-		extra := map[string]any{
-			"buildname":     "yggdrasil",
-			"buildversion":  "0.5.13",
-			"buildplatform": "linux",
-			"buildarch":     "amd64",
-			"custom":        "value",
-		}
-		extractSoftware(extra)
 	}
 }

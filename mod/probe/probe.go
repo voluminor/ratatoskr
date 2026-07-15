@@ -1,3 +1,4 @@
+// Package probe explores Yggdrasil topology and routes.
 package probe
 
 import (
@@ -17,9 +18,7 @@ import (
 
 // // // // // // // // // //
 
-// Obj explores Yggdrasil network topology without an admin socket.
-// Tree() does BFS over peers via debug_remoteGetPeers.
-// Path(), Hops(), Trace() work with local core data.
+// Obj explores Yggdrasil topology without exposing an admin socket.
 type Obj struct {
 	source           SourceInterface
 	logger           yggcore.Logger
@@ -55,9 +54,12 @@ type SourceInterface interface {
 const (
 	defaultPoolSize = 16
 
+	// DefaultMaxPeersPerNode bounds peers accepted from one remote response.
 	DefaultMaxPeersPerNode = 1024
-	DefaultMaxTotalNodes   = 4096
-	DefaultMaxConcurrency  = 256
+	// DefaultMaxTotalNodes bounds nodes discovered by one tree traversal.
+	DefaultMaxTotalNodes = 4096
+	// DefaultMaxConcurrency bounds remote queries and BFS workers.
+	DefaultMaxConcurrency = 256
 
 	defaultMaxDuration   = 5 * time.Minute
 	defaultRemoteTimeout = 30 * time.Second
@@ -82,8 +84,6 @@ func sortNodes(nodes []*NodeObj) {
 	})
 }
 
-// clonePeerKeys copies the key slice so downstream sorting never reorders the
-// remote call result in place.
 func clonePeerKeys(keys []ed25519.PublicKey) []ed25519.PublicKey {
 	if len(keys) == 0 {
 		return nil
@@ -93,7 +93,6 @@ func clonePeerKeys(keys []ed25519.PublicKey) []ed25519.PublicKey {
 	return out
 }
 
-// peerResultObj is the outcome of a single remote peer query.
 type peerResultObj struct {
 	key   ed25519.PublicKey
 	peers []ed25519.PublicKey
@@ -101,15 +100,12 @@ type peerResultObj struct {
 	err   error
 }
 
-// remoteCallFunc queries a node's peers; callRemotePeers is the production impl.
 type remoteCallFunc func(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error)
 
 func (o *Obj) effectiveConcurrency(concurrency int) int {
 	if concurrency <= 0 {
 		return defaultPoolSize
 	}
-	// Bound the BFS worker fan-out; the global remoteSem is the hard cap on
-	// concurrent remote calls, this just keeps the goroutine count sane.
 	if concurrency > DefaultMaxConcurrency {
 		return DefaultMaxConcurrency
 	}
@@ -128,7 +124,7 @@ func (o *Obj) boundedContext(ctx context.Context) (context.Context, context.Canc
 
 // // // // // // // // // //
 
-// ConfigObj tunes a probe. Zero values fall back to internal defaults.
+// ConfigObj contains topology-probe dependencies and limits.
 type ConfigObj struct {
 	// Source provides the Yggdrasil topology and captured admin handlers.
 	Source SourceInterface
@@ -164,10 +160,7 @@ func orDefaultDuration(v, def time.Duration) time.Duration {
 
 // //
 
-// New creates a probe module. cfg tunes crawl timing, the total-node cap, and
-// the logger. It captures debug_remoteGetPeers through ConfigObj.Source. The
-// per-node peer cap and hops wait are fixed package constants
-// (topology data comes from untrusted remote nodes), not caller knobs.
+// New captures debug_remoteGetPeers and creates a probe.
 func New(cfg ConfigObj) (*Obj, error) {
 	if cfg.Source == nil {
 		return nil, ErrSourceRequired
@@ -223,16 +216,13 @@ func (o *Obj) startClose() <-chan struct{} {
 	return tasks.Stop()
 }
 
-// Close cancels queued work and waits for every accepted remote call. It is the
-// safe standalone teardown and deliberately has no implicit timeout.
+// Close cancels queued work and waits for every accepted remote call.
 func (o *Obj) Close() error {
 	<-o.startClose()
 	return nil
 }
 
-// CloseContext initiates the same teardown as Close but bounds only the caller's
-// wait. Accepted remote calls remain owned by the probe and a later Close waits
-// for them; ctx cancellation never abandons work silently.
+// CloseContext starts shutdown and bounds the caller's wait without abandoning work.
 func (o *Obj) CloseContext(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -260,8 +250,7 @@ func (o *Obj) isClosed() bool {
 
 // // // // // // // // // //
 
-// Tree builds a network topology tree via BFS from our node as root.
-// maxDepth > 0 required. concurrency <= 0 defaults to 16.
+// Tree builds a breadth-first topology tree rooted at the local node.
 func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*TreeResultObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -269,8 +258,7 @@ func (o *Obj) Tree(ctx context.Context, maxDepth uint16, concurrency int) (*Tree
 	return o.treeBFS(ctx, maxDepth, concurrency, nil)
 }
 
-// TreeChan is Tree with progress: sends TreeProgressObj after each depth level.
-// Done=true on the last message. Closes ch before returning.
+// TreeChan runs Tree and reports completed depth levels before closing ch.
 func (o *Obj) TreeChan(ctx context.Context, maxDepth uint16, concurrency int, ch chan<- TreeProgressObj) (*TreeResultObj, error) {
 	if ch != nil {
 		defer close(ch)
@@ -283,7 +271,6 @@ func (o *Obj) TreeChan(ctx context.Context, maxDepth uint16, concurrency int, ch
 
 // //
 
-// treeBFS is the shared BFS implementation. progress is nil-safe.
 func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, progress chan<- TreeProgressObj) (*TreeResultObj, error) {
 	if maxDepth == 0 {
 		return nil, ErrMaxDepthRequired
@@ -312,7 +299,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 		visited[k] = struct{}{}
 		directPeers = append(directPeers, p)
 	}
-	// Sort ascending so the node cap keeps a deterministic, lowest-key subset.
 	slices.SortFunc(directPeers, func(a, b yggcore.PeerInfo) int {
 		return compareKeys(a.Key, b.Key)
 	})
@@ -328,8 +314,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 		currentLevel = append(currentLevel, child)
 		total++
 	}
-	// root.Children and currentLevel already follow directPeers' key order, so no
-	// re-sort is needed here.
 	if progress != nil && len(currentLevel) > 0 {
 		select {
 		case progress <- TreeProgressObj{Depth: 1, Found: len(currentLevel), Total: total, Truncated: truncated, Limit: o.maxTotalNodes}:
@@ -387,10 +371,6 @@ func (o *Obj) treeBFS(ctx context.Context, maxDepth uint16, concurrency int, pro
 
 // //
 
-// scanLevel queries the peers of a BFS level with a fixed worker pool. Results
-// are applied serially in arrival order, so shared BFS state needs no extra
-// locking. Truncation short-circuits application; a cancelled context still
-// applies every result already produced before surfacing the error.
 func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeObj, visited map[[ed25519.PublicKeySize]byte]struct{}, nextDepth int, remaining int, concurrency int) ([]*NodeObj, bool, error) {
 	if remaining <= 0 {
 		return nil, true, nil
@@ -400,8 +380,6 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 		nodeByKey[toKeyArray(n.Key)] = n
 	}
 
-	// levelCtx is cancelled once the level truncates so in-flight remote calls
-	// return promptly instead of running to completion for discarded results.
 	levelCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	jobs := make(chan ed25519.PublicKey, len(nodes))
@@ -414,8 +392,6 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 	if workerCount > len(nodes) {
 		workerCount = len(nodes)
 	}
-	// Buffered to len(nodes) so no worker blocks on send even if we stop reading
-	// early on truncation; every queued node emits exactly one result.
 	results := make(chan peerResultObj, len(nodes))
 	for range workerCount {
 		go func() {
@@ -494,9 +470,7 @@ func (o *Obj) applyPeerResult(r peerResultObj, nodeByKey map[[ed25519.PublicKeyS
 
 // // // // // // // // // //
 
-// Path returns [root, ..., target] from the local spanning tree.
-// It walks parent links from the target up to the root instead of materialising
-// the whole tree, so repeated Trace polling stays cheap on large networks.
+// Path returns the local spanning-tree path from root to key.
 func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -507,7 +481,7 @@ func (o *Obj) Path(key ed25519.PublicKey) ([]*NodeObj, error) {
 	return spanningTreePath(o.source.GetTree(), key)
 }
 
-// Hops returns the port-level route to the key. Requires a prior Lookup().
+// Hops returns the current port-level pathfinder route to key.
 func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -525,7 +499,7 @@ func (o *Obj) Hops(key ed25519.PublicKey) ([]HopObj, error) {
 	return nil, ErrNoActivePath
 }
 
-// Lookup initiates a path search. Results appear in Hops() after some time.
+// Lookup starts an asynchronous path search for key.
 func (o *Obj) Lookup(key ed25519.PublicKey) {
 	if o.isClosed() {
 		return
@@ -535,10 +509,23 @@ func (o *Obj) Lookup(key ed25519.PublicKey) {
 
 // // // // // // // // // //
 
-func (o *Obj) Self() yggcore.SelfInfo                { return o.source.GetSelf() }
-func (o *Obj) Address() net.IP                       { return o.source.Address() }
-func (o *Obj) Subnet() net.IPNet                     { return o.source.Subnet() }
-func (o *Obj) Peers() []yggcore.PeerInfo             { return o.source.GetPeers() }
-func (o *Obj) Sessions() []yggcore.SessionInfo       { return o.source.GetSessions() }
+// Self returns the local routing record.
+func (o *Obj) Self() yggcore.SelfInfo { return o.source.GetSelf() }
+
+// Address returns the local node address.
+func (o *Obj) Address() net.IP { return o.source.Address() }
+
+// Subnet returns the local routable subnet.
+func (o *Obj) Subnet() net.IPNet { return o.source.Subnet() }
+
+// Peers returns the source's current peers.
+func (o *Obj) Peers() []yggcore.PeerInfo { return o.source.GetPeers() }
+
+// Sessions returns the source's current sessions.
+func (o *Obj) Sessions() []yggcore.SessionInfo { return o.source.GetSessions() }
+
+// SpanningTree returns the source's current spanning-tree entries.
 func (o *Obj) SpanningTree() []yggcore.TreeEntryInfo { return o.source.GetTree() }
-func (o *Obj) Paths() []yggcore.PathEntryInfo        { return o.source.GetPaths() }
+
+// Paths returns the source's current pathfinder entries.
+func (o *Obj) Paths() []yggcore.PathEntryInfo { return o.source.GetPaths() }

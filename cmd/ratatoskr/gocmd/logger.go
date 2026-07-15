@@ -7,9 +7,6 @@ import (
 
 // // // // // // // // // //
 
-// cliLoggerObj suppresses debug/info output but prints warnings and errors
-// to stderr. Uses \r\033[2K before each line so the message appears cleanly
-// above an active spinner without being overwritten.
 type cliLoggerObj struct{}
 
 // //

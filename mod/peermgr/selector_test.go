@@ -16,7 +16,7 @@ func makePeerInfo(uri string, up bool, latency time.Duration) yggcore.PeerInfo {
 // //
 
 func TestBuildResults_allPresent(t *testing.T) {
-	candidates := []peerEntryObj{
+	candidates := []PeerEntryObj{
 		{URI: "tls://a:1", Scheme: "tls"},
 		{URI: "tcp://b:2", Scheme: "tcp"},
 	}
@@ -37,7 +37,7 @@ func TestBuildResults_allPresent(t *testing.T) {
 }
 
 func TestBuildResults_missing(t *testing.T) {
-	candidates := []peerEntryObj{{URI: "tls://a:1", Scheme: "tls"}}
+	candidates := []PeerEntryObj{{URI: "tls://a:1", Scheme: "tls"}}
 	results := buildResults(candidates, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1, got %d", len(results))
@@ -48,7 +48,7 @@ func TestBuildResults_missing(t *testing.T) {
 }
 
 func TestBuildResults_matchesPeerWithoutQuery(t *testing.T) {
-	candidates := []peerEntryObj{{
+	candidates := []PeerEntryObj{{
 		URI:      "tls://a:1?password=x",
 		Scheme:   "tls",
 		MatchURI: "tls://a:1",
@@ -69,7 +69,7 @@ func TestBuildResults_matchesPeerWithoutQuery(t *testing.T) {
 }
 
 func TestBuildResults_prefersUpPeerOnNormalizedCollision(t *testing.T) {
-	candidates := []peerEntryObj{{
+	candidates := []PeerEntryObj{{
 		URI:      "tls://a:1?password=x",
 		Scheme:   "tls",
 		MatchURI: "tls://a:1",
@@ -85,7 +85,7 @@ func TestBuildResults_prefersUpPeerOnNormalizedCollision(t *testing.T) {
 }
 
 func TestBuildResults_prefersLowestLatencyOnNormalizedCollision(t *testing.T) {
-	candidates := []peerEntryObj{{
+	candidates := []PeerEntryObj{{
 		URI:      "tls://a:1?password=x",
 		Scheme:   "tls",
 		MatchURI: "tls://a:1",
@@ -101,7 +101,7 @@ func TestBuildResults_prefersLowestLatencyOnNormalizedCollision(t *testing.T) {
 }
 
 func TestBuildResults_orderPreserved(t *testing.T) {
-	candidates := []peerEntryObj{
+	candidates := []PeerEntryObj{
 		{URI: "tls://a:1", Scheme: "tls"},
 		{URI: "tls://b:2", Scheme: "tls"},
 		{URI: "tls://c:3", Scheme: "tls"},
@@ -120,7 +120,7 @@ func TestBuildResults_orderPreserved(t *testing.T) {
 }
 
 func TestBuildResults_schemeFromCandidate(t *testing.T) {
-	candidates := []peerEntryObj{{URI: "quic://h:9000", Scheme: "quic"}}
+	candidates := []PeerEntryObj{{URI: "quic://h:9000", Scheme: "quic"}}
 	results := buildResults(candidates, nil)
 	if results[0].Proto != "quic" {
 		t.Errorf("expected proto=quic, got %s", results[0].Proto)
@@ -277,46 +277,5 @@ func TestCountUp_allUp(t *testing.T) {
 func TestCountUp_empty(t *testing.T) {
 	if n := countUp(nil); n != 0 {
 		t.Errorf("expected 0, got %d", n)
-	}
-}
-
-// //
-
-func BenchmarkBuildResults(b *testing.B) {
-	candidates := make([]peerEntryObj, 50)
-	peers := make([]yggcore.PeerInfo, 50)
-	for i := range candidates {
-		uri := "tls://host" + string(rune('a'+i%26)) + ":1234"
-		candidates[i] = peerEntryObj{URI: uri, Scheme: "tls"}
-		peers[i] = makePeerInfo(uri, i%3 != 0, time.Duration(i+1)*time.Millisecond)
-	}
-	for b.Loop() {
-		buildResults(candidates, peers)
-	}
-}
-
-func BenchmarkSelectBest(b *testing.B) {
-	protos := []string{"tls", "tcp", "quic", "ws", "wss"}
-	results := make([]peerResultObj, 100)
-	for i := range results {
-		results[i] = peerResultObj{
-			URI:     "tls://h" + string(rune('a'+i%26)) + ":1",
-			Proto:   protos[i%len(protos)],
-			Up:      i%4 != 0,
-			Latency: time.Duration(i+1) * time.Millisecond,
-		}
-	}
-	for b.Loop() {
-		selectBest(results, 3)
-	}
-}
-
-func BenchmarkCountUp(b *testing.B) {
-	results := make([]peerResultObj, 1000)
-	for i := range results {
-		results[i] = peerResultObj{Up: i%3 != 0}
-	}
-	for b.Loop() {
-		countUp(results)
 	}
 }

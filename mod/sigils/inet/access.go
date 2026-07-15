@@ -2,8 +2,7 @@ package inet
 
 // // // // // // // // // //
 
-// Addrs returns a defensive copy of the address list.
-// The result is independent of internal state and safe to mutate.
+// Addrs returns an independent copy of the address list.
 func (o *Obj) Addrs() []string {
 	return cloneAddrs(o.addrs)
 }

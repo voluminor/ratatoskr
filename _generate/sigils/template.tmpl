@@ -1,5 +1,4 @@
 // Code generated using '_generate/sigils'; DO NOT EDIT.
-// Generation time: {{ .GenerationTime }}
 
 package {{ .PackageName }}
 
@@ -11,9 +10,6 @@ import (
 )
 
 // // // // // // // // // //
-
-// The parse registry is unexported so importers cannot mutate the built-in sigil
-// set process-wide. Access is read-only through Parse below.
 
 var globalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, error){
 {{- range .Sigils }}

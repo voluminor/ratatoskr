@@ -1,3 +1,4 @@
+// Package gsettings parses the CLI utility command group.
 package gsettings
 
 import (
@@ -8,101 +9,126 @@ import (
 	"time"
 )
 
+// // // // // // // // // //
+
+// GoAskFormatEnum selects human-readable or JSON command output.
 type GoAskFormatEnum string
 
 const (
+	// GoAskFormatText selects human-readable output.
 	GoAskFormatText GoAskFormatEnum = "text"
+	// GoAskFormatJson selects JSON output.
 	GoAskFormatJson GoAskFormatEnum = "json"
 )
 
+// GoForwardProtoEnum selects the forwarding transport.
 type GoForwardProtoEnum string
 
 const (
+	// GoForwardProtoTcp selects TCP forwarding.
 	GoForwardProtoTcp GoForwardProtoEnum = "tcp"
+	// GoForwardProtoUdp selects UDP forwarding.
 	GoForwardProtoUdp GoForwardProtoEnum = "udp"
 )
 
+// GoConfFormatEnum selects a configuration encoding.
 type GoConfFormatEnum string
+
+// GoConfGeneratePresetEnum selects a generated configuration preset.
 type GoConfGeneratePresetEnum string
 
 const (
-	GoConfGeneratePresetBasic  GoConfGeneratePresetEnum = "basic"
+	// GoConfGeneratePresetBasic selects the smallest configuration.
+	GoConfGeneratePresetBasic GoConfGeneratePresetEnum = "basic"
+	// GoConfGeneratePresetMedium selects common optional settings.
 	GoConfGeneratePresetMedium GoConfGeneratePresetEnum = "medium"
-	GoConfGeneratePresetFull   GoConfGeneratePresetEnum = "full"
+	// GoConfGeneratePresetFull selects every generated setting.
+	GoConfGeneratePresetFull GoConfGeneratePresetEnum = "full"
 )
 
+// GoObj contains every parsed utility command group.
 type GoObj struct {
-	Key      GoKeyObj
-	Conf     GoConfObj
-	Ask      GoAskObj
-	PeerInfo GoPeerInfoObj
-	Forward  GoForwardObj
-	Probe    GoProbeObj
+	Key      GoKeyObj      // Key contains key utilities.
+	Conf     GoConfObj     // Conf contains configuration utilities.
+	Ask      GoAskObj      // Ask contains a NodeInfo query.
+	PeerInfo GoPeerInfoObj // PeerInfo contains a peer inspection request.
+	Forward  GoForwardObj  // Forward contains a forwarding request.
+	Probe    GoProbeObj    // Probe contains topology and latency requests.
 }
 
+// GoKeyObj configures key utilities.
 type GoKeyObj struct {
-	Gen     time.Duration
-	Addr    string
-	ToPem   string
-	FromPem string
+	Gen     time.Duration // Gen is the vanity-key search duration.
+	Addr    string        // Addr is a key or key-file address input.
+	ToPem   string        // ToPem is the PEM output path.
+	FromPem string        // FromPem is the PEM input path.
 }
 
+// GoConfObj configures configuration utilities.
 type GoConfObj struct {
-	Generate GoConfGenerateObj
-	Import   GoConfImportObj
-	Export   GoConfExportObj
+	Generate GoConfGenerateObj // Generate contains generation options.
+	Import   GoConfImportObj   // Import contains Yggdrasil import options.
+	Export   GoConfExportObj   // Export contains Yggdrasil export options.
 }
 
+// GoConfGenerateObj configures configuration generation.
 type GoConfGenerateObj struct {
-	Path   string
-	Format GoConfFormatEnum
-	Preset GoConfGeneratePresetEnum
+	Path   string                   // Path is the output directory.
+	Format GoConfFormatEnum         // Format is the output encoding.
+	Preset GoConfGeneratePresetEnum // Preset selects included settings.
 }
 
+// GoConfImportObj configures Yggdrasil configuration import.
 type GoConfImportObj struct {
-	From   string
-	To     string
-	Format GoConfFormatEnum
+	From   string           // From is the Yggdrasil configuration path.
+	To     string           // To is the output directory.
+	Format GoConfFormatEnum // Format is the output encoding.
 }
 
+// GoConfExportObj configures Yggdrasil configuration export.
 type GoConfExportObj struct {
-	From   string
-	To     string
-	Format GoConfFormatEnum
+	From   string           // From is the Ratatoskr configuration path.
+	To     string           // To is the output directory.
+	Format GoConfFormatEnum // Format is the output encoding.
 }
 
+// GoAskObj configures a NodeInfo query.
 type GoAskObj struct {
-	Addr    string
-	Peer    []string
-	Timeout time.Duration
-	Format  GoAskFormatEnum
+	Addr    string          // Addr identifies the remote node.
+	Peer    []string        // Peer contains bootstrap peer URIs.
+	Timeout time.Duration   // Timeout bounds the query.
+	Format  GoAskFormatEnum // Format selects command output.
 }
 
+// GoPeerInfoObj configures peer inspection.
 type GoPeerInfoObj struct {
-	Peer    []string
-	Timeout time.Duration
-	Format  GoAskFormatEnum
+	Peer    []string        // Peer contains inspected peer URIs.
+	Timeout time.Duration   // Timeout bounds connection establishment.
+	Format  GoAskFormatEnum // Format selects command output.
 }
 
+// GoForwardObj configures one forwarding command.
 type GoForwardObj struct {
-	From  string
-	To    string
-	Proto GoForwardProtoEnum
-	Peer  []string
+	From  string             // From is the local listener address.
+	To    string             // To is the mapped address.
+	Proto GoForwardProtoEnum // Proto selects TCP or UDP.
+	Peer  []string           // Peer contains bootstrap peer URIs.
 }
 
+// GoProbeObj configures topology, trace, or latency probing.
 type GoProbeObj struct {
-	Scan        bool
-	Trace       string
-	Ping        string
-	Peer        []string
-	Timeout     time.Duration
-	MaxDepth    uint16
-	Concurrency int
-	Count       int
-	Format      GoAskFormatEnum
+	Scan        bool            // Scan requests a topology scan.
+	Trace       string          // Trace is the destination public key.
+	Ping        string          // Ping is the latency target public key.
+	Peer        []string        // Peer contains bootstrap peer URIs.
+	Timeout     time.Duration   // Timeout bounds probe operations.
+	MaxDepth    uint16          // MaxDepth bounds topology traversal.
+	Concurrency int             // Concurrency bounds parallel requests.
+	Count       int             // Count is the number of latency samples.
+	Format      GoAskFormatEnum // Format selects command output.
 }
 
+// IsCommandArgs reports whether args select the utility command group.
 func IsCommandArgs(args []string) bool {
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-go.") || strings.HasPrefix(arg, "--go.") {
@@ -136,6 +162,7 @@ func enumFlag[T ~string](target *T, allowed ...T) func(string) error {
 	}
 }
 
+// Parse parses utility command arguments.
 func Parse(args []string) (*GoObj, error) {
 	obj := &GoObj{}
 	obj.Ask.Format = GoAskFormatText

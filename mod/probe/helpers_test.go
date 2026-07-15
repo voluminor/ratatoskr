@@ -11,7 +11,6 @@ import (
 
 // // // // // // // // // //
 
-// cacheTestKey builds a deterministic public key from a seed for tests.
 func cacheTestKey(seed int) ed25519.PublicKey {
 	key := make(ed25519.PublicKey, ed25519.PublicKeySize)
 	binary.LittleEndian.PutUint64(key, uint64(seed)+1)
@@ -54,10 +53,6 @@ func genKeyN(t testing.TB, n int) []ed25519.PublicKey {
 	return keys
 }
 
-// buildTestTree creates:
-//
-//	root(0) -> c1(1) -> gc1(3), gc2(4)
-//	        -> c2(2)
 func buildTestTree(t testing.TB) (*NodeObj, []ed25519.PublicKey) {
 	t.Helper()
 	keys := genKeyN(t, 5)

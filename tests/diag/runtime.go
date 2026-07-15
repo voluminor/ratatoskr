@@ -12,7 +12,6 @@ import (
 
 // // // // // // // // // //
 
-// runtimeObj captures runtime counters that are useful before opening pprof.
 type runtimeObj struct {
 	Goroutines int               `json:"goroutines"`
 	NumCPU     int               `json:"num_cpu"`
@@ -25,7 +24,6 @@ type runtimeObj struct {
 	Extra      map[string]uint64 `json:"extra,omitempty"`
 }
 
-// runtimeConfigObj exposes the diagnostic ports without echoing full config.
 type runtimeConfigObj struct {
 	HTTPListen  string `json:"http_listen"`
 	DebugListen string `json:"debug_listen"`

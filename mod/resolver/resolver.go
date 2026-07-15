@@ -1,3 +1,4 @@
+// Package resolver maps public-key domains, IP literals, and DNS names to IPs.
 package resolver
 
 import (
@@ -22,16 +23,12 @@ const (
 	defaultNegativeCacheTTL = 3 * time.Second
 	defaultCacheMaxEntries  = 4096
 	maxDNSNameLength        = 253
-	// maxConcurrentLookups bounds distinct in-flight DNS names. The resolver serves
-	// untrusted SOCKS clients that can request unlimited unique hostnames, each
-	// detaching a leader lookup (context.WithoutCancel) that outlives the caller;
-	// without this cap a name flood exhausts goroutines and nameserver dials.
-	maxConcurrentLookups = 256
+	maxConcurrentLookups    = 256
 )
 
 // //
 
-// Obj — name resolver supporting .pk.ygg and DNS over Yggdrasil
+// Obj resolves names using public-key mapping, literals, and optional DNS.
 type Obj struct {
 	resolver        *net.Resolver
 	hasDNS          bool
@@ -51,18 +48,16 @@ type Obj struct {
 
 // ConfigObj controls DNS lookup behavior.
 type ConfigObj struct {
-	// Dialer used for DNS traffic over Yggdrasil.
+	// Dialer carries DNS traffic. It is required when Nameserver is set.
 	Dialer proxy.ContextDialer
-	// DNS server address. Empty string disables DNS and keeps only .pk.ygg/literals.
+	// Nameserver is the DNS endpoint. An empty value disables DNS.
 	Nameserver string
-	// DNS lookup timeout applied per lookup: 0 -> default (10s), N>0 -> N used
-	// as-is, N<0 -> no resolver-imposed deadline. Lookups are shared via
-	// single-flight and detached from the caller's context, so with N<0 the query
-	// is bounded by the Go DNS client's own per-query timeout (~5s), not the caller.
+	// LookupTimeout bounds a shared DNS lookup. Zero uses 10 seconds; a negative
+	// value disables the resolver deadline.
 	LookupTimeout time.Duration
-	// Positive DNS cache TTL; 0 -> safe default, <0 -> disabled.
+	// CacheTTL controls positive caching. Zero uses 30 seconds; negative disables it.
 	CacheTTL time.Duration
-	// Positive DNS cache cap; 0 -> safe default, <0 -> disabled.
+	// CacheMaxEntries bounds the cache. Zero uses 4096; negative disables it.
 	CacheMaxEntries int
 }
 
@@ -159,10 +154,7 @@ func (r *Obj) lookupContext() (context.Context, context.CancelFunc) {
 	if r.lookupTimeout > 0 {
 		return context.WithTimeout(baseCtx, r.lookupTimeout)
 	}
-	// Disabled (lookupTimeout <= 0): no resolver-imposed deadline. baseCtx already
-	// dropped the caller's cancel/deadline (single-flight), so the query is bounded
-	// by the Go DNS client's own per-query timeout, not the caller's context.
-	return context.WithCancel(baseCtx)
+	return baseCtx, func() {}
 }
 
 func (r *Obj) waitLookupFlight(ctx context.Context, flight *lookupFlightObj) (net.IP, error) {
@@ -181,9 +173,6 @@ func cacheKey(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
-// validDNSName rejects names DNS can never resolve so junk queries neither reach
-// the resolver nor churn the negative cache: over-length names and names with an
-// empty label. A single trailing dot (FQDN form) is tolerated.
 func validDNSName(name string) bool {
 	name = strings.TrimSuffix(name, ".")
 	if len(name) == 0 || len(name) > maxDNSNameLength {
@@ -282,9 +271,6 @@ func (r *Obj) cacheSetEntry(key string, entry cacheEntryObj) {
 	if r.cacheTTL <= 0 || r.cache == nil {
 		return
 	}
-	// When full, evict one arbitrary entry (map order) to make room; lazy expiry on
-	// read reclaims the rest. The cache is a best-effort bound, not strict LRU —
-	// no insertion/expiry ordering is tracked, so no separate structure is needed.
 	if _, exists := r.cache[key]; !exists && len(r.cache) >= r.cacheMaxEntries {
 		r.cacheEvictOneLocked()
 	}
@@ -305,7 +291,6 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 		return nil, waitCtx.Err()
 	default:
 	}
-	// Reject junk names before any flight or cache write to avoid churn.
 	if !validDNSName(name) {
 		return nil, fmt.Errorf("%w for %q", ErrNoAddresses, name)
 	}
@@ -326,8 +311,6 @@ func (r *Obj) lookupDNS(ctx context.Context, key, name string) (net.IP, error) {
 		r.lookupMu.Unlock()
 		return r.waitLookupFlight(waitCtx, flight)
 	}
-	// Admission cap on distinct in-flight names: joining an existing flight is
-	// always allowed (dedup), only a genuinely new name counts against the bound.
 	if len(r.lookupFlights) >= maxConcurrentLookups {
 		r.lookupMu.Unlock()
 		return nil, ErrLookupBusy
@@ -387,7 +370,7 @@ func (r *Obj) runLookupFlight(key, name string, flight *lookupFlightObj) {
 
 // //
 
-// New creates a resolver; an empty Nameserver enables only .pk.ygg and literals.
+// New creates a resolver. An empty Nameserver enables only key domains and literals.
 func New(cfg ConfigObj) (*Obj, error) {
 	if cfg.Nameserver != "" && cfg.Dialer == nil {
 		return nil, ErrDialerRequired
@@ -422,8 +405,7 @@ func New(cfg ConfigObj) (*Obj, error) {
 	return r, nil
 }
 
-// Close cancels active DNS work and waits for admitted single-flight lookups.
-// A root ratatoskr instance applies the hard shutdown deadline around this call.
+// Close cancels and waits for admitted DNS lookups. Repeated calls succeed.
 func (r *Obj) Close() error {
 	r.closeOnce.Do(func() {
 		r.lookupMu.Lock()
@@ -446,12 +428,11 @@ func (r *Obj) isClosed() bool {
 
 // //
 
-// Resolve — <pubkey>.pk.ygg, IPv6 literals, DNS (when nameserver is configured)
+// Resolve maps a public-key domain, IP literal, or DNS name to an IP address.
 func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP, error) {
 	if r.isClosed() {
 		return ctx, nil, ErrClosed
 	}
-	// Public key → IPv6
 	if ip, ok, err := resolvePublicKeyDomain(name); ok {
 		if err != nil {
 			return ctx, nil, err
@@ -459,18 +440,13 @@ func (r *Obj) Resolve(ctx context.Context, name string) (context.Context, net.IP
 		return ctx, ip, nil
 	}
 
-	// IPv6 literal
 	if ip := net.ParseIP(name); ip != nil {
 		return ctx, ip, nil
 	}
 
-	// DNS — only if nameserver is configured
 	if !r.hasDNS {
 		return ctx, nil, fmt.Errorf("%w: cannot resolve %q", ErrNoNameserver, name)
 	}
-	// lookupDNS already serves cache hits, so no redundant pre-check here.
-	// The caller ctx is returned unchanged: the exported signature is part of
-	// the public API and must stay stable for existing callers.
 	ip, err := r.lookupDNS(ctx, cacheKey(name), name)
 	if err != nil {
 		return ctx, nil, err

@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Render disposable diagnostic configs under tmp/tests. No generated runtime state is committed.
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

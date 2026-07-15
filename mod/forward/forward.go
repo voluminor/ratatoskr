@@ -1,3 +1,4 @@
+// Package forward proxies TCP and UDP between host and Yggdrasil networks.
 package forward
 
 import (
@@ -25,38 +26,56 @@ type NetworkInterface interface {
 	MTU() uint64
 }
 
-// TCPMappingObj — TCP mapping: local address ↔ remote
+// TCPMappingObj maps one TCP listener to one destination.
 type TCPMappingObj struct {
+	// Listen is the address on the source network.
 	Listen *net.TCPAddr
+	// Mapped is the destination on the other network.
 	Mapped *net.TCPAddr
 }
 
-// UDPMappingObj — UDP mapping: local address ↔ remote
+// UDPMappingObj maps one UDP listener to one destination.
 type UDPMappingObj struct {
+	// Listen is the address on the source network.
 	Listen *net.UDPAddr
+	// Mapped is the destination on the other network.
 	Mapped *net.UDPAddr
 }
 
 // UDPLoopConfigObj contains all inputs for a UDP session loop.
 type UDPLoopConfigObj struct {
-	Logger        yggcore.Logger
-	ListenConn    net.PacketConn
-	Dial          func(context.Context, net.Addr) (net.Conn, error)
-	DialTimeout   time.Duration
-	WriteTimeout  time.Duration
+	// Logger receives loop events. Nil discards them.
+	Logger yggcore.Logger
+	// ListenConn receives client datagrams.
+	ListenConn net.PacketConn
+	// Dial creates one upstream connection per source address.
+	Dial func(context.Context, net.Addr) (net.Conn, error)
+	// DialTimeout bounds Dial. Zero uses 10 seconds; negative disables it.
+	DialTimeout time.Duration
+	// WriteTimeout bounds reverse writes. Zero uses 5 seconds; negative disables it.
+	WriteTimeout time.Duration
+	// MaxPacketSize bounds UDP payload bytes.
 	MaxPacketSize int
-	Timeout       time.Duration
-	MaxSessions   int
+	// Timeout closes inactive sessions and must be positive.
+	Timeout time.Duration
+	// MaxSessions bounds active sessions. Zero is unlimited; negative is invalid.
+	MaxSessions int
 }
 
 // UDPReverseConfigObj contains all inputs for a UDP reverse proxy worker.
 type UDPReverseConfigObj struct {
-	Dst           net.PacketConn
-	DstAddr       net.Addr
-	Src           net.Conn
-	WriteTimeout  time.Duration
+	// Dst receives reverse datagrams.
+	Dst net.PacketConn
+	// DstAddr is the reverse datagram destination.
+	DstAddr net.Addr
+	// Src is the upstream connected socket.
+	Src net.Conn
+	// WriteTimeout bounds each destination write.
+	WriteTimeout time.Duration
+	// MaxPacketSize bounds upstream payload bytes.
 	MaxPacketSize int
-	Activity      func()
+	// Activity records successful traffic when non-nil.
+	Activity func()
 }
 
 // ConfigObj contains all forwarding dependencies and limits.
@@ -153,11 +172,16 @@ type statsObj struct {
 
 // SnapshotObj is a lock-free point-in-time view of forwarding load and drops.
 type SnapshotObj struct {
-	ActiveTCP       int64
-	ActiveUDP       int64
+	// ActiveTCP is the current object-wide TCP session count.
+	ActiveTCP int64
+	// ActiveUDP is the current object-wide UDP session count.
+	ActiveUDP int64
+	// SessionUDPDrops counts packets rejected by session queues or churn.
 	SessionUDPDrops uint64
+	// ReverseUDPDrops counts reverse queue and write failures.
 	ReverseUDPDrops uint64
-	TerminalErrors  uint64
+	// TerminalErrors counts listener loops stopped by repeated terminal errors.
+	TerminalErrors uint64
 }
 
 // Snapshot returns current counters without resetting them.
@@ -200,9 +224,6 @@ func (l *admissionLimitObj) release() {
 	l.active.Add(-1)
 }
 
-// ioErrorStreakObj prevents a broken Listener/PacketConn implementation from
-// spinning forever on the same immediate error while still allowing transient
-// failures to recover with backoff.
 type ioErrorStreakObj struct {
 	message string
 	count   int
@@ -212,9 +233,6 @@ func (s *ioErrorStreakObj) terminal(err error) bool {
 	if errors.Is(err, net.ErrClosed) {
 		return true
 	}
-	// Resource exhaustion and aborted accepts are recoverable once pressure drops.
-	// Keep the bounded backoff in the caller, but never permanently kill a mapping
-	// merely because the kernel returned the same transient errno repeatedly.
 	if retryableIOError(err) {
 		s.reset()
 		return false
@@ -342,7 +360,6 @@ func effectiveUDPWriteTimeout(d time.Duration) time.Duration {
 
 // //
 
-// applyConfig sets all immutable tunables once through the effective* helpers.
 func (m *Obj) applyConfig(cfg ConfigObj) {
 	m.log = common.NormalizeLogger(cfg.Logger)
 	m.node = cfg.Node
@@ -433,9 +450,7 @@ func cloneUDPAddr(address *net.UDPAddr) *net.UDPAddr {
 
 // //
 
-// New validates, binds, and starts an immutable forwarding rule set. It closes
-// every listener opened during construction if a later mapping cannot be
-// prepared. Negative object-wide admission limits return ErrInvalidLimit.
+// New validates, binds, and starts an immutable forwarding rule set.
 func New(cfg ConfigObj) (*Obj, error) {
 	if cfg.Node == nil {
 		return nil, ErrNodeRequired

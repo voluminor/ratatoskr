@@ -23,25 +23,10 @@ import (
 
 // // // // // // // // // //
 
-// noopLogObj — yggcore.Logger that discards all messages
-type noopLogObj struct{}
-
-func (noopLogObj) Printf(string, ...interface{}) {}
-func (noopLogObj) Println(...interface{})        {}
-func (noopLogObj) Infof(string, ...interface{})  {}
-func (noopLogObj) Infoln(...interface{})         {}
-func (noopLogObj) Warnf(string, ...interface{})  {}
-func (noopLogObj) Warnln(...interface{})         {}
-func (noopLogObj) Errorf(string, ...interface{}) {}
-func (noopLogObj) Errorln(...interface{})        {}
-func (noopLogObj) Debugf(string, ...interface{}) {}
-func (noopLogObj) Debugln(...interface{})        {}
-func (noopLogObj) Traceln(...interface{})        {}
+type noopLogObj = common.DiscardLoggerObj
 
 // //
 
-// target is a synchronous test helper. Production routes cache misses through
-// the bounded associate worker pool.
 func (s *associateSessionObj) target(packet statute.Datagram) (*associateTargetObj, error) {
 	if s.maxQueuedPackets == 0 {
 		s.maxQueuedPackets = defaultMaxAssociateQueuedPackets
@@ -58,7 +43,6 @@ func (s *associateSessionObj) target(packet statute.Datagram) (*associateTargetO
 
 // //
 
-// mockDialerObj — proxy.ContextDialer backed by real TCP
 type mockDialerObj struct{}
 
 func (mockDialerObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -79,8 +63,6 @@ func (d *blockingDialerObj) DialContext(ctx context.Context, _, _ string) (net.C
 	return nil, ctx.Err()
 }
 
-// gateDialerObj signals when a dial starts, then blocks until released and
-// returns a preset conn. It lets a test wedge close() between dial and insert.
 type gateDialerObj struct {
 	started chan struct{}
 	release chan struct{}
@@ -93,7 +75,6 @@ func (d *gateDialerObj) DialContext(_ context.Context, _, _ string) (net.Conn, e
 	return d.conn, nil
 }
 
-// closeTrackConnObj records whether Close was called.
 type closeTrackConnObj struct {
 	closed atomic.Bool
 }
@@ -928,8 +909,6 @@ func TestClose_unblocksHalfClosedConnectWithSilentTarget(t *testing.T) {
 			t.Fatalf("Close: %v", err)
 		}
 	case <-time.After(time.Second):
-		// Release the old implementation's target.Read so the failed test does not
-		// leave its shutdown goroutine behind.
 		_ = target.Close()
 		<-closed
 		t.Fatal("Close stayed blocked on the silent outbound CONNECT target")
@@ -1140,9 +1119,6 @@ func TestAssociate_udpEcho(t *testing.T) {
 	}
 }
 
-// TestAssociate_udpConcurrentTargets drives one relay to many distinct targets
-// from a single client socket, so one forward() goroutine per target relays back
-// concurrently. Under -race this exercises the shared, set-once clientUDP read.
 func TestAssociate_udpConcurrentTargets(t *testing.T) {
 	const targets = 6
 	echoes := make([]net.PacketConn, targets)
@@ -1768,7 +1744,6 @@ func TestListenUnix_staleSocket(t *testing.T) {
 	}
 	path := privateSocketTempDir(t) + "/stale.sock"
 
-	// Create and immediately close a listener → stale socket file remains
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatalf("create stale socket: %v", err)
@@ -1777,7 +1752,6 @@ func TestListenUnix_staleSocket(t *testing.T) {
 		t.Fatalf("close stale socket: %v", err)
 	}
 
-	// listenUnix should detect the stale socket, remove it, and re-bind
 	ln2, err := listenUnix(path, defaultUnixSocketMode)
 	if err != nil {
 		t.Fatalf("listenUnix stale: %v", err)
@@ -1811,7 +1785,6 @@ func TestRemoveUnixSocket_regular(t *testing.T) {
 	}
 	path := t.TempDir() + "/regular.sock"
 
-	// Create a plain file; removeUnixSocket only checks it's not a symlink
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("create file: %v", err)
@@ -1833,7 +1806,6 @@ func TestRemoveUnixSocket_regular(t *testing.T) {
 }
 
 func TestIsAddrInUse(t *testing.T) {
-	// Bind a port and try to bind again to trigger EADDRINUSE
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -1844,7 +1816,6 @@ func TestIsAddrInUse(t *testing.T) {
 	if err == nil {
 		t.Skip("expected EADDRINUSE but got nil error")
 	}
-	// Just verify it doesn't panic and returns a bool
 	_ = isAddrInUse(err)
 }
 
@@ -2120,10 +2091,6 @@ func TestConcurrentClose(t *testing.T) {
 	}
 }
 
-// TestAssociate_targetDialedAfterCloseReleasesResources drives the close/dial
-// race: close() runs after DialContext succeeds but before the target insert.
-// The just-dialed conn and the global limiter slot must be released, no target
-// inserted, and no forward() goroutine spawned.
 func TestAssociate_targetDialedAfterCloseReleasesResources(t *testing.T) {
 	relay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
 	if err != nil {
@@ -2170,7 +2137,6 @@ func TestAssociate_targetDialedAfterCloseReleasesResources(t *testing.T) {
 		t.Fatal("dialer was not called")
 	}
 
-	// Close mid-dial: session marks itself closed and snapshots an empty target set.
 	s.close()
 	close(dialer.release)
 
@@ -2233,21 +2199,6 @@ func TestActiveConnections_reflectsLiveCount(t *testing.T) {
 	}
 }
 
-func BenchmarkNewClose(b *testing.B) {
-	for b.Loop() {
-		s, err := New(tcpCfg())
-		if err != nil {
-			b.Fatalf("New: %v", err)
-		}
-		if err := s.Close(); err != nil {
-			b.Fatalf("Close: %v", err)
-		}
-	}
-}
-
-// Adversarial: on a non-loopback listener a client may declare 0.0.0.0/0 in the
-// ASSOCIATE request; the relay must still refuse datagrams from any host other
-// than the one that opened the control connection.
 func TestAssociate_rejectsForeignSourceIP(t *testing.T) {
 	control := net.ParseIP("10.0.0.1")
 
@@ -2261,8 +2212,6 @@ func TestAssociate_rejectsForeignSourceIP(t *testing.T) {
 		t.Fatal("first datagram from a foreign host must be rejected, not win the relay")
 	}
 
-	// When the control IP is unknown (writer is not a net.Conn), pinning is off
-	// and the prior first-source-wins behavior is preserved.
 	unpinned := &associateSessionObj{}
 	if ok := unpinned.acceptClient(&net.UDPAddr{IP: net.ParseIP("10.0.0.9"), Port: 5000}); !ok {
 		t.Fatal("nil control IP should fall back to accepting the first source")

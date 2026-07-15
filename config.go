@@ -15,96 +15,98 @@ import (
 
 // // // // // // // // // //
 
-// ConfigObj — node creation parameters for embedding
+// ConfigObj configures a node.
 type ConfigObj struct {
-	// Parent context; cancellation shuts down the node.
-	// nil → Close() must be called manually
+	// Ctx closes the node when canceled. A nil context requires an explicit Close.
 	Ctx context.Context
 
-	// Yggdrasil configuration; nil → random keys.
+	// Config is the Yggdrasil configuration. Nil generates a configuration with
+	// random keys and disables the admin listener.
 	// Config.Peers must be empty if Peers is set.
 	Config *config.NodeConfig
 
-	// Logger; nil → logs are discarded
+	// Logger receives module logs. Nil discards logs.
 	Logger yggcore.Logger
 
-	// Total budget for Close(); 0 → 10s default, <0 → invalid.
+	// CloseTimeout bounds the total Close wait. Zero uses 10 seconds; negative
+	// values are invalid.
 	// Once the budget expires, Close returns ErrCloseTimedOut while unfinished
 	// component teardown continues best-effort in the background.
 	CloseTimeout time.Duration
 
-	// Peers enables the peer manager instead of the standard Yggdrasil mechanism.
-	// nil → peers are taken from Config.Peers as usual.
-	// Not nil + Config.Peers non-empty → error in New().
-	// Node is always replaced with this node's core.
+	// Peers enables managed peer selection. Nil uses Config.Peers directly. New
+	// rejects a non-nil value when Config.Peers is not empty and always replaces
+	// Peers.Node with this node's core.
 	Peers *peermgr.ConfigObj
 
-	// NodeInfo configures Ask/AskAddr timing and immutable custom parsers for
-	// remote responses. Source is always replaced with this node's core;
-	// nil uses ninfo defaults.
+	// NodeInfo configures Ask and AskAddr. New always replaces NodeInfo.Source
+	// with this node's core. Nil uses ninfo defaults.
 	NodeInfo *ninfo.ConfigObj
 
-	// Sigils for atomic NodeInfo assembly; nil → not used. Any assembly or
-	// parser configuration error aborts New.
-	// When set, sigils write their data into Config.NodeInfo.
-	// Config.NodeInfo serves as the base (has priority); sigil data is added on top.
-	// Custom non-built-in sigils also become immutable parsers for remote
-	// responses. Can be combined with Config.NodeInfo or used standalone.
+	// Sigils assemble local NodeInfo and configure custom remote parsers. Existing
+	// top-level Config.NodeInfo keys take precedence over sigil output. Invalid
+	// sigils cause New to fail.
 	Sigils []sigils.Interface
 }
 
 // //
 
-// SOCKSConfigObj — SOCKS5 proxy startup parameters
+// SOCKSConfigObj configures the root SOCKS5 service.
 type SOCKSConfigObj struct {
-	// Address: TCP "127.0.0.1:1080" or a Unix socket in a private directory.
+	// Addr is a TCP address or a Unix socket path in a private directory.
 	Addr string
 
-	// DNS server in the Yggdrasil network for .ygg domains.
-	// Format: "[ipv6]:port". Empty string → only .pk.ygg and literals
+	// Nameserver is an Yggdrasil DNS server in "[ipv6]:port" form. Empty permits
+	// only .pk.ygg names and IP literals.
 	Nameserver string
 
-	// Verbose logging of SOCKS connections
+	// Verbose enables per-connection logging.
 	Verbose bool
 
-	// Maximum simultaneous connections; 0 → safe default, <0 → unlimited
+	// MaxConnections limits simultaneous connections. Zero uses the module
+	// default; negative is unlimited.
 	MaxConnections int
 
-	// SOCKS handshake timeout; 0 → safe default, <0 → disabled
+	// HandshakeTimeout bounds SOCKS handshakes. Zero uses the module default;
+	// negative disables the timeout.
 	HandshakeTimeout time.Duration
 
-	// SOCKS outbound dial timeout; 0 -> safe default, <0 -> disabled
+	// DialTimeout bounds outbound dials. Zero uses the module default; negative
+	// disables the timeout.
 	DialTimeout time.Duration
 
-	// SOCKS established tunnel idle timeout; 0 -> safe default, <0 -> disabled
+	// TunnelIdleTimeout bounds idle established tunnels. Zero uses the module
+	// default; negative disables the timeout.
 	TunnelIdleTimeout time.Duration
 
-	// Max UDP ASSOCIATE targets per session; 0 -> safe default,
-	// <0 -> no per-session cap. The per-server safety cap still applies.
+	// MaxAssociateTargetsPerSession limits UDP ASSOCIATE targets per session.
+	// Zero uses the module default; negative disables this limit.
 	MaxAssociateTargetsPerSession int
 
-	// Max UDP ASSOCIATE targets shared by one authenticated user or source IP;
-	// <=0 -> unlimited. The server-wide safety cap still applies.
+	// MaxAssociateTargetsPerPrincipal limits UDP ASSOCIATE targets per
+	// authenticated user or source IP. Non-positive values are unlimited.
 	MaxAssociateTargetsPerPrincipal int
 
-	// Max queued UDP packets per established ASSOCIATE target; 0 -> 64,
-	// <0 -> unlimited. Packet and byte limits are applied together.
+	// MaxAssociateQueuedPacketsPerTarget limits queued packets per established
+	// UDP ASSOCIATE target. Zero uses 64; negative is unlimited.
 	MaxAssociateQueuedPacketsPerTarget int
 
-	// Max queued UDP payload bytes per established ASSOCIATE target; 0 -> 64 KiB,
-	// <0 -> unlimited. Packet and byte limits are applied together.
+	// MaxAssociateQueuedBytesPerTarget limits queued payload bytes per established
+	// UDP ASSOCIATE target. Zero uses 64 KiB; negative is unlimited.
 	MaxAssociateQueuedBytesPerTarget int
 
-	// DNS lookup timeout for Nameserver; 0 -> safe default, <0 -> no resolver-imposed
-	// deadline (each query is still bounded by the Go DNS client's own ~5s timeout)
+	// NameserverLookupTimeout bounds DNS lookups. Zero uses the resolver default;
+	// negative disables the resolver-imposed deadline.
 	NameserverLookupTimeout time.Duration
 
-	// Positive DNS cache TTL for Nameserver; 0 -> safe default, <0 -> disabled
+	// NameserverCacheTTL controls positive DNS caching. Zero uses the resolver
+	// default; negative disables caching.
 	NameserverCacheTTL time.Duration
 
-	// Positive DNS cache cap for Nameserver; 0 -> safe default, <0 -> disabled
+	// NameserverCacheMaxEntries limits positive DNS cache entries. Zero uses the
+	// resolver default; negative disables caching.
 	NameserverCacheMaxEntries int
 
-	// Optional SOCKS5 username/password credentials
+	// Credentials optionally enables SOCKS5 username/password authentication.
 	Credentials socks.CredentialsInterface
 }

@@ -11,16 +11,15 @@ import (
 
 // // // // // // // // // //
 
-// Obj manages sigils and assembles local NodeInfo.
+// Obj owns a concurrency-safe sigil registry and its assembled NodeInfo.
 type Obj struct {
 	mu            sync.RWMutex
 	localNodeInfo map[string]any
 	sigils        map[string]sigils.Interface
 }
 
-// New creates a Obj with the given base NodeInfo and optional sigils.
-// Returned errors are non-fatal: each failed sigil is skipped,
-// the rest are applied normally.
+// New copies the base NodeInfo and adds each valid sigil. It returns per-sigil
+// errors while keeping every entry that was assembled successfully.
 func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 	s := new(Obj)
 	s.sigils = make(map[string]sigils.Interface)
@@ -44,9 +43,7 @@ func New(nodeInfo map[string]any, sg ...sigils.Interface) (*Obj, []error) {
 
 // //
 
-// NodeInfo returns a copy of the assembled map ready for yggcore.NodeInfo option.
-// A copy prevents a holder from structurally mutating the served map; nested
-// values are already independent because each sigil's Params deep-copies them.
+// NodeInfo returns a deep copy of the assembled NodeInfo.
 func (s *Obj) NodeInfo() map[string]any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -57,6 +54,7 @@ func (s *Obj) NodeInfo() map[string]any {
 	return cloned
 }
 
+// Sigils returns an independent registry whose values are cloned sigils.
 func (s *Obj) Sigils() map[string]sigils.Interface {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -74,6 +72,7 @@ func (s *Obj) Sigils() map[string]sigils.Interface {
 	return out
 }
 
+// String returns the Ratatoskr metadata key and value.
 func (s *Obj) String() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -84,18 +83,21 @@ func (s *Obj) String() string {
 	return fmt.Sprintf("%s %s", target.Name, value)
 }
 
+// LenSigils returns the number of registered sigils.
 func (s *Obj) LenSigils() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.sigils)
 }
 
+// LenLocal returns the number of assembled NodeInfo keys, including metadata.
 func (s *Obj) LenLocal() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.localNodeInfo)
 }
 
+// Len returns LenSigils plus LenLocal.
 func (s *Obj) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -104,12 +106,8 @@ func (s *Obj) Len() int {
 
 // //
 
-// Add registers sigils and writes their keys into localNodeInfo.
-// Each sigil is validated, checked for name conflicts, and then merged in via
-// the package-owned MergeParams over the sigil's own Params — the sigil never
-// receives the live map, so a contract-violating third-party sigil cannot mutate
-// shared state. On failure it is skipped and the error is collected.
-// After all sigils are processed, the ratatoskr metadata key is updated.
+// Add clones and registers each valid sigil, merges its parameters, and updates
+// metadata. Invalid entries are skipped and returned as independent errors.
 func (s *Obj) Add(sg ...sigils.Interface) []error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -154,9 +152,6 @@ func (s *Obj) Add(sg ...sigils.Interface) []error {
 			continue
 		}
 
-		// Store a clone so the module fully owns its state: a caller mutating its
-		// own sigil after Add cannot change what Del later removes (Del reads
-		// Params off the stored value). A sigil that cannot clone itself is rejected.
 		clone := si.Clone()
 		if clone == nil {
 			errs = append(errs, fmt.Errorf("sigil[%s] Clone returned nil", si.GetName()))
@@ -170,8 +165,7 @@ func (s *Obj) Add(sg ...sigils.Interface) []error {
 	return errs
 }
 
-// Get returns an independent clone of a registered sigil by name, or nil if not
-// found. Cloning keeps a caller from mutating the module's stored sigil state.
+// Get returns a clone of the named sigil, or nil when it is not registered.
 func (s *Obj) Get(name string) sigils.Interface {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -182,7 +176,7 @@ func (s *Obj) Get(name string) sigils.Interface {
 	return sg.Clone()
 }
 
-// Del removes a sigil and deletes its keys from localNodeInfo.
+// Del removes a sigil, its populated keys, and its metadata entry.
 func (s *Obj) Del(name string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -193,8 +187,6 @@ func (s *Obj) Del(name string) error {
 
 	delete(s.sigils, sg.GetName())
 
-	// Remove exactly the keys the sigil wrote (its own Params); declared-but-unset
-	// keys stay untouched so a user's base value under the same key survives.
 	for key := range sg.Params() {
 		delete(s.localNodeInfo, key)
 	}

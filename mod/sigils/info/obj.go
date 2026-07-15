@@ -11,13 +11,18 @@ import (
 
 // // // // // // // // // //
 
-// ConfigObj holds the node's public identity card.
+// ConfigObj defines a node identity card.
 type ConfigObj struct {
-	Name        string              // FQDN or friendly name, required, 4–64 chars
-	Type        string              // device/role label, required, 2–32 chars
-	Location    string              // free-text physical location, optional
-	Contacts    map[string][]string // grouped contact addresses, optional, max 8×8
-	Description string              // free-text description, optional, e.g. peering policy
+	// Name is a required FQDN or friendly name containing 4 to 64 characters.
+	Name string
+	// Type is a required device or role label containing 2 to 32 characters.
+	Type string
+	// Location is optional printable text containing 2 to 514 runes.
+	Location string
+	// Contacts contains at most 8 groups with at most 8 entries per group.
+	Contacts map[string][]string
+	// Description is optional printable text containing 2 to 514 runes.
+	Description string
 }
 
 func validHumanText(s string, minRunes, maxRunes int) bool {
@@ -180,11 +185,12 @@ func parseConfig(NodeInfo map[string]any) (ConfigObj, bool) {
 
 // //
 
+// Obj owns a validated identity-card configuration.
 type Obj struct {
 	conf *ConfigObj
 }
 
-// New creates the "info" sigil — node identity card.
+// New validates and copies an info sigil configuration.
 func New(conf ConfigObj) (*Obj, error) {
 	if err := validateConfig(&conf); err != nil {
 		return nil, err
@@ -195,18 +201,22 @@ func New(conf ConfigObj) (*Obj, error) {
 
 // //
 
+// GetName returns Name.
 func (o *Obj) GetName() string {
 	return Name()
 }
 
+// GetParams returns Keys.
 func (o *Obj) GetParams() []string {
 	return Keys()
 }
 
+// SetParams merges the current fragment into a copy of NodeInfo.
 func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 	return sigils.MergeParams(NodeInfo, o.Params())
 }
 
+// ParseParams extracts info keys and replaces current data when they form a valid card.
 func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	parsed := ParseParams(NodeInfo)
 
@@ -219,15 +229,18 @@ func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	return parsed
 }
 
+// Match reports whether NodeInfo contains a valid identity card.
 func (o *Obj) Match(NodeInfo map[string]any) bool {
 	return Match(NodeInfo)
 }
 
+// Clone returns an independent copy.
 func (o *Obj) Clone() sigils.Interface {
 	conf := cloneConfig(o.conf)
 	return &Obj{conf: &conf}
 }
 
+// Params returns an independent NodeInfo fragment.
 func (o *Obj) Params() map[string]any {
 	result := make(map[string]any)
 	if o.conf == nil {
@@ -244,7 +257,6 @@ func (o *Obj) Params() map[string]any {
 		result[keyLocation] = o.conf.Location
 	}
 	if len(o.conf.Contacts) > 0 {
-		// Deep-copy the nested map/slices so the returned fragment cannot alias internal state.
 		result[keyContact] = cloneContacts(o.conf.Contacts)
 	}
 	if o.conf.Description != "" {

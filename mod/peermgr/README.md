@@ -1,23 +1,27 @@
-# mod/peermgr
+# Peer manager
 
-Peer manager for Yggdrasil. It probes a bounded batch of candidates per cycle and keeps the lowest-latency responsive
-peers for each protocol.
+Package `peermgr` probes bounded candidate batches and keeps the lowest-latency
+responsive peers for each transport protocol.
 
-## Table of Contents
+The default new-connection budget is 64 per cycle, the hard batch cap is 256,
+failure backoff tops out at 10 minutes, and reachable selection losers are held
+for 30 minutes by default.
+
+## Contents
 
 - [Overview](#overview)
 - [Initialization](#initialization)
 - [Selection](#selection)
 - [Batching](#batching)
 - [Control](#control)
-- [Peer Validation](#peer-validation)
+- [Peer validation](#peer-validation)
 - [Errors](#errors)
 
 ---
 
 ## Overview
 
-peermgr depends only on a minimal node contract — `NodeInterface` (`AddPeer` / `RemovePeer` / `GetPeers`) — not on the
+peermgr depends only on the minimal `NodeInterface` contract (`AddPeer`, `RemovePeer`, and `GetPeers`), not on the
 full core surface. Any node implementation satisfying that contract can be supplied, which is convenient for tests or
 substituting your own node.
 
@@ -31,7 +35,7 @@ flowchart TB
         NodeCfg["Node: NodeInterface"]
     end
 
-    subgraph Obj["Obj — manager"]
+    subgraph Obj["Obj: manager"]
         New["New() starts manager"]
         Optimize["optimize"]
         Active["Active() → []string"]
@@ -71,7 +75,11 @@ mgr, err := peermgr.New(peermgr.ConfigObj{
 if err != nil {
     return err
 }
-defer mgr.Close()
+defer func() {
+    if err := mgr.Close(); err != nil {
+        logger.Errorf("close peer manager: %v", err)
+    }
+}()
 ```
 
 `Node` is any value implementing `NodeInterface` (`AddPeer` / `RemovePeer` / `GetPeers`); a `*core.Obj` satisfies it,
@@ -108,7 +116,7 @@ keeps the top N. A positive latency always sorts ahead of zero, because Yggdrasi
 latency has not been measured yet.
 
 ```mermaid
-flowchart LR
+flowchart TD
     Batch["active peers + one challenger batch"] --> AddPeer["AddPeer challengers"]
     AddPeer --> Wait["wait one ProbeTimeout"]
     Wait --> GetPeers["GetPeers → results"]
@@ -179,7 +187,7 @@ cfg.NoReachablePeers = noPeers
 If the channel is unbuffered, full, or otherwise not ready, that notification is dropped. The manager does not start a
 callback goroutine and does not close the caller-owned channel. The caller must not close it before `Close` returns.
 
-`Optimize` can be called manually — it blocks until completion. It is serialized: no more than one optimization runs at
+`Optimize` can be called manually and blocks until completion. It is serialized: no more than one optimization runs at
 a time. A cycle is bounded only by `Close` (which cancels the context). A cancelled cycle is not rolled back: it leaves
 every peer it added in the active set, so `Close` tears them all down cleanly.
 
@@ -192,11 +200,15 @@ implementation. The bundled core satisfies this expectation.
 
 ---
 
-## Peer Validation
+## Peer validation
 
 ```go
 entries, errs := peermgr.ValidatePeers(uris)
 ```
+
+Each accepted `PeerEntryObj` contains the preserved connection `URI`, its
+selection `Scheme`, and a normalized `MatchURI` with userinfo, query, and
+fragment removed. Use `MatchURI` for identity and logs, not for connecting.
 
 `ValidatePeers` normalizes and deduplicates Yggdrasil peer URIs (schemes such as `tcp`, `tls`, `quic`, `ws`, `wss`)
 and checks each URI:

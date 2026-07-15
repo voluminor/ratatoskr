@@ -1,3 +1,4 @@
+// Package socks provides a bounded SOCKS5 proxy over a caller-supplied network.
 package socks
 
 import (
@@ -65,8 +66,6 @@ func effectiveAssociateQueueLimit(n, def int) int {
 	return n
 }
 
-// effectiveDuration resolves a caller timeout: 0 → def (safe default),
-// <0 → 0 (disabled), else the value as given.
 func effectiveDuration(d, def time.Duration) time.Duration {
 	switch {
 	case d == 0:
@@ -102,7 +101,7 @@ func retryableAcceptError(err error) bool {
 		errors.Is(err, syscall.ECONNABORTED)
 }
 
-// Obj — SOCKS5 proxy server over Yggdrasil
+// Obj is a reusable SOCKS5 server handle.
 type Obj struct {
 	listener                        net.Listener
 	addr                            string
@@ -131,17 +130,18 @@ type Obj struct {
 
 // SnapshotObj is a point-in-time view of server load and admission pressure.
 type SnapshotObj struct {
-	ActiveConnections        int
-	ActiveAssociateTargets   int
-	PendingAssociateTargets  int64
+	// ActiveConnections is the current accepted connection count.
+	ActiveConnections int
+	// ActiveAssociateTargets is the current server-wide UDP target count.
+	ActiveAssociateTargets int
+	// PendingAssociateTargets is the current resolve-and-dial count.
+	PendingAssociateTargets int64
+	// RejectedAssociateTargets is the cumulative admission rejection count.
 	RejectedAssociateTargets uint64
-	DroppedAssociatePackets  uint64
+	// DroppedAssociatePackets is the cumulative UDP overload drop count.
+	DroppedAssociatePackets uint64
 }
 
-// serverTaskGroupObj implements socks5.GPool while retaining ownership of every
-// ServeConn and proxy-copy goroutine. Once Server.Serve returns there can be no
-// new root tasks; nested tasks are submitted before their tracked parent exits,
-// so WaitGroup's positive-counter Add/Wait rule is preserved.
 type serverTaskGroupObj struct {
 	wg sync.WaitGroup
 }
@@ -161,9 +161,6 @@ func (g *serverTaskGroupObj) Wait() {
 	}
 }
 
-// connectTargetSetObj owns outbound TCP CONNECT targets for one Start/Close
-// generation. Closing the set also rejects and closes a dial that completes
-// after shutdown took its snapshot.
 type connectTargetSetObj struct {
 	mu     sync.Mutex
 	closed bool
@@ -312,10 +309,13 @@ func (s *Obj) newConnectionLimit() *common.DynamicLimitObj {
 	return limiter
 }
 
+// MaxConnections returns the live connection limit; negative means unlimited.
 func (s *Obj) MaxConnections() int {
 	return int(s.maxConnections.Load())
 }
 
+// SetMaxConnections changes the live connection limit. Zero restores 256 and a
+// negative value makes it unlimited.
 func (s *Obj) SetMaxConnections(n int) {
 	next := effectiveMaxConnections(n)
 	s.maxConnections.Store(int64(next))
@@ -327,9 +327,7 @@ func (s *Obj) SetMaxConnections(n int) {
 	}
 }
 
-// ActiveConnections — current number of live tracked connections; 0 when disabled.
-// Counts the tracked connection set, not the accept semaphore (which reserves a
-// slot for the pending Accept and so never reads as the live-connection count).
+// ActiveConnections returns the current tracked connection count.
 func (s *Obj) ActiveConnections() int {
 	s.mu.Lock()
 	ln, _ := s.listener.(*limitedListenerObj)
@@ -343,42 +341,42 @@ func (s *Obj) ActiveConnections() int {
 	return n
 }
 
-// DialTimeout — immutable outbound dial timeout set at Start.
+// DialTimeout returns the outbound timeout fixed by the latest Start.
 func (s *Obj) DialTimeout() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.dialTimeout
 }
 
-// TunnelIdleTimeout — immutable tunnel idle timeout set at Start.
+// TunnelIdleTimeout returns the tunnel timeout fixed by the latest Start.
 func (s *Obj) TunnelIdleTimeout() time.Duration {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.tunnelIdleTimeout
 }
 
-// MaxAssociateTargetsPerSession — immutable per-session UDP ASSOCIATE target cap set at Start.
+// MaxAssociateTargetsPerSession returns the current per-session target cap.
 func (s *Obj) MaxAssociateTargetsPerSession() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.maxAssociateTargetsPerSession
 }
 
-// MaxAssociateTargetsPerPrincipal is the immutable per-principal cap set at Start.
+// MaxAssociateTargetsPerPrincipal returns the current per-principal target cap.
 func (s *Obj) MaxAssociateTargetsPerPrincipal() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.maxAssociateTargetsPerPrincipal
 }
 
-// MaxAssociateQueuedPacketsPerTarget is the immutable per-target queue cap set at Start.
+// MaxAssociateQueuedPacketsPerTarget returns the current per-target packet cap.
 func (s *Obj) MaxAssociateQueuedPacketsPerTarget() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.maxAssociateQueuedPackets
 }
 
-// MaxAssociateQueuedBytesPerTarget is the immutable per-target byte cap set at Start.
+// MaxAssociateQueuedBytesPerTarget returns the current per-target byte cap.
 func (s *Obj) MaxAssociateQueuedBytesPerTarget() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -482,7 +480,6 @@ func (s *Obj) Start(cfg ConfigObj) error {
 
 	s.logger = log
 
-	// Filesystem path → Unix socket, otherwise TCP
 	isUnix := strings.HasPrefix(cfg.Addr, "/") || strings.HasPrefix(cfg.Addr, ".")
 	var (
 		ln  net.Listener
@@ -519,8 +516,6 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	s.logger.Infof("[socks] started on %s", cfg.Addr)
 
 	serveLn := s.listener
-	// Per-Enable WaitGroup: a fresh instance each session so a later Enable's
-	// Add never races the previous Disable's Wait on a reused WaitGroup.
 	wg := &sync.WaitGroup{}
 	s.serveWG = wg
 	wg.Add(1)
@@ -532,6 +527,7 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	return nil
 }
 
+// Close stops the current server generation. Repeated calls succeed.
 func (s *Obj) Close() error {
 	s.mu.Lock()
 	if s.listener == nil {
@@ -549,19 +545,21 @@ func (s *Obj) Close() error {
 	return err
 }
 
-// Addr — listen address; empty if not started
+// Addr returns the current listen address or an empty string when stopped.
 func (s *Obj) Addr() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.addr
 }
 
+// IsUnix reports whether the current listener is a Unix socket.
 func (s *Obj) IsUnix() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.isUnix
 }
 
+// IsEnabled reports whether a server generation is running.
 func (s *Obj) IsEnabled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -571,10 +569,6 @@ func (s *Obj) IsEnabled() bool {
 func (s *Obj) finishServe(ln net.Listener, connectTargets *connectTargetSetObj, err error) {
 	limited, _ := ln.(*limitedListenerObj)
 	_ = ln.Close()
-	// A half-closed client can leave go-socks5 blocked in target.Read while its
-	// CONNECT handler waits for both proxy directions. Close outbound targets
-	// before joining that task tree. The set's closed gate also catches a dial
-	// that returns concurrently with shutdown.
 	connectTargets.closeAll()
 	if limited != nil {
 		limited.wait()
@@ -589,9 +583,6 @@ func (s *Obj) finishServe(ln net.Listener, connectTargets *connectTargetSetObj, 
 	serveTasks := s.serveTasks
 	s.mu.Unlock()
 
-	// Keep listener published until every accepted connection, proxy-copy task,
-	// UDP handler, and UDP worker job has left this server. Start therefore cannot
-	// reset per-server state while an old generation is still releasing it.
 	serveTasks.Wait()
 	associatePool.close()
 
@@ -634,7 +625,6 @@ func (s *Obj) finishServe(ln net.Listener, connectTargets *connectTargetSetObj, 
 
 // //
 
-// limitedListenerObj — semaphore limiting simultaneous connections
 type limitedListenerObj struct {
 	net.Listener
 	limit             *common.DynamicLimitObj
@@ -690,7 +680,6 @@ func (l *limitedListenerObj) Accept() (net.Conn, error) {
 		}
 		lc := &limitedConnObj{Conn: conn, owner: l, tunnelIdleTimeout: l.tunnelIdleTimeout}
 		if l.handshakeTimeout > 0 {
-			// Full deadline bounds both handshake reads and server writes (slowloris-on-write).
 			_ = lc.SetDeadline(time.Now().Add(l.handshakeTimeout))
 		}
 		if !l.track(lc) {
@@ -782,7 +771,6 @@ func (l *limitedListenerObj) closeActive() {
 	}
 }
 
-// limitedConnObj — connection that releases a semaphore slot on Close()
 type limitedConnObj struct {
 	net.Conn
 	once              sync.Once
@@ -817,8 +805,6 @@ func (c *limitedConnObj) finishHandshakeWithoutTunnelIdle() {
 }
 
 func (c *limitedConnObj) finishHandshakeState(trackTunnel bool) {
-	// Clear the full handshake deadline (read + write) before entering tunnel mode
-	// so the write deadline armed at Accept never leaks into a silent tunnel.
 	_ = c.SetReadDeadline(time.Time{})
 	_ = c.SetWriteDeadline(time.Time{})
 	if trackTunnel {

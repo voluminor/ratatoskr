@@ -5,8 +5,9 @@ import (
 	"testing"
 
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
-	"gopkg.in/yaml.v3"
 )
+
+// // // // // // // // // //
 
 func TestRuntimeNodeConfigRoundTrip(t *testing.T) {
 	want := yggconfig.GenerateConfig()

@@ -1,3 +1,4 @@
+// Package sigils defines typed, cloneable fragments of Yggdrasil NodeInfo.
 package sigils
 
 import (
@@ -7,8 +8,8 @@ import (
 
 // // // // // // // // // //
 
-// MergeParams copies nodeInfo and adds params on top.
-// Returns error on key conflict. Never mutates the input.
+// MergeParams returns a shallow copy containing nodeInfo and params. A key
+// conflict returns an error without mutating either input map.
 func MergeParams(nodeInfo map[string]any, params map[string]any) (map[string]any, error) {
 	out := make(map[string]any, len(nodeInfo)+len(params))
 	for k, v := range nodeInfo {
@@ -27,6 +28,7 @@ func MergeParams(nodeInfo map[string]any, params map[string]any) (map[string]any
 
 var reName = regexp.MustCompile(`^[a-z0-9._-]{3,32}$`)
 
+// ValidateName reports whether name contains 3 to 32 lowercase sigil-name characters.
 func ValidateName(name string) bool {
 	return reName.MatchString(name)
 }

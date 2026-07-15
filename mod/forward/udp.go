@@ -58,9 +58,6 @@ type udpReversePacketObj struct {
 	addr   net.Addr
 }
 
-// udpReverseWriterObj is shared by all sessions of one mapping. Session readers
-// only enqueue, so a slow or broken destination can retain at most one blocked
-// writer and a bounded amount of queued memory per mapping.
 type udpReverseWriterObj struct {
 	ctx          context.Context
 	dst          net.PacketConn
@@ -144,7 +141,6 @@ func newUDPBufferPool(size int) *udpBufferPoolObj {
 }
 
 func (p *udpBufferPoolObj) get(n int) *udpPacketObj {
-	// Pooled buffers are always exactly p.size and n never exceeds it.
 	packet := p.pool.Get().(*udpPacketObj)
 	packet.buf = packet.buf[:n]
 	return packet
@@ -201,9 +197,6 @@ type udpStartObj struct {
 	dial        func(UDPMappingObj, context.Context, net.Addr) (net.Conn, error)
 }
 
-// udpSessionMapObj is the NAT table keyed by source addr:port. Keying a typed map
-// by the comparable netip.AddrPort keeps the read-loop hot path allocation-free,
-// unlike sync.Map, which would box the key into interface{} on every datagram.
 type udpSessionMapObj struct {
 	mu sync.RWMutex
 	m  map[netip.AddrPort]*udpSessionObj
@@ -231,9 +224,6 @@ func (t *udpSessionMapObj) store(key netip.AddrPort, session *udpSessionObj) {
 	t.mu.Unlock()
 }
 
-// compareAndDelete removes key only while it still maps to session, mirroring
-// sync.Map.CompareAndDelete so a replacement session installed after a stale
-// close is never dropped.
 func (t *udpSessionMapObj) compareAndDelete(key netip.AddrPort, session *udpSessionObj) {
 	t.mu.Lock()
 	if t.m[key] == session {
@@ -242,8 +232,6 @@ func (t *udpSessionMapObj) compareAndDelete(key netip.AddrPort, session *udpSess
 	t.mu.Unlock()
 }
 
-// snapshot copies the live entries so cleanup can close sessions without holding
-// the map lock (session.stop() runs a conn Close syscall and must not block it).
 func (t *udpSessionMapObj) snapshot() []udpSessionEntryObj {
 	t.mu.RLock()
 	out := make([]udpSessionEntryObj, 0, len(t.m))
@@ -310,9 +298,6 @@ func drainUDPPackets(ch <-chan *udpPacketObj, pool *udpBufferPoolObj) {
 	}
 }
 
-// udpSessionKey derives the comparable NAT-table key from a datagram source.
-// A UDP PacketConn always yields *net.UDPAddr, so ok is false only for an
-// impossible address shape, in which case the read loop drops the datagram.
 func udpSessionKey(addr net.Addr) (netip.AddrPort, bool) {
 	udpAddr, ok := addr.(*net.UDPAddr)
 	if !ok || udpAddr.Port < 0 || udpAddr.Port > 65535 {
@@ -433,9 +418,7 @@ func (m *Obj) prepareRemoteUDP() ([]udpStartObj, error) {
 
 // //
 
-// RunUDPLoop reads packets, routes them to sessions, and cleans up inactive ones.
-// Cancelling ctx closes cfg.ListenConn to unblock reads and then waits for session
-// workers. Configuration and terminal read failures are returned to the caller.
+// RunUDPLoop routes datagrams through per-source connected sessions until ctx ends.
 func RunUDPLoop(ctx context.Context, cfg UDPLoopConfigObj) error {
 	var wg sync.WaitGroup
 	err := runUDPLoopWithWait(ctx, cfg, &wg, nil, nil)
@@ -570,7 +553,6 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 		<-readDone
 	}()
 
-	// Clean up inactive sessions
 	trackUDPWorker(wg, func() {
 		ticker := time.NewTicker(udpCleanupInterval(cfg.Timeout))
 		defer ticker.Stop()
@@ -667,8 +649,6 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 				}
 			}
 		case udpEnqueueCanceled:
-			// The read loop is still live, so this is session churn rather than
-			// global shutdown. Account for the packet that hit the retiring entry.
 			if recordUDPChurnDrop(loopCtx, sessionDrops) && queueLog.allow(limitLogInterval) {
 				log.Warnf("[forward] UDP session is closing, dropping packet from %s", remoteAddr)
 			}
@@ -677,7 +657,7 @@ func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.Wait
 	}
 }
 
-// ReverseProxyUDP — reverse channel: src → dst to dstAddr
+// ReverseProxyUDP relays connected upstream datagrams to one packet destination.
 func ReverseProxyUDP(ctx context.Context, cfg UDPReverseConfigObj) {
 	reverseProxyUDP(ctx, cfg)
 }

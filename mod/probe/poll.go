@@ -18,9 +18,7 @@ const (
 
 // // // // // // // // // //
 
-// Trace searches for the key in both spanning tree and pathfinder.
-// Returns immediately if both found; waits for hops if only tree is available;
-// falls back to full poll with lookup retries until ctx expires.
+// Trace returns the available spanning-tree and pathfinder routes to key.
 func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -60,8 +58,6 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 
 // //
 
-// pollFull polls for both tree path and hops until ctx expires.
-// Once tree is found, waits up to HopsWaitTimeout for hops before returning.
 func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey, initial *TraceResultObj) (*TraceResultObj, error) {
 	ticker := time.NewTicker(o.pollInterval)
 	defer ticker.Stop()
@@ -114,8 +110,6 @@ func (o *Obj) pollFull(ctx context.Context, key ed25519.PublicKey, initial *Trac
 
 // //
 
-// enrichPath fills RTT on path nodes (skips root).
-// Direct peers use core's latency; remote nodes use callRemotePeers round-trip.
 func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) error {
 	if len(path) <= 1 {
 		return nil
@@ -135,9 +129,6 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) error {
 		err error
 	}
 
-	// Direct peers get RTT from core; the rest are queried remotely. Collect the
-	// remote indices first so the result channel can buffer every job; workers can
-	// finish without blocking even if ctx cancels the wait.
 	var remote []int
 	for i, n := range targets {
 		if lat, ok := peerLatency[toKeyArray(n.Key)]; ok {
@@ -194,7 +185,6 @@ func (o *Obj) enrichPath(ctx context.Context, path []*NodeObj) error {
 	return nil
 }
 
-// collect attempts to gather data from both tree and pathfinder sources.
 func (o *Obj) collect(key ed25519.PublicKey) *TraceResultObj {
 	var result TraceResultObj
 	if path, err := o.Path(key); err == nil {

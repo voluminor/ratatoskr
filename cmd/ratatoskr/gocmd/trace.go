@@ -199,8 +199,6 @@ func waitForPeers(ctx context.Context, tr *probe.Obj) error {
 	}
 }
 
-// waitForRouting probes the direct peer with Tree(depth=2) until
-// debug_remoteGetPeers responds. Sends Lookups to stimulate DHT convergence.
 func waitForRouting(ctx context.Context, tr *probe.Obj) error {
 	var peerKey ed25519.PublicKey
 	for _, p := range tr.Peers() {
@@ -525,16 +523,16 @@ func printTree(n *probe.NodeObj, prefix string, isRoot bool) {
 
 // //
 
-type scanNodeJSON struct {
-	Key         string          `json:"key"`
-	Parent      string          `json:"parent,omitempty"`
-	Depth       int             `json:"depth"`
-	RTT         float64         `json:"rtt_ms,omitempty"`
-	Unreachable bool            `json:"unreachable,omitempty"`
-	Children    []*scanNodeJSON `json:"children,omitempty"`
+type scanNodeJSONObj struct {
+	Key         string             `json:"key"`
+	Parent      string             `json:"parent,omitempty"`
+	Depth       int                `json:"depth"`
+	RTT         float64            `json:"rtt_ms,omitempty"`
+	Unreachable bool               `json:"unreachable,omitempty"`
+	Children    []*scanNodeJSONObj `json:"children,omitempty"`
 }
 
-type traceHopJSON struct {
+type traceHopJSONObj struct {
 	Key   string `json:"key,omitempty"`
 	Port  uint64 `json:"port"`
 	Index int    `json:"index"`
@@ -542,11 +540,11 @@ type traceHopJSON struct {
 
 // //
 
-func nodeToScanJSON(n *probe.NodeObj) *scanNodeJSON {
+func nodeToScanJSON(n *probe.NodeObj) *scanNodeJSONObj {
 	if n == nil {
 		return nil
 	}
-	j := &scanNodeJSON{
+	j := &scanNodeJSONObj{
 		Key:         hex.EncodeToString(n.Key),
 		Parent:      hex.EncodeToString(n.Parent),
 		Depth:       n.Depth,
@@ -554,7 +552,7 @@ func nodeToScanJSON(n *probe.NodeObj) *scanNodeJSON {
 		Unreachable: n.Unreachable,
 	}
 	if len(n.Children) > 0 {
-		j.Children = make([]*scanNodeJSON, len(n.Children))
+		j.Children = make([]*scanNodeJSONObj, len(n.Children))
 		for i, ch := range n.Children {
 			j.Children[i] = nodeToScanJSON(ch)
 		}
@@ -582,15 +580,15 @@ func outputScan(result *probe.TreeResultObj, format gsettings.GoAskFormatEnum) e
 func outputTrace(target string, result *probe.TraceResultObj, format gsettings.GoAskFormatEnum) error {
 	if format == gsettings.GoAskFormatJson {
 		out := struct {
-			Target string          `json:"target"`
-			Path   []*scanNodeJSON `json:"path,omitempty"`
-			Hops   []traceHopJSON  `json:"hops,omitempty"`
+			Target string             `json:"target"`
+			Path   []*scanNodeJSONObj `json:"path,omitempty"`
+			Hops   []traceHopJSONObj  `json:"hops,omitempty"`
 		}{Target: target}
 
 		if result.TreePath != nil {
-			out.Path = make([]*scanNodeJSON, len(result.TreePath))
+			out.Path = make([]*scanNodeJSONObj, len(result.TreePath))
 			for i, n := range result.TreePath {
-				out.Path[i] = &scanNodeJSON{
+				out.Path[i] = &scanNodeJSONObj{
 					Key:    hex.EncodeToString(n.Key),
 					Parent: hex.EncodeToString(n.Parent),
 					Depth:  n.Depth,
@@ -599,9 +597,9 @@ func outputTrace(target string, result *probe.TraceResultObj, format gsettings.G
 			}
 		}
 		if result.Hops != nil {
-			out.Hops = make([]traceHopJSON, len(result.Hops))
+			out.Hops = make([]traceHopJSONObj, len(result.Hops))
 			for i, h := range result.Hops {
-				hop := traceHopJSON{Port: h.Port, Index: h.Index}
+				hop := traceHopJSONObj{Port: h.Port, Index: h.Index}
 				if len(h.Key) > 0 {
 					hop.Key = hex.EncodeToString(h.Key)
 				}
@@ -617,7 +615,6 @@ func outputTrace(target string, result *probe.TraceResultObj, format gsettings.G
 		return nil
 	}
 
-	// Text output
 	if result.TreePath != nil {
 		fmt.Fprintln(os.Stderr, "path:")
 		for i, n := range result.TreePath {

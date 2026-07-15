@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
@@ -16,7 +17,7 @@ func fastCfg(peers []string) ConfigObj {
 	return ConfigObj{
 		Peers:        peers,
 		ProbeTimeout: 10 * time.Millisecond,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	}
 }
 
@@ -40,7 +41,7 @@ func waitAddedPeers(t *testing.T, node *mockNodeObj, want int) {
 	t.Fatalf("timed out waiting for %d added peers", want)
 }
 
-func hasCandidate(candidates []peerEntryObj, uri string) bool {
+func hasCandidate(candidates []PeerEntryObj, uri string) bool {
 	for _, candidate := range candidates {
 		if candidate.URI == uri {
 			return true
@@ -118,7 +119,6 @@ func TestNew_nilNode(t *testing.T) {
 }
 
 func TestNew_noLogger(t *testing.T) {
-	// A nil logger is accepted and normalized to a discard logger.
 	mgr, err := newTestObj(&mockNodeObj{}, ConfigObj{
 		Peers:  []string{"tls://h:1"},
 		Logger: nil,
@@ -132,7 +132,7 @@ func TestNew_noLogger(t *testing.T) {
 }
 
 func TestNew_noPeers(t *testing.T) {
-	_, err := newTestObj(&mockNodeObj{}, ConfigObj{Logger: noopLogObj{}})
+	_, err := newTestObj(&mockNodeObj{}, ConfigObj{Logger: common.DiscardLoggerObj{}})
 	if err == nil {
 		t.Fatal("expected error: no valid peers")
 	}
@@ -141,7 +141,7 @@ func TestNew_noPeers(t *testing.T) {
 func TestNew_allInvalidPeers(t *testing.T) {
 	_, err := newTestObj(&mockNodeObj{}, ConfigObj{
 		Peers:  []string{"tcp://%zz", "://nohost"},
-		Logger: noopLogObj{},
+		Logger: common.DiscardLoggerObj{},
 	})
 	if err == nil {
 		t.Fatal("expected error: all peers invalid")
@@ -159,7 +159,7 @@ func TestNew_rejectsInvalidMaxPerProto(t *testing.T) {
 	_, err := newTestObj(&mockNodeObj{}, ConfigObj{
 		Peers:       []string{"tls://h:1"},
 		MaxPerProto: -2,
-		Logger:      noopLogObj{},
+		Logger:      common.DiscardLoggerObj{},
 	})
 	if !errors.Is(err, ErrInvalidMaxPerProto) {
 		t.Fatalf("expected ErrInvalidMaxPerProto, got %v", err)
@@ -179,7 +179,7 @@ func TestNewRejectsNegativeDefaultedValues(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			test.cfg.Peers = []string{"tls://h:1"}
-			test.cfg.Logger = noopLogObj{}
+			test.cfg.Logger = common.DiscardLoggerObj{}
 			_, err := newTestObj(&mockNodeObj{}, test.cfg)
 			if err == nil {
 				t.Fatalf("New accepted invalid config: %+v", test.cfg)
@@ -194,7 +194,7 @@ func TestNewRejectsNegativeDefaultedValues(t *testing.T) {
 func TestNew_defaultProbeTimeout(t *testing.T) {
 	mgr, _ := newTestObj(&mockNodeObj{}, ConfigObj{
 		Peers:        []string{"tls://h:1"},
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 		ProbeTimeout: 0,
 	})
 	if mgr.cfg.ProbeTimeout != defaultProbeTimeout {
@@ -203,11 +203,11 @@ func TestNew_defaultProbeTimeout(t *testing.T) {
 }
 
 func TestNew_defaultHealthInterval(t *testing.T) {
-	mgr, _ := newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: noopLogObj{}})
+	mgr, _ := newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: common.DiscardLoggerObj{}})
 	if got := mgr.cfg.HealthInterval; got != defaultHealthInterval {
 		t.Fatalf("health interval = %s, want %s", got, defaultHealthInterval)
 	}
-	mgr, _ = newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: noopLogObj{}, HealthInterval: -1})
+	mgr, _ = newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: common.DiscardLoggerObj{}, HealthInterval: -1})
 	if got := mgr.cfg.HealthInterval; got != -1 {
 		t.Fatalf("disabled health interval = %s, want -1", got)
 	}
@@ -218,7 +218,7 @@ func TestNewRejectsMinPeersAboveSelectableCapacity(t *testing.T) {
 		Peers:       []string{"tls://a:1", "tls://b:1", "quic://c:1"},
 		MaxPerProto: 1,
 		MinPeers:    2,
-		Logger:      noopLogObj{},
+		Logger:      common.DiscardLoggerObj{},
 	})
 	if !errors.Is(err, ErrMinPeersTooHigh) {
 		t.Fatalf("New error = %v, want ErrMinPeersTooHigh", err)
@@ -226,11 +226,11 @@ func TestNewRejectsMinPeersAboveSelectableCapacity(t *testing.T) {
 }
 
 func TestNew_defaultReprobeInterval(t *testing.T) {
-	mgr, _ := newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: noopLogObj{}})
+	mgr, _ := newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: common.DiscardLoggerObj{}})
 	if got := mgr.cfg.ReprobeInterval; got != defaultReprobeInterval {
 		t.Fatalf("reprobe interval = %s, want %s", got, defaultReprobeInterval)
 	}
-	mgr, _ = newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: noopLogObj{}, ReprobeInterval: -1})
+	mgr, _ = newTestObj(&mockNodeObj{}, ConfigObj{Peers: []string{"tls://h:1"}, Logger: common.DiscardLoggerObj{}, ReprobeInterval: -1})
 	if got := mgr.cfg.ReprobeInterval; got != -1 {
 		t.Fatalf("disabled reprobe holdoff = %s, want -1", got)
 	}
@@ -255,7 +255,6 @@ func TestEffectiveBatchSize_usesBoundedDefault(t *testing.T) {
 }
 
 func TestNew_partiallyInvalidPeers(t *testing.T) {
-	// Some valid, some not — should succeed with valid only
 	mgr, err := newTestObj(&mockNodeObj{}, fastCfg([]string{"tcp://%zz", "tls://good:1"}))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -366,8 +365,6 @@ func TestConcurrentCloseRemovesPeerOnce(t *testing.T) {
 }
 
 func TestRefreshInterval_reoptimizesWhileRunning(t *testing.T) {
-	// AddPeer always fails, so the candidate never becomes active and never earns
-	// backoff; every refresh re-probes it, letting us count reoptimizations by adds.
 	node := &recordingFailNodeObj{err: errors.New("temporary failure")}
 	mgr, err := New(ConfigObj{
 		Node:            node,
@@ -375,7 +372,7 @@ func TestRefreshInterval_reoptimizesWhileRunning(t *testing.T) {
 		ProbeTimeout:    10 * time.Millisecond,
 		MaxPerProto:     1,
 		RefreshInterval: 10 * time.Millisecond,
-		Logger:          noopLogObj{},
+		Logger:          common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -411,7 +408,7 @@ func TestActive_returnsCopy(t *testing.T) {
 		Peers:        []string{"tls://a:1"},
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	mgr.setActive([]string{"tls://a:1"})
 	a := mgr.Active()
@@ -432,7 +429,7 @@ func TestActiveMode_noReachable_activeEmpty(t *testing.T) {
 		Peers:        []string{"tls://a:1"},
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err := mgr.optimizeActiveMode(context.Background(), false); err != nil {
 		t.Fatalf("Optimize: %v", err)
@@ -443,8 +440,6 @@ func TestActiveMode_noReachable_activeEmpty(t *testing.T) {
 }
 
 func TestActiveMode_removesLosers(t *testing.T) {
-	// Two same-protocol peers are up; with MaxPerProto=1 the slower one loses the
-	// tournament and must be removed from the node.
 	node := &mockNodeObj{
 		peers: []yggcore.PeerInfo{
 			makePeerInfo("tls://a:1", true, 5*time.Millisecond),
@@ -455,7 +450,7 @@ func TestActiveMode_removesLosers(t *testing.T) {
 		Peers:        []string{"tls://a:1", "tls://b:2"},
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err := mgr.optimizeActiveMode(context.Background(), false); err != nil {
 		t.Fatalf("Optimize: %v", err)
@@ -482,7 +477,7 @@ func TestActiveMode_presentDownOwnedPeerIsNotAddedAgain(t *testing.T) {
 	mgr, err := newTestObj(node, ConfigObj{
 		Peers:        []string{uri},
 		ProbeTimeout: time.Millisecond,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -517,7 +512,7 @@ func TestActiveMode_reachableLoserWaitsForReprobeTTL(t *testing.T) {
 		Peers:           []string{fast, slow},
 		ProbeTimeout:    time.Millisecond,
 		ReprobeInterval: time.Hour,
-		Logger:          noopLogObj{},
+		Logger:          common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -554,7 +549,7 @@ func TestActiveMode_batchSize(t *testing.T) {
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -562,7 +557,6 @@ func TestActiveMode_batchSize(t *testing.T) {
 	if err := mgr.optimizeActiveMode(context.Background(), false); err != nil {
 		t.Fatalf("Optimize: %v", err)
 	}
-	// Just verify it completes without error; active may be empty
 }
 
 func TestActiveMode_waitsFullProbeTimeoutForBestPeer(t *testing.T) {
@@ -579,7 +573,7 @@ func TestActiveMode_waitsFullProbeTimeoutForBestPeer(t *testing.T) {
 		Peers:        []string{early, late},
 		ProbeTimeout: 200 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -614,7 +608,7 @@ func TestActiveMode_respectsBackoffWhenNoPeersActive(t *testing.T) {
 		Peers:        []string{"tls://a:1", "tls://b:2", "tls://c:3"},
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -628,7 +622,6 @@ func TestActiveMode_respectsBackoffWhenNoPeersActive(t *testing.T) {
 	if firstAdded != 3 {
 		t.Fatalf("expected first full probe to add 3 peers, got %d", firstAdded)
 	}
-	// Push every candidate far into its backoff window so none is due again.
 	for key, state := range mgr.probeState {
 		state.holdoffUntil = time.Now().Add(time.Hour)
 		mgr.probeState[key] = state
@@ -653,7 +646,7 @@ func TestActiveMode_backsOffPeerWhenAddPeerFails(t *testing.T) {
 		Peers:        []string{"tls://bad:1"},
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -669,8 +662,6 @@ func TestActiveMode_backsOffPeerWhenAddPeerFails(t *testing.T) {
 		t.Fatalf("expected 1 AddPeer attempt, got %d", attempts)
 	}
 
-	// A synchronous AddPeer failure must still record backoff state, so the bad
-	// URI is not a due candidate again until its backoff window elapses.
 	key := normalizePeerURI("tls://bad:1")
 	state, ok := mgr.probeState[key]
 	if !ok || state.failures == 0 || !state.retryAfter.After(time.Now()) {
@@ -684,8 +675,6 @@ func TestActiveMode_backsOffPeerWhenAddPeerFails(t *testing.T) {
 // //
 
 func TestCloseRemovesActivePeers(t *testing.T) {
-	// Both peers are up on distinct protocols, so both win selection and stay
-	// active; Close must then remove them from the node.
 	node := &mockNodeObj{
 		peers: []yggcore.PeerInfo{
 			makePeerInfo("tls://a:1", true, 5*time.Millisecond),
@@ -697,12 +686,11 @@ func TestCloseRemovesActivePeers(t *testing.T) {
 		Peers:        []string{"tls://a:1", "tcp://b:2"},
 		ProbeTimeout: 10 * time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Let the startup optimize settle both peers into the active set before Close.
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		if len(mgr.Active()) == 2 {
@@ -730,15 +718,13 @@ func TestCloseRemovesActivePeers(t *testing.T) {
 }
 
 func TestOptimizeActive_cancelRemovesPendingBatch(t *testing.T) {
-	// A cycle cancelled mid-probe performs no per-batch rollback; instead it records
-	// every peer it handed to the node as active, so Close reaps exactly those.
 	node := &mockNodeObj{}
 	mgr, err := newTestObj(node, ConfigObj{
 		Peers:        []string{"tls://a:1", "tls://b:2"},
 		ProbeTimeout: time.Hour,
 		MaxPerProto:  1,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -784,7 +770,7 @@ func TestOptimizeActive_abortsOnContextDeadline(t *testing.T) {
 		ProbeTimeout: time.Second,
 		MaxPerProto:  1,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -815,7 +801,7 @@ func TestOptimizeActive_timeoutDoesNotRemoveAlreadyActivePeer(t *testing.T) {
 		ProbeTimeout: time.Second,
 		MaxPerProto:  1,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -828,8 +814,6 @@ func TestOptimizeActive_timeoutDoesNotRemoveAlreadyActivePeer(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected optimize deadline, got %v", err)
 	}
-	// A timed-out window performs no selection, so an already-active peer is never
-	// handed to RemovePeer even though its probe was interrupted.
 	node.mu.Lock()
 	removed := append([]string(nil), node.removed...)
 	node.mu.Unlock()
@@ -847,7 +831,7 @@ func TestOptimizeActive_staleSnapshotRetainsOwnedPeerForClose(t *testing.T) {
 		Peers:        []string{uri},
 		ProbeTimeout: time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -877,7 +861,7 @@ func TestOptimizePassive_staleSnapshotRetainsOwnedPeerForClose(t *testing.T) {
 	mgr, err := newTestObj(node, ConfigObj{
 		Peers:   []string{uri},
 		Passive: true,
-		Logger:  noopLogObj{},
+		Logger:  common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -916,7 +900,7 @@ func TestOptimizeActive_singleBatchRetainsAllActivePeers(t *testing.T) {
 		ProbeTimeout: 20 * time.Millisecond,
 		MaxPerProto:  2,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -926,8 +910,6 @@ func TestOptimizeActive_singleBatchRetainsAllActivePeers(t *testing.T) {
 	if err = mgr.optimizeLocked(context.Background()); err != nil {
 		t.Fatalf("optimize: %v", err)
 	}
-	// Active peers are compared in the single cycle without consuming the
-	// BatchSize budget or requiring a second window.
 	node.mu.Lock()
 	removed := append([]string(nil), node.removed...)
 	node.mu.Unlock()
@@ -945,7 +927,7 @@ func TestOptimizeActiveAttemptsOnlyOneBatchPerCycle(t *testing.T) {
 		Peers:        peers,
 		ProbeTimeout: time.Millisecond,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -985,7 +967,7 @@ func TestPartialRecoveryTargetsOnlyVacantProtocols(t *testing.T) {
 		Peers:       []string{tlsWinner, tlsLoser, quicDown, quicSpare},
 		BatchSize:   4,
 		MaxPerProto: 1,
-		Logger:      noopLogObj{},
+		Logger:      common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1013,7 +995,7 @@ func TestPartialRecoveryAddsAtMostProtocolDeficit(t *testing.T) {
 		Peers:       peers,
 		BatchSize:   4,
 		MaxPerProto: 2,
-		Logger:      noopLogObj{},
+		Logger:      common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1045,7 +1027,7 @@ func TestPartialRecoveryReservesMissingActiveButReplacesPresentDown(t *testing.T
 		Peers:       []string{tcpUp, tlsMissing, tlsSpare, quicDown, quicSpare},
 		BatchSize:   5,
 		MaxPerProto: 1,
-		Logger:      noopLogObj{},
+		Logger:      common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1072,7 +1054,7 @@ func TestPartialRecoveryCursorRotatesLimitedCandidates(t *testing.T) {
 		Peers:       append([]string{active}, spares...),
 		BatchSize:   4,
 		MaxPerProto: 2,
-		Logger:      noopLogObj{},
+		Logger:      common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1099,7 +1081,7 @@ func TestOutageBypassesHoldoffButNotFailureBackoff(t *testing.T) {
 	mgr, err := newTestObj(node, ConfigObj{
 		Peers:     []string{held, dead},
 		BatchSize: 2,
-		Logger:    noopLogObj{},
+		Logger:    common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1137,7 +1119,7 @@ func TestOptimizeActiveOutageRespectsFailureBackoff(t *testing.T) {
 		Peers:        peers,
 		ProbeTimeout: time.Millisecond,
 		BatchSize:    2,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1162,7 +1144,7 @@ func TestOptimizeActiveDoesNotWaitWithoutNewConnection(t *testing.T) {
 	mgr, err := newTestObj(node, ConfigObj{
 		Peers:        []string{uri},
 		ProbeTimeout: time.Second,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1197,7 +1179,7 @@ func TestRunPartialDegradationBypassesReprobeHoldoff(t *testing.T) {
 		MinPeersConfirmations: 1,
 		HealthInterval:        5 * time.Millisecond,
 		ReprobeInterval:       time.Hour,
-		Logger:                noopLogObj{},
+		Logger:                common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1232,7 +1214,7 @@ func TestRunHealthTickerRetriesAfterFailedStartup(t *testing.T) {
 		Peers:          []string{"tls://a:1"},
 		ProbeTimeout:   time.Millisecond,
 		HealthInterval: 5 * time.Millisecond,
-		Logger:         noopLogObj{},
+		Logger:         common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1271,7 +1253,7 @@ func TestOptimizeActive_keepsPeerWithQuery(t *testing.T) {
 		Peers:        []string{uri},
 		ProbeTimeout: time.Millisecond,
 		MaxPerProto:  1,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1293,20 +1275,17 @@ func TestOptimizeActive_keepsPeerWithQuery(t *testing.T) {
 
 // //
 
-// A cycle cancelled mid-probe must retain the peers that were already active so
-// Close still removes them — dropping them here would leak established peers.
 func TestOptimizeActive_cancelRetainsAlreadyActivePeers(t *testing.T) {
 	node := &mockNodeObj{}
 	mgr, err := newTestObj(node, ConfigObj{
 		Peers:        []string{"tls://a.example:1"},
 		MaxPerProto:  1,
 		ProbeTimeout: time.Hour,
-		Logger:       noopLogObj{},
+		Logger:       common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	// Simulate an established active peer the node already holds.
 	mgr.setActive([]string{"tls://a.example:1"})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1325,7 +1304,7 @@ func TestOptimizeActive_cancelRetainsAlreadyActivePeers(t *testing.T) {
 func TestCloseRetainsFailedRemovalForRetry(t *testing.T) {
 	const uri = "tls://a.example:1"
 	node := &mockNodeObj{removePeerFail: map[string]bool{uri: true}}
-	mgr, err := newTestObj(node, ConfigObj{Peers: []string{uri}, Logger: noopLogObj{}})
+	mgr, err := newTestObj(node, ConfigObj{Peers: []string{uri}, Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1357,7 +1336,7 @@ func TestSelectAndPruneRetainsFailedRemoval(t *testing.T) {
 		},
 		removePeerFail: map[string]bool{loserURI: true},
 	}
-	mgr, err := newTestObj(node, ConfigObj{Peers: []string{winnerURI, loserURI}, MaxPerProto: 1, Logger: noopLogObj{}})
+	mgr, err := newTestObj(node, ConfigObj{Peers: []string{winnerURI, loserURI}, MaxPerProto: 1, Logger: common.DiscardLoggerObj{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1380,7 +1359,7 @@ func TestPassiveAndNoReachableNotification(t *testing.T) {
 		Passive:          true,
 		MinPeers:         1,
 		NoReachablePeers: notifications,
-		Logger:           noopLogObj{},
+		Logger:           common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1415,7 +1394,7 @@ func TestOptimizeDoesNotBlockOnUnreadNoReachableNotification(t *testing.T) {
 		Peers:            []string{uri},
 		ProbeTimeout:     time.Millisecond,
 		NoReachablePeers: make(chan struct{}),
-		Logger:           noopLogObj{},
+		Logger:           common.DiscardLoggerObj{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1430,26 +1409,5 @@ func TestOptimizeDoesNotBlockOnUnreadNoReachableNotification(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatal("Optimize blocked on an unread no-reachable notification channel")
-	}
-}
-
-// //
-
-func BenchmarkNew(b *testing.B) {
-	node := &mockNodeObj{}
-	peers := make([]string, 20)
-	for i := range peers {
-		peers[i] = "tls://host" + string(rune('a'+i%26)) + ":1234"
-	}
-	cfg := fastCfg(peers)
-	cfg.Node = node
-	for b.Loop() {
-		mgr, err := New(cfg)
-		if err != nil {
-			b.Fatalf("New: %v", err)
-		}
-		if err = mgr.Close(); err != nil {
-			b.Fatalf("Close: %v", err)
-		}
 	}
 }

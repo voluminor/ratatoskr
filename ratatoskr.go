@@ -1,3 +1,4 @@
+// Package ratatoskr composes embeddable Yggdrasil networking modules.
 package ratatoskr
 
 import (
@@ -27,14 +28,10 @@ import (
 
 // // // // // // // // // //
 
-// Obj — Yggdrasil node for embedding in applications.
-// Combines core (DialContext/Listen), resolver (.pk.ygg), and SOCKS5.
-// The primary networking and peer methods are exposed directly; the full node
-// contract (multicast, admin, retry, diagnostics) is reachable via Core().
+// Obj is an embeddable Yggdrasil node with NodeInfo and optional peer-manager
+// and SOCKS services.
 type Obj struct {
-	// core is assigned once in New and read-only afterwards; use Close() to stop.
-	core core.Interface
-	// socks is assigned once in New and read-only afterwards; safe to read lock-free.
+	core          core.Interface
 	socks         *socks.Obj
 	peerManager   *peermgr.Obj
 	nodeInfo      *ninfo.Obj
@@ -63,11 +60,6 @@ func rollbackNewError(timeout time.Duration, cause error, before []common.NamedC
 	return errors.Join(cause, closeErr)
 }
 
-// cloneCallerConfig insulates New from the caller's config: sigils add top-level
-// keys to NodeInfo and MulticastInterfaces is read after New (EnableMulticast), so
-// both reference fields are copied. NodeInfo is cloned recursively because its
-// nested maps and slices remain mutable after New. Other NodeConfig fields are
-// consumed once at construction, so a shallow copy of the rest is sufficient.
 func cloneCallerConfig(cfg *config.NodeConfig) (*config.NodeConfig, error) {
 	if cfg == nil {
 		return nil, nil
@@ -82,8 +74,8 @@ func cloneCallerConfig(cfg *config.NodeConfig) (*config.NodeConfig, error) {
 	return &cloned, nil
 }
 
-// New creates and starts the node.
-// If cfg.Peers is set, starts the peer manager; cfg.Config.Peers must be empty.
+// New creates and starts a node. When cfg.Peers is set, cfg.Config.Peers must be
+// empty.
 func New(cfg ConfigObj) (*Obj, error) {
 	if cfg.CloseTimeout < 0 {
 		return nil, ErrInvalidCloseTimeout
@@ -110,7 +102,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 		}
 	}
 
-	// Assemble NodeInfo from sigils
 	var customParsers []sigils.Interface
 	if cfg.Sigils != nil {
 		sigilsObj, sigilErrs := sigil_core.New(cfg.Config.NodeInfo, cfg.Sigils...)
@@ -136,7 +127,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 		return nil, err
 	}
 
-	// ninfo — always created for Ask/AskAddr
 	niCfg := ninfo.ConfigObj{}
 	if cfg.NodeInfo != nil {
 		niCfg = *cfg.NodeInfo
@@ -177,7 +167,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 		obj.peerManager = mgr
 	}
 
-	// Auto-shutdown on context cancellation
 	if cfg.Ctx != nil {
 		go func() {
 			select {
@@ -188,9 +177,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 			case <-obj.done:
 			}
 		}()
-		// A cfg.Ctx cancelled during construction has already armed the watchdog
-		// above; surface the error instead of returning a live-looking node that is
-		// concurrently closing. Close is idempotent, so racing the watchdog is safe.
 		if err := cfg.Ctx.Err(); err != nil {
 			_ = obj.Close()
 			return nil, err
@@ -202,12 +188,11 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 // // // // // // // // // //
 
-// Core exposes the full underlying node contract (multicast, admin, retry peers,
-// diagnostics). The primary methods below are promoted directly, so the embeddable
-// surface stays small and advanced controls live behind one accessor.
+// Core returns the underlying node interface for multicast, admin, peer retry,
+// and diagnostics operations.
 func (o *Obj) Core() core.Interface { return o.core }
 
-// DialContext opens a connection to a Yggdrasil address; compatible with http.Transport.DialContext.
+// DialContext opens a connection to a Yggdrasil address.
 func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -222,7 +207,7 @@ func (o *Obj) DialContext(ctx context.Context, network, address string) (net.Con
 	return connection, nil
 }
 
-// Listen creates a TCP listener; closed automatically on Close().
+// Listen creates a TCP listener that is closed with the node.
 func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -237,7 +222,7 @@ func (o *Obj) Listen(network, address string) (net.Listener, error) {
 	return listener, nil
 }
 
-// ListenPacket creates a UDP listener; closed automatically on Close().
+// ListenPacket creates a packet listener that is closed with the node.
 func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -252,19 +237,19 @@ func (o *Obj) ListenPacket(network, address string) (net.PacketConn, error) {
 	return connection, nil
 }
 
-// Address — node IPv6 address in the 200::/7 range.
+// Address returns the node's IPv6 address in the 200::/7 range.
 func (o *Obj) Address() net.IP { return o.core.Address() }
 
-// Subnet — routable /64 subnet of the node in the 300::/7 range.
+// Subnet returns the node's routable /64 subnet in the 300::/7 range.
 func (o *Obj) Subnet() net.IPNet { return o.core.Subnet() }
 
-// PublicKey — ed25519 public key of the node.
+// PublicKey returns the node's Ed25519 public key.
 func (o *Obj) PublicKey() ed25519.PublicKey { return o.core.PublicKey() }
 
-// MTU — MTU of the node interface.
+// MTU returns the node interface MTU.
 func (o *Obj) MTU() uint64 { return o.core.MTU() }
 
-// AddPeer adds a peer; URI: "tcp://...", "quic://...", etc.
+// AddPeer adds a peer URI.
 func (o *Obj) AddPeer(uri string) error {
 	if o.isClosed() {
 		return ErrClosed
@@ -303,8 +288,7 @@ func (o *Obj) remapClosed(err error) error {
 
 // //
 
-// EnableSOCKS starts the SOCKS5 proxy with the given parameters.
-// Resolver is created automatically based on cfg.Nameserver
+// EnableSOCKS starts the SOCKS5 proxy and its configured resolver.
 func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 	if o.isClosed() {
 		return ErrClosed
@@ -347,15 +331,13 @@ func (o *Obj) EnableSOCKS(cfg SOCKSConfigObj) error {
 	if err != nil {
 		return errors.Join(err, nameResolver.Close())
 	}
-	// Close may have run its single SOCKS teardown before Start bound the listener.
-	// The closed signal precedes teardown, so a closed node here means we must
-	// tear the late listener down ourselves; surface any close error.
 	if o.isClosed() {
 		return errors.Join(ErrClosed, server.Close())
 	}
 	return nil
 }
 
+// DisableSOCKS stops the SOCKS5 proxy.
 func (o *Obj) DisableSOCKS() error {
 	if o.isClosed() {
 		return ErrClosed
@@ -387,7 +369,8 @@ func (o *Obj) SOCKSMaxConnections() int {
 
 // //
 
-// PeerManagerActive returns the current list of active peers; nil if the manager is not used
+// PeerManagerActive returns the active managed peers, or nil when the peer
+// manager is disabled.
 func (o *Obj) PeerManagerActive() []string {
 	if o.peerManager == nil {
 		return nil
@@ -395,7 +378,7 @@ func (o *Obj) PeerManagerActive() []string {
 	return o.peerManager.Active()
 }
 
-// PeerManagerOptimize triggers an unscheduled peer re-evaluation
+// PeerManagerOptimize triggers an unscheduled managed-peer evaluation.
 func (o *Obj) PeerManagerOptimize() error {
 	if o.isClosed() {
 		return ErrClosed
@@ -420,9 +403,8 @@ func (o *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*ninfo.AskResultO
 	return result, err
 }
 
-// AskAddr queries a remote node's NodeInfo by address string.
-// Supported formats: "<hex>.pk.ygg", "[ip6]:port", "ip6", raw 64-char hex
-// A partial result may accompany an error.
+// AskAddr queries remote NodeInfo by .pk.ygg name, IPv6 address, address with
+// port, or hexadecimal public key. A partial result may accompany an error.
 func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, error) {
 	if o.isClosed() {
 		return nil, ErrClosed
@@ -442,9 +424,6 @@ func (o *Obj) AskAddr(ctx context.Context, addr string) (*ninfo.AskResultObj, er
 // application's shutdown path.
 func (o *Obj) Close() error {
 	o.closeOnce.Do(func() {
-		// Raise the closed signal before teardown. EnableSOCKS synchronizes with
-		// SOCKS through the socks-layer mutex, so a listener bound concurrently
-		// with Close is guaranteed to be observed and torn down (no leak).
 		close(o.done)
 
 		dependents := []common.NamedCloseObj{

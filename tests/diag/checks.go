@@ -20,16 +20,13 @@ const (
 	defaultLoadStreams  = 1
 	defaultPayloadSize  = 256
 
-	// Upper bounds on caller-supplied parameters. They keep a single request
-	// from spawning excessive goroutines or allocating oversized payloads.
 	maxLoadStreams      = 64
 	maxLoadSeconds      = 60
-	maxLoadPayloadSize  = 1 << 20 // 1 MiB
-	maxCheckPayloadSize = 1 << 20 // 1 MiB
-	maxTimeoutMS        = 60_000  // 60s ceiling on per-operation deadlines
+	maxLoadPayloadSize  = 1 << 20
+	maxCheckPayloadSize = 1 << 20
+	maxTimeoutMS        = 60_000
 )
 
-// checkRequestObj describes a single echo check.
 type checkRequestObj struct {
 	Address   string `json:"address"`
 	Payload   string `json:"payload"`
@@ -37,7 +34,6 @@ type checkRequestObj struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-// checkResponseObj reports the result of a single echo check.
 type checkResponseObj struct {
 	OK         bool    `json:"ok"`
 	Network    string  `json:"network"`
@@ -49,7 +45,6 @@ type checkResponseObj struct {
 	Error      string  `json:"error,omitempty"`
 }
 
-// loadRequestObj describes a bounded synthetic load run.
 type loadRequestObj struct {
 	Address   string `json:"address"`
 	Size      int    `json:"size"`
@@ -58,7 +53,6 @@ type loadRequestObj struct {
 	TimeoutMS int    `json:"timeout_ms"`
 }
 
-// loadResponseObj reports aggregate counters for a load run.
 type loadResponseObj struct {
 	OK             bool    `json:"ok"`
 	Network        string  `json:"network"`
@@ -117,7 +111,6 @@ func normalizeLoad(req *loadRequestObj) {
 	if req.Streams <= 0 {
 		req.Streams = defaultLoadStreams
 	}
-	// Clamp down to bound goroutines, payload allocation, and run duration.
 	req.Size = clampInt(req.Size, maxLoadPayloadSize)
 	req.Seconds = clampInt(req.Seconds, maxLoadSeconds)
 	req.Streams = clampInt(req.Streams, maxLoadStreams)
@@ -313,7 +306,6 @@ func maxInt(a int, b int) int {
 	return b
 }
 
-// clampInt caps v at max, leaving smaller or non-positive values untouched.
 func clampInt(v int, max int) int {
 	if v > max {
 		return max

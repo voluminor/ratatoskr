@@ -5,9 +5,7 @@ import (
 	"sync"
 )
 
-// TaskGroupObj owns a cancellable set of background tasks. Go and Stop are
-// serialized so WaitGroup.Add can never race Wait, and Stop exposes one stable
-// completion channel to every waiter.
+// TaskGroupObj owns cancellable work and rejects new tasks after shutdown starts.
 type TaskGroupObj struct {
 	mu       sync.Mutex
 	ctx      context.Context
@@ -17,6 +15,8 @@ type TaskGroupObj struct {
 	stopping bool
 }
 
+// NewTaskGroup creates a task group derived from parent. A nil parent uses
+// context.Background.
 func NewTaskGroup(parent context.Context) *TaskGroupObj {
 	if parent == nil {
 		parent = context.Background()
@@ -29,6 +29,7 @@ func NewTaskGroup(parent context.Context) *TaskGroupObj {
 	}
 }
 
+// Context returns the context cancelled by Stop.
 func (g *TaskGroupObj) Context() context.Context { return g.ctx }
 
 // Go transfers ownership of fn to the group. It returns false once shutdown has
@@ -51,9 +52,8 @@ func (g *TaskGroupObj) Go(fn func(context.Context)) bool {
 	return true
 }
 
-// Do runs fn in the caller while registering it as owned work. The boolean is
-// false when shutdown has already started. It avoids a helper goroutine for
-// synchronous operations that Stop still needs to wait for.
+// Do runs fn in the caller and tracks it as owned work. The boolean is false
+// when shutdown has already started.
 func (g *TaskGroupObj) Do(fn func(context.Context) error) (error, bool) {
 	if fn == nil {
 		return nil, false
@@ -87,4 +87,5 @@ func (g *TaskGroupObj) Stop() <-chan struct{} {
 	return done
 }
 
+// Wait starts shutdown and blocks until every accepted task exits.
 func (g *TaskGroupObj) Wait() { <-g.Stop() }

@@ -51,7 +51,6 @@ func (m *mockSigilObj) Match(nodeInfo map[string]any) bool {
 	return true
 }
 
-// ParseParams extracts this mock's claimed keys from foreign NodeInfo.
 func (m *mockSigilObj) ParseParams(nodeInfo map[string]any) map[string]any {
 	out := make(map[string]any, len(m.params))
 	for _, k := range m.params {
@@ -80,7 +79,6 @@ func newMockSigil(name string, keys ...string) *mockSigilObj {
 	return &mockSigilObj{name: name, params: keys, data: data}
 }
 
-// cloneCountingSigilObj counts Clone calls across construction and parsing.
 type cloneCountingSigilObj struct {
 	*mockSigilObj
 	clones *atomic.Int64
@@ -88,8 +86,6 @@ type cloneCountingSigilObj struct {
 
 func (m *cloneCountingSigilObj) Clone() sigils.Interface {
 	m.clones.Add(1)
-	// Return a counting clone so the whole clone chain (sigil_core.Add stores a
-	// clone, Sigils() clones again) is observed by the same counter.
 	return &cloneCountingSigilObj{
 		mockSigilObj: &mockSigilObj{name: m.name, params: append([]string(nil), m.params...), data: map[string]any{}},
 		clones:       m.clones,

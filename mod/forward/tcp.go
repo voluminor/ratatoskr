@@ -30,7 +30,7 @@ type tcpStartObj struct {
 	target      func(TCPMappingObj) string
 }
 
-// ProxyTCPContext proxies TCP and unblocks both directions when ctx is cancelled.
+// ProxyTCPContext copies both directions and interrupts them when ctx is canceled.
 func ProxyTCPContext(ctx context.Context, c1, c2 net.Conn, closeTimeout time.Duration) {
 	proxyTCPContext(ctx, c1, c2, closeTimeout, -1)
 }
@@ -50,6 +50,7 @@ func proxyTCPContext(ctx context.Context, c1, c2 net.Conn, closeTimeout, idleTim
 	proxyTCP(c1, c2, closeTimeout, idleTimeout)
 }
 
+// ProxyTCP copies both directions with half-close support.
 func ProxyTCP(c1, c2 net.Conn, closeTimeout time.Duration) {
 	proxyTCP(c1, c2, closeTimeout, -1)
 }
@@ -150,8 +151,6 @@ func proxyTCP(c1, c2 net.Conn, closeTimeout, idleTimeout time.Duration) {
 	errCh := make(chan tcpCopyResultObj, 2)
 	var halfCloseArmed atomic.Bool
 	halfCloseActivity := make(chan struct{}, 1)
-	// Per-conn last-armed deadline; the shared gate re-arms only past the
-	// half-interval, cutting SetDeadline syscalls on the hot copy path.
 	var c1Deadline, c2Deadline common.DeadlineGateObj
 	activity := func() {
 		if idleTimeout > 0 {

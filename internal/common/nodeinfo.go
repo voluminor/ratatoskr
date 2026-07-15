@@ -9,7 +9,9 @@ import (
 const maxNodeInfoDepth = 64
 
 var (
-	ErrNodeInfoCycle   = errors.New("node info contains a cycle")
+	// ErrNodeInfoCycle reports a reference cycle in NodeInfo data.
+	ErrNodeInfoCycle = errors.New("node info contains a cycle")
+	// ErrNodeInfoTooDeep reports NodeInfo nested beyond 64 container levels.
 	ErrNodeInfoTooDeep = errors.New("node info exceeds maximum depth")
 )
 
@@ -19,9 +21,8 @@ type nodeInfoVisitObj struct {
 	ptr    uintptr
 }
 
-// CloneNodeInfo recursively copies the JSON-shaped maps and slices accepted by
-// Yggdrasil NodeInfo. It rejects cyclic and pathologically deep values instead
-// of risking unbounded recursion. Scalar values are immutable and returned as-is.
+// CloneNodeInfo copies NodeInfo containers without preserving aliases. It
+// rejects cycles and nesting deeper than 64 container levels.
 func CloneNodeInfo(src map[string]any) (map[string]any, error) {
 	cloned, err := cloneNodeInfoValue(reflect.ValueOf(src), 0, make(map[nodeInfoVisitObj]struct{}))
 	if err != nil {

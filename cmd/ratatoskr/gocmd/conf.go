@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hjson/hjson-go/v4"
 	cmdsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 	rsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/target/settings"
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
-	"gopkg.in/yaml.v3"
 )
+
+// // // // // // // // // //
 
 func confCmd(cfg *cmdsettings.GoConfObj) (bool, error) {
 	if cfg.Generate.Path != "" {
@@ -242,9 +242,6 @@ func marshalNodeConfig(cfg *yggconfig.NodeConfig, ext string) ([]byte, error) {
 	case ".conf":
 		data, err = hjson.MarshalWithOptions(cfg, hjson.DefaultOptions())
 	case ".yml":
-		// yaml.v3 does not consult KeyBytes.MarshalJSON and would render the
-		// private key as a sequence of integers. Bridge through JSON so custom
-		// config scalar encodings (notably the hex private key) are preserved.
 		var jsonValue any
 		data, err = json.Marshal(cfg)
 		if err == nil {

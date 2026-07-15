@@ -1,5 +1,4 @@
 #!/bin/sh
-# Generate an ephemeral no-TUN yggdrasil hub config and relay leaf-node peer traffic.
 set -eu
 
 CONF=/tmp/ygg.conf.json

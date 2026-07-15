@@ -20,12 +20,9 @@ import (
 // // // // // // // // // //
 
 var (
-	// 64 hex chars
-	reHexKey = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
-	// [ip6]:port
+	reHexKey      = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 	reBracketIPv6 = regexp.MustCompile(`^\[(?:[0-9a-fA-F:]+)\]:\d{1,5}$`)
-	// bare ipv6 (must contain at least one colon)
-	reBareIPv6 = regexp.MustCompile(`^[0-9a-fA-F]*:[0-9a-fA-F:]*$`)
+	reBareIPv6    = regexp.MustCompile(`^[0-9a-fA-F]*:[0-9a-fA-F:]*$`)
 )
 
 // // // // // // // // // //
@@ -88,9 +85,6 @@ const maxLookupInterval = time.Second
 
 // //
 
-// resolveIPv6 maps a yggdrasil IPv6 to a public key. Concurrent callers for the
-// same canonical address share one lookup/poll flight; caller cancellation only
-// detaches that waiter and never cancels work used by the others.
 func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey, error) {
 	callerCtx := ensureCallerContext(ctx)
 	if err := callerCtx.Err(); err != nil {
@@ -197,9 +191,6 @@ func (obj *Obj) resolveIPv6Flight(ctx context.Context, addr netip.Addr, partial 
 			}
 			return nil, ErrUnresolvableAddr
 		case <-timer.C:
-			// Direct peers and sessions are stable during this short lookup and were
-			// scanned once above. DHT lookup results arrive in Paths, so only that
-			// changing snapshot belongs in the polling hot path.
 			if key := obj.findKeyByIP(ip, false); key != nil {
 				return key, nil
 			}
@@ -238,9 +229,6 @@ func (obj *Obj) findKeyByIP(ip net.IP, includeDirect bool) ed25519.PublicKey {
 	return nil
 }
 
-// yggLookupKey validates either a node address (200::/7) or a routable node
-// subnet address (300::/7). Subnet hosts are canonicalized to their /64 so all
-// literals inside the same routed subnet share one lookup flight.
 func yggLookupKey(addr netip.Addr) (ed25519.PublicKey, netip.Addr, bool) {
 	raw := addr.As16()
 	var nodeAddr yggaddr.Address
@@ -261,11 +249,9 @@ func yggLookupKey(addr netip.Addr) (ed25519.PublicKey, netip.Addr, bool) {
 // //
 
 func extractIPv6(addr string) net.IP {
-	// try [ip6]:port
 	if host, _, err := net.SplitHostPort(addr); err == nil {
 		return net.ParseIP(host)
 	}
-	// try bare ip6
 	return net.ParseIP(addr)
 }
 

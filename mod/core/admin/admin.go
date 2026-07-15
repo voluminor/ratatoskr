@@ -1,6 +1,4 @@
-// Package admin exposes the intentionally thin Yggdrasil admin-socket adapter
-// used by mod/core. It inherits the upstream implementation's unsafe lifecycle,
-// concurrency, resource-management, and process-exit behavior.
+// Package admin provides the upstream Yggdrasil admin-socket adapter used by core.
 package admin
 
 import (
@@ -13,21 +11,22 @@ import (
 
 // ConfigObj contains upstream admin-socket construction parameters.
 type ConfigObj struct {
-	Core    *yggcore.Core
-	Logger  yggcore.Logger
+	// Core is the Yggdrasil core that owns the handlers.
+	Core *yggcore.Core
+	// Logger receives upstream admin logs.
+	Logger yggcore.Logger
+	// Address is an upstream unix:// or tcp:// listen address.
 	Address string
 }
 
 // //
 
-// Obj is a direct lifecycle wrapper around the upstream admin socket.
+// Obj wraps an upstream Yggdrasil admin socket.
 type Obj struct {
 	socket *yggadmin.AdminSocket
 }
 
 // New starts the upstream admin socket and registers its standard handlers.
-// The upstream listener starts before handler registration completes and may
-// call os.Exit(1) on bind or Unix-socket cleanup failures.
 func New(cfg ConfigObj) (*Obj, error) {
 	socket, err := yggadmin.New(cfg.Core, cfg.Logger, yggadmin.ListenAddress(cfg.Address))
 	if err != nil || socket == nil {
@@ -39,9 +38,7 @@ func New(cfg ConfigObj) (*Obj, error) {
 
 // //
 
-// AttachMulticast registers the upstream multicast diagnostic handler. It is
-// unsafe while the admin socket is serving because upstream mutates its handler
-// map without synchronization.
+// AttachMulticast registers the upstream multicast diagnostic handler.
 func (o *Obj) AttachMulticast(component *multicast.Multicast) {
 	if o == nil || o.socket == nil || component == nil {
 		return
@@ -49,8 +46,7 @@ func (o *Obj) AttachMulticast(component *multicast.Multicast) {
 	component.SetupAdminHandlers(o.socket)
 }
 
-// Stop delegates to the upstream socket. Upstream closes the listener but does
-// not close already accepted keepalive connections.
+// Stop closes the upstream listener but not accepted keepalive connections.
 func (o *Obj) Stop() error {
 	if o == nil || o.socket == nil {
 		return nil

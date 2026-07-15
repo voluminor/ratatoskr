@@ -1,128 +1,149 @@
-# ratatoskr
+# Ratatoskr CLI
 
-## Build
+This module contains a generated-settings CLI plus key, configuration, NodeInfo, peer, forwarding, and probe utilities.
+
+## Current status
+
+The CLI does not build against the current module APIs:
+
+```text
+gocmd/forward.go: assignment mismatch: 1 variable but forward.New returns 2 values
+gocmd/trace.go: too many arguments in call to probe.New
+```
+
+`gsettings` and generated `target/settings` compile independently, but the executable and `gocmd` package do not. The
+commands below describe the intended interface and must be revalidated after those integrations are repaired.
+
+## Contents
+
+- [Architecture](#architecture)
+- [Generation and build](#generation-and-build)
+- [Runtime configuration mode](#runtime-configuration-mode)
+- [Utility command mode](#utility-command-mode)
+- [Security and output](#security-and-output)
+- [Subpackages](#subpackages)
+
+## Architecture
+
+```mermaid
+flowchart TD
+    main["main"]
+    detect["detect -go.* arguments"]
+    runtime["generated target/settings"]
+    command["gsettings parser"]
+    execute["gocmd executor"]
+    main --> detect
+    detect -->|no utility flag| runtime
+    detect -->|- go . * present| command
+    command --> execute
+```
+
+Runtime configuration flags and `-go.*` utility flags are separate modes and cannot be combined in one invocation.
+
+## Generation and build
+
+The configuration schema lives in `yml/config`. `go generate` recreates `target/settings` through `goconfgen`; generated
+files must not be edited manually.
+
+After repairing the two API mismatches:
 
 ```bash
+cd cmd/ratatoskr
 go generate .
-go build -ldflags="-s -w" -trimpath -o ratatoskr .
+GOWORK=off go test ./...
+GOWORK=off go build -trimpath -ldflags='-s -w' -o ../../tmp/ratatoskr-cli .
 ```
 
-Generated runtime settings live under the ignored `target/` directory, so generation is required after a fresh clone.
+The generator version defaults to `latest` by project policy and may be overridden through the generator's supported
+environment expansion.
 
-## Runtime configuration and help
+## Runtime configuration mode
 
-Without a `-go.*` command, the CLI loads defaults, optionally merges a YAML/JSON/HJSON file and flag overrides,
-validates the result, and prints the effective JSON configuration:
+Without `-go.*`, the CLI loads defaults, optionally merges a YAML, JSON, or HJSON configuration and flag overrides,
+validates it, and prints effective JSON:
 
 ```bash
-./ratatoskr -config ./ratatoskr-config.yml -yggdrasil.if.mtu 65535
+../../tmp/ratatoskr-cli \
+  -config ./ratatoskr-config.yml \
+  -yggdrasil.if.mtu 65535
 ```
+
+Show generated flag help:
 
 ```bash
-./ratatoskr -h
+../../tmp/ratatoskr-cli -h
 ```
 
-Command flags (`-go.*`) and runtime configuration flags are separate modes and cannot be mixed.
+## Utility command mode
 
-## Key utilities
-
-### Generate vanity key
+Generate a vanity key for 10 seconds:
 
 ```bash
-./ratatoskr -go.key.gen 10s
+../../tmp/ratatoskr-cli -go.key.gen 10s
 ```
 
-### Show address for a key
+Show the address for a hexadecimal key or PEM path:
 
 ```bash
-./ratatoskr -go.key.addr <hex-private-128|hex-public-64|path-to-pem>
+../../tmp/ratatoskr-cli -go.key.addr key.pem
 ```
 
-### Convert hex key to PEM
+Generate configuration:
 
 ```bash
-./ratatoskr -go.key.to_pem key.pem -go.key.addr 5623515376dcafe397e79de5a5ba125adc71beb36f9659a189ee7cb8640855580000278fa1ad5448ce0217a6174f7894acdd921d1021e05758da518aaf73ad80
+../../tmp/ratatoskr-cli \
+  -go.conf.generate.path ../../tmp/config \
+  -go.conf.generate.preset medium \
+  -go.conf.generate.format yml
 ```
 
-### Convert PEM to hex key
+Query NodeInfo:
 
 ```bash
-./ratatoskr -go.key.from_pem key.pem
+../../tmp/ratatoskr-cli \
+  -go.ask.addr '<public-key>.pk.ygg' \
+  -go.ask.peer 'tls://peer.example:443' \
+  -go.ask.timeout 10s \
+  -go.ask.format json
 ```
 
-## Configuration utilities
-
-### Generate default config
+Inspect peers:
 
 ```bash
-./ratatoskr -go.conf.generate.path ./
+../../tmp/ratatoskr-cli \
+  -go.peer_info.peer 'tls://peer.example:443' \
+  -go.peer_info.format json
 ```
+
+Forward local TCP after the forward integration is repaired:
 
 ```bash
-./ratatoskr -go.conf.generate.path ./ -go.conf.generate.preset medium
+../../tmp/ratatoskr-cli \
+  -go.forward.from '127.0.0.1:8080' \
+  -go.forward.to '[200::1]:80' \
+  -go.forward.proto tcp \
+  -go.forward.peer 'tls://peer.example:443'
 ```
+
+Trace after the probe integration is repaired:
 
 ```bash
-./ratatoskr -go.conf.generate.path ./ -go.conf.generate.preset full -go.conf.generate.format conf
+../../tmp/ratatoskr-cli \
+  -go.probe.trace '<64-character-public-key>' \
+  -go.probe.peer 'tls://peer.example:443'
 ```
 
-### Import Yggdrasil config
+## Security and output
 
-```bash
-./ratatoskr -go.conf.import.from /etc/yggdrasil/yggdrasil.conf -go.conf.import.to /etc/ratatoskr
-```
+- Generated and converted private-key files use mode `0600`.
+- The utility logger suppresses debug/info messages and writes warnings/errors to stderr.
+- Forwarding creates listeners from caller-supplied addresses; binding a wildcard exposes the service accordingly.
+- Utility commands connect to caller-supplied peer URIs and should not be run with untrusted configuration.
+- Generated configuration output can contain private key material.
 
-### Export to Yggdrasil config
+## Subpackages
 
-```bash
-./ratatoskr -go.conf.export.from /etc/ratatoskr/ratatoskr-config.yml -go.conf.export.to /etc/yggdrasil
-```
-
-Generated and exported files use mode `0600`. The selected `yml`, `json`, or `conf` format controls both the extension
-and the actual encoding.
-
-## Ask
-
-Query remote node's NodeInfo by address:
-
-```bash
-./ratatoskr -go.ask.addr [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.ask.addr 200:abcd::1 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.format json
-```
-
-```bash
-./ratatoskr -go.ask.addr a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.timeout 10s
-```
-
-## Peer info
-
-```bash
-./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
-```
-
-```bash
-./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
-```
-
-## Port forwarding
-
-```bash
-./ratatoskr -go.forward.from 127.0.0.1:8080 -go.forward.to [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.forward.peer  tcp://yggdrasil.sunsung.fun:4442
-```
-
-## Probe
-
-```bash
-./ratatoskr -go.probe.trace a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.probe.scan -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.probe.ping a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
-```
+- [gsettings](gsettings/README.md): utility flag parsing and typed command values.
+- [gocmd](gocmd/README.md): utility execution and current API blockers.
+- `target/settings`: third-party generated runtime settings. It is recreated by `go generate` and intentionally has no
+  hand-written files.

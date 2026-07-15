@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"time"
 )
 
 // // // // // // // // // //
@@ -20,31 +19,25 @@ const (
 )
 
 //go:embed template.tmpl
-var template_text string
+var templateText string
 
-//
+// //
 
-// SigilObj describes one discovered sigil package.
-// Alias is the folder name, which also becomes the import alias and the
-// package identifier used to qualify every generated reference. Name is the
-// sigName literal from values.go, kept only for duplicate detection.
-type SigilObj struct {
+type sigilObj struct {
 	Alias string
 	Name  string
 }
 
-// ImportObj is a single aliased import line for the generated file.
-type ImportObj struct {
+type importObj struct {
 	Alias string
 	Path  string
 }
 
-type TemplateObj struct {
-	GenerationTime string
-	PackageName    string
-	SigilsImport   string
-	Imports        []ImportObj
-	Sigils         []SigilObj
+type templateObj struct {
+	PackageName  string
+	SigilsImport string
+	Imports      []importObj
+	Sigils       []sigilObj
 }
 
 var reSigName = regexp.MustCompile(`(?m)^const sigName\s*=\s*"([^"]+)"`)
@@ -75,9 +68,7 @@ func extractSigName(path string) (string, error) {
 	return string(m[1]), nil
 }
 
-// checkDuplicates fails when two folders declare the same sigName, which would
-// otherwise produce colliding map keys in the generated file.
-func checkDuplicates(list []SigilObj) error {
+func checkDuplicates(list []sigilObj) error {
 	seen := make(map[string]string, len(list))
 	for _, s := range list {
 		if prev, ok := seen[s.Name]; ok {
@@ -96,7 +87,7 @@ func run() error {
 		return fmt.Errorf("read sigils directory: %w", err)
 	}
 
-	var found []SigilObj
+	var found []sigilObj
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -113,7 +104,7 @@ func run() error {
 			continue
 		}
 
-		found = append(found, SigilObj{Alias: e.Name(), Name: name})
+		found = append(found, sigilObj{Alias: e.Name(), Name: name})
 	}
 
 	if err := checkDuplicates(found); err != nil {
@@ -124,25 +115,22 @@ func run() error {
 		return found[i].Name < found[j].Name
 	})
 
-	//
-
-	imports := make([]ImportObj, 0, len(found))
+	imports := make([]importObj, 0, len(found))
 	for _, s := range found {
-		imports = append(imports, ImportObj{
+		imports = append(imports, importObj{
 			Alias: s.Alias,
 			Path:  modulePath + "/mod/sigils/" + s.Alias,
 		})
 	}
 
-	data := &TemplateObj{
-		GenerationTime: time.Now().Format(time.RFC3339),
-		PackageName:    packageName,
-		SigilsImport:   modulePath + "/mod/sigils",
-		Imports:        imports,
-		Sigils:         found,
+	data := &templateObj{
+		PackageName:  packageName,
+		SigilsImport: modulePath + "/mod/sigils",
+		Imports:      imports,
+		Sigils:       found,
 	}
 
-	if err := writeFileFromTemplate(filepath.Join("target", fileName), template_text, data); err != nil {
+	if err := writeFileFromTemplate(filepath.Join("target", fileName), templateText, data); err != nil {
 		return fmt.Errorf("write generated file: %w", err)
 	}
 
