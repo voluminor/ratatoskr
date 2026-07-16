@@ -1,14 +1,29 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-scripts/git.sh --add_commit
-scripts/git.sh --add_push
+set -Eeuo pipefail
 
-cd ../
+run_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root_path="$(cd "$run_dir/.." && pwd)"
+gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
 
-mkdir -p target
-mkdir -p tmp
+cd "$root_path"
 
+mkdir -p target tmp
+
+go install github.com/amazing-generators/gometagen/cmd/gometagen@latest
+go install github.com/amazing-generators/godepsgen/cmd/godepsgen@latest
+go install github.com/amazing-generators/goconfgen/cmd/goconfgen@latest
+
+go run "$gometagen" git add-commit-hook -source "$root_path"
+go run "$gometagen" git add-push-hook -source "$root_path"
 
 go work sync
 go generate .
-./_run/scripts/go_tidy_all.sh
+
+go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
+  [ -n "$dir" ] || continue
+  echo "  -> $dir"
+  go -C "$dir" mod tidy
+done
+
+go generate .

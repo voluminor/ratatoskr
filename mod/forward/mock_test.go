@@ -2,18 +2,18 @@ package forward
 
 import (
 	"context"
-	"crypto/ed25519"
 	"net"
 	"testing"
+	"time"
 
-	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
+	"github.com/voluminor/ratatoskr/internal/common"
 )
 
 // // // // // // // // // //
 
-// mockNodeObj — core.Interface backed by real loopback TCP/UDP
 type mockNodeObj struct {
 	addr net.IP
+	mtu  uint64
 }
 
 func (m *mockNodeObj) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
@@ -36,48 +36,56 @@ func (m *mockNodeObj) Address() net.IP {
 	return net.ParseIP("127.0.0.1")
 }
 
-func (m *mockNodeObj) Subnet() net.IPNet            { return net.IPNet{} }
-func (m *mockNodeObj) PublicKey() ed25519.PublicKey { return nil }
-func (m *mockNodeObj) MTU() uint64                  { return 65535 }
-func (m *mockNodeObj) AddPeer(_ string) error       { return nil }
-func (m *mockNodeObj) RemovePeer(_ string) error    { return nil }
-func (m *mockNodeObj) GetPeers() []yggcore.PeerInfo { return nil }
-func (m *mockNodeObj) EnableMulticast() error       { return nil }
-func (m *mockNodeObj) DisableMulticast() error      { return nil }
-func (m *mockNodeObj) EnableAdmin(_ string) error   { return nil }
-func (m *mockNodeObj) DisableAdmin() error          { return nil }
-func (m *mockNodeObj) Close() error                 { return nil }
+func (m *mockNodeObj) MTU() uint64 {
+	if m.mtu > 0 {
+		return m.mtu
+	}
+	return 65535
+}
 
 // //
 
-// noopLogObj — yggcore.Logger that discards all messages
-type noopLogObj struct{}
-
-func (noopLogObj) Printf(string, ...interface{}) {}
-func (noopLogObj) Println(...interface{})        {}
-func (noopLogObj) Infof(string, ...interface{})  {}
-func (noopLogObj) Infoln(...interface{})         {}
-func (noopLogObj) Warnf(string, ...interface{})  {}
-func (noopLogObj) Warnln(...interface{})         {}
-func (noopLogObj) Errorf(string, ...interface{}) {}
-func (noopLogObj) Errorln(...interface{})        {}
-func (noopLogObj) Debugf(string, ...interface{}) {}
-func (noopLogObj) Debugln(...interface{})        {}
-func (noopLogObj) Traceln(...interface{})        {}
+type noopLogObj = common.DiscardLoggerObj
 
 // //
 
-// checkIPv6 skips the test if IPv6 loopback is unavailable
+func newBareTestObj(node NetworkInterface, timeout time.Duration, cfg ConfigObj) *Obj {
+	cfg.Logger = noopLogObj{}
+	cfg.Node = node
+	cfg.UDPTimeout = timeout
+	obj := &Obj{}
+	obj.applyConfig(cfg)
+	return obj
+}
+
+func newRunningTestObj(t *testing.T, node NetworkInterface, timeout time.Duration, cfg ConfigObj) *Obj {
+	t.Helper()
+	cfg.Logger = noopLogObj{}
+	cfg.Node = node
+	cfg.UDPTimeout = timeout
+	obj, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := obj.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	return obj
+}
+
+// //
+
 func checkIPv6(t *testing.T) {
 	t.Helper()
 	ln, err := net.Listen("tcp6", "[::1]:0")
 	if err != nil {
 		t.Skip("IPv6 not available on this host")
 	}
-	ln.Close()
+	_ = ln.Close()
 }
 
-// echoTCPServer6 starts a TCP echo server on [::1]:0 and returns its address
 func echoTCPServer6(t *testing.T) *net.TCPAddr {
 	t.Helper()
 	checkIPv6(t)
@@ -85,7 +93,7 @@ func echoTCPServer6(t *testing.T) *net.TCPAddr {
 	if err != nil {
 		t.Fatalf("echoTCPServer6: %v", err)
 	}
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() { _ = ln.Close() })
 	go func() {
 		for {
 			c, err := ln.Accept()
@@ -99,7 +107,7 @@ func echoTCPServer6(t *testing.T) *net.TCPAddr {
 }
 
 func echoConn(c net.Conn) {
-	defer c.Close()
+	defer func() { _ = c.Close() }()
 	buf := make([]byte, 4096)
 	for {
 		n, err := c.Read(buf)
@@ -112,7 +120,6 @@ func echoConn(c net.Conn) {
 	}
 }
 
-// freePort returns an unused TCP port on the given IP
 func freePort(t *testing.T, ip string) int {
 	t.Helper()
 	network := "tcp4"
@@ -127,6 +134,6 @@ func freePort(t *testing.T, ip string) int {
 		}
 	}
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
+	_ = ln.Close()
 	return port
 }

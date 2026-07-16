@@ -1,53 +1,35 @@
 // Code generated using '_generate/sigils'; DO NOT EDIT.
-// Generation time: {{.GenerationTime}}
 
-package {{.PackageName}}
+package {{ .PackageName }}
 
-{{- if gt (len .ImportsArr) 0 }}
-    {{- if eq (len .ImportsArr) 1 }}
-        {{- $imp := index .ImportsArr 0 }}
-        {{- $parts := split $imp " " }}
-        {{- if gt (len $parts) 1 }}
-            import {{ index $parts 0 }} "{{ index $parts 1 }}"
-        {{- else }}
-            import "{{ index $parts 0 }}"
-        {{- end }}
-    {{- else }}
-        import (
-        {{- range .ImportsArr }}
-            {{- $parts := split . " " }}
-            {{- if gt (len $parts) 1 }}
-                {{ index $parts 0 }} "{{ index $parts 1 }}"
-            {{- else }}
-                "{{ . }}"
-            {{- end }}
-        {{- end }}
-        )
-    {{- end }}
+import (
+"{{ .SigilsImport }}"
+{{- range .Imports }}
+    {{ .Alias }} "{{ .Path }}"
 {{- end }}
+)
 
-// // // // // // // //
+// // // // // // // // // //
 
-var GlobalSigilKeysMap = map[string]func() []string{
+var globalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, error){
 {{- range .Sigils }}
-    {{ .Name }}.Name(): {{ .Alias }}.Keys,
+    {{ .Alias }}.Name(): func(m map[string]any) (sigils.Interface, error) { return {{ .Alias }}.Parse(m) },
 {{- end }}
 }
 
-var GlobalSigilParseParamsMap = map[string]func(map[string]any) map[string]any{
-{{- range .Sigils }}
-    {{ .Name }}.Name(): {{ .Alias }}.ParseParams,
-{{- end }}
+// // // // // // // // // //
+
+// Parse returns the parser for a built-in sigil; ok reports its presence.
+func Parse(name string) (func(map[string]any) (sigils.Interface, error), bool) {
+fn, ok := globalSigilParseMap[name]
+return fn, ok
 }
 
-var GlobalSigilMatchMap = map[string]func(map[string]any) bool{
+// Sigils returns a new name-to-parser map of all built-in sigils; the caller may modify it freely.
+func Sigils() map[string]func(map[string]any) (sigils.Interface, error) {
+return map[string]func(map[string]any) (sigils.Interface, error){
 {{- range .Sigils }}
-    {{ .Name }}.Name(): {{ .Alias }}.Match,
+    {{ .Alias }}.Name(): func(m map[string]any) (sigils.Interface, error) { return {{ .Alias }}.Parse(m) },
 {{- end }}
 }
-
-var GlobalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, error){
-{{- range .Sigils }}
-    {{ .Name }}.Name(): func(m map[string]any) (sigils.Interface, error) { return {{ .Alias }}.Parse(m) },
-{{- end }}
 }

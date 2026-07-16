@@ -7,9 +7,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"time"
-
-	dep "github.com/voluminor/ratatoskr/_generate"
 )
 
 // // // // // // // // // //
@@ -22,83 +19,28 @@ const (
 )
 
 //go:embed template.tmpl
-var template_text string
-
-//
-
-type SigilObj struct {
-	Name  string
-	Dir   string
-	Alias string
-}
-
-type TemplateObj struct {
-	GenerationTime string
-	PackageName    string
-	ImportsArr     []string
-	Sigils         []SigilObj
-}
-
-var reSigName = regexp.MustCompile(`(?m)^const sigName\s*=\s*"([^"]+)"`)
+var templateText string
 
 // //
 
-func main() {
-	entries, err := os.ReadDir(sigilsDir)
-	if err != nil {
-		fmt.Println("Error reading sigils directory:", err)
-		return
-	}
-
-	var found []SigilObj
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-
-		dir := filepath.Join(sigilsDir, e.Name())
-		if !hasRequiredFiles(dir) {
-			continue
-		}
-
-		name, err := extractSigName(filepath.Join(dir, "values.go"))
-		if err != nil {
-			fmt.Printf("Error extracting sigName from %s: %s\n", dir, err)
-			continue
-		}
-
-		found = append(found, SigilObj{
-			Name:  name,
-			Dir:   e.Name(),
-			Alias: e.Name(),
-		})
-	}
-
-	sort.Slice(found, func(i, j int) bool {
-		return found[i].Name < found[j].Name
-	})
-
-	//
-
-	imports := []string{
-		modulePath + "/mod/sigils",
-	}
-	for _, s := range found {
-		imports = append(imports, modulePath+"/mod/sigils/"+s.Dir)
-	}
-
-	data := &TemplateObj{
-		GenerationTime: time.Now().Format(time.RFC3339),
-		PackageName:    packageName,
-		ImportsArr:     imports,
-		Sigils:         found,
-	}
-
-	err = dep.WriteFileFromTemplate(filepath.Join("target", fileName), template_text, data)
-	if err != nil {
-		fmt.Println("Error saving generated file:", err)
-	}
+type sigilObj struct {
+	Alias string
+	Name  string
 }
+
+type importObj struct {
+	Alias string
+	Path  string
+}
+
+type templateObj struct {
+	PackageName  string
+	SigilsImport string
+	Imports      []importObj
+	Sigils       []sigilObj
+}
+
+var reSigName = regexp.MustCompile(`(?m)^const sigName\s*=\s*"([^"]+)"`)
 
 // //
 
@@ -120,8 +62,84 @@ func extractSigName(path string) (string, error) {
 
 	m := reSigName.FindSubmatch(data)
 	if m == nil {
-		return "", fmt.Errorf("sigName not found in %s", path)
+		return "", fmt.Errorf("top-level `const sigName = \"...\"` not found in %s", path)
 	}
 
 	return string(m[1]), nil
+}
+
+func checkDuplicates(list []sigilObj) error {
+	seen := make(map[string]string, len(list))
+	for _, s := range list {
+		if prev, ok := seen[s.Name]; ok {
+			return fmt.Errorf("duplicate sigName %q in folders %q and %q", s.Name, prev, s.Alias)
+		}
+		seen[s.Name] = s.Alias
+	}
+	return nil
+}
+
+// //
+
+func run() error {
+	entries, err := os.ReadDir(sigilsDir)
+	if err != nil {
+		return fmt.Errorf("read sigils directory: %w", err)
+	}
+
+	var found []sigilObj
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+
+		dir := filepath.Join(sigilsDir, e.Name())
+		if !hasRequiredFiles(dir) {
+			continue
+		}
+
+		name, err := extractSigName(filepath.Join(dir, "values.go"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: skipping %s: %s\n", dir, err)
+			continue
+		}
+
+		found = append(found, sigilObj{Alias: e.Name(), Name: name})
+	}
+
+	if err := checkDuplicates(found); err != nil {
+		return err
+	}
+
+	sort.Slice(found, func(i, j int) bool {
+		return found[i].Name < found[j].Name
+	})
+
+	imports := make([]importObj, 0, len(found))
+	for _, s := range found {
+		imports = append(imports, importObj{
+			Alias: s.Alias,
+			Path:  modulePath + "/mod/sigils/" + s.Alias,
+		})
+	}
+
+	data := &templateObj{
+		PackageName:  packageName,
+		SigilsImport: modulePath + "/mod/sigils",
+		Imports:      imports,
+		Sigils:       found,
+	}
+
+	if err := writeFileFromTemplate(filepath.Join("target", fileName), templateText, data); err != nil {
+		return fmt.Errorf("write generated file: %w", err)
+	}
+
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
+	}
 }

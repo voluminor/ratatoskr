@@ -13,18 +13,25 @@ import (
 
 // SoftwareObj holds build metadata exposed when NodeInfoPrivacy is off.
 type SoftwareObj struct {
-	Name     string
-	Version  string
+	// Name is the remote build name.
+	Name string
+	// Version is the remote build version.
+	Version string
+	// Platform is the remote operating-system identifier.
 	Platform string
-	Arch     string
+	// Arch is the remote architecture identifier.
+	Arch string
 }
 
 // //
 
 // AskResultObj is the result of a single getNodeInfo request.
 type AskResultObj struct {
-	RTT      time.Duration
-	Node     *ParsedObj
+	// RTT is the duration of the successful upstream request.
+	RTT time.Duration
+	// Node is the parsed remote NodeInfo.
+	Node *ParsedObj
+	// Software is nil when no build metadata was exposed.
 	Software *SoftwareObj
 }
 
@@ -35,18 +42,9 @@ const (
 	keyBuildVersion  = "buildversion"
 	keyBuildPlatform = "buildplatform"
 	keyBuildArch     = "buildarch"
+
+	maxNodeInfoBytes = 16 * 1024
 )
-
-// //
-
-type adminCaptureObj struct {
-	handlers map[string]yggcore.AddHandlerFunc
-}
-
-func (a *adminCaptureObj) AddHandler(name, _ string, _ []string, fn yggcore.AddHandlerFunc) error {
-	a.handlers[name] = fn
-	return nil
-}
 
 // //
 
@@ -64,8 +62,8 @@ func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
 		return nil, ErrUnexpectedResponse
 	}
 
-	for _, msg := range resp {
-		return msg, nil
+	for _, v := range resp {
+		return v, nil
 	}
 	return nil, ErrEmptyResponse
 }
@@ -73,6 +71,9 @@ func (obj *Obj) callNodeInfo(key [32]byte) (json.RawMessage, error) {
 // //
 
 func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskResultObj, error) {
+	if len(raw) > maxNodeInfoBytes {
+		return nil, fmt.Errorf("%w: %d bytes", ErrNodeInfoTooLarge, len(raw))
+	}
 	var nodeInfo map[string]any
 	if err := json.Unmarshal(raw, &nodeInfo); err != nil {
 		return nil, fmt.Errorf("ninfo: failed to unmarshal nodeinfo: %w", err)
@@ -80,7 +81,7 @@ func (obj *Obj) parseAskResponse(raw json.RawMessage, rtt time.Duration) (*AskRe
 
 	result := &AskResultObj{
 		RTT:  rtt,
-		Node: Parse(nodeInfo, obj.sigilSlice()...),
+		Node: Parse(nodeInfo, obj.sigils...),
 	}
 
 	result.Software = extractSoftware(result.Node.Extra)

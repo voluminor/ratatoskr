@@ -12,13 +12,37 @@ import (
 
 // ParsedObj holds the result of parsing foreign NodeInfo.
 type ParsedObj struct {
+	// Version is the parsed ratatoskr metadata version.
 	Version string
-	Sigils  map[string]sigils.Interface
-	Extra   map[string]any
+	// Sigils contains metadata parsed by known sigils.
+	Sigils map[string]sigils.Interface
+	// SigilNames preserves valid metadata names that this build cannot parse.
+	SigilNames []string
+	// Extra contains unclaimed NodeInfo fields.
+	Extra map[string]any
 }
 
-// NodeInfo reassembles the parsed data back into a map[string]any
-// suitable for yggdrasil NodeInfo.
+func (p *ParsedObj) sigilNames() []string {
+	seen := make(map[string]struct{}, len(p.SigilNames)+len(p.Sigils))
+	names := make([]string, 0, len(p.SigilNames)+len(p.Sigils))
+	for _, name := range p.SigilNames {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	for name := range p.Sigils {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names
+}
+
+// NodeInfo reassembles the parsed fields as Yggdrasil NodeInfo.
 func (p *ParsedObj) NodeInfo() map[string]any {
 	out := make(map[string]any, len(p.Extra)+len(p.Sigils)+1)
 	for k, v := range p.Extra {
@@ -30,7 +54,7 @@ func (p *ParsedObj) NodeInfo() map[string]any {
 		}
 	}
 	if len(p.Version) > 0 {
-		out[target.GlobalName] = sigil_core.CompileInfo(p.Sigils)
+		out[target.Name] = sigil_core.CompileInfoNames(p.sigilNames(), p.Version)
 	}
 	return out
 }
@@ -43,11 +67,7 @@ func (p *ParsedObj) String() string {
 
 // //
 
-// Parse inspects arbitrary NodeInfo from yggdrasil.
-// If the map contains a valid ratatoskr metadata key, sigils are extracted
-// using built-in parsers from target.GlobalSigilParseMap merged with
-// user-provided sg (user sigils override built-in on name collision).
-// Parsed keys are removed from the remaining map returned in Extra.
+// Parse separates known sigils from unclaimed Yggdrasil NodeInfo fields.
 func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	result := &ParsedObj{
 		Extra: make(map[string]any, len(nodeInfo)),
@@ -57,7 +77,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		result.Extra[k] = v
 	}
 
-	raw, ok := result.Extra[target.GlobalName]
+	raw, ok := result.Extra[target.Name]
 	if !ok {
 		return result
 	}
@@ -72,26 +92,26 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	}
 
 	result.Version = ver
-	delete(result.Extra, target.GlobalName)
+	result.SigilNames = append([]string(nil), sigilsArr...)
+	delete(result.Extra, target.Name)
 
-	// //
-
-	parsers := make(map[string]func(map[string]any) (sigils.Interface, error), len(target.GlobalSigilParseMap))
-	for name, fn := range target.GlobalSigilParseMap {
-		parsers[name] = fn
-	}
-
-	userKeys := make(map[string]func() []string, len(sg))
+	userParsers := make(map[string]func(map[string]any) (sigils.Interface, error), len(sg))
 	for _, s := range sg {
+		if s == nil {
+			continue
+		}
 		name := s.GetName()
-		parsers[name] = wrapUserSigil(s)
-		userKeys[name] = s.GetParams
+		if reservedSigilName(name) {
+			continue
+		}
+		userParsers[name] = wrapUserSigil(s)
 	}
-
-	// //
 
 	for _, name := range sigilsArr {
-		fn, ok := parsers[name]
+		fn, ok := target.Parse(name)
+		if !ok {
+			fn, ok = userParsers[name]
+		}
 		if !ok {
 			continue
 		}
@@ -106,11 +126,7 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 		}
 		result.Sigils[name] = parsed
 
-		keys := parsed.GetParams
-		if ukFn, ok := userKeys[name]; ok {
-			keys = ukFn
-		}
-		for _, key := range keys() {
+		for _, key := range parsed.GetParams() {
 			delete(result.Extra, key)
 		}
 	}
@@ -118,18 +134,16 @@ func Parse(nodeInfo map[string]any, sg ...sigils.Interface) *ParsedObj {
 	return result
 }
 
-// //
-
 func wrapUserSigil(s sigils.Interface) func(map[string]any) (sigils.Interface, error) {
 	return func(m map[string]any) (sigils.Interface, error) {
-		if !s.Match(m) {
+		c := s.Clone()
+		if c == nil {
 			return nil, nil
 		}
-		c := s.Clone()
-		_, err := c.SetParams(c.ParseParams(m))
-		if err != nil {
-			return nil, err
+		if !c.Match(m) {
+			return nil, nil
 		}
+		c.ParseParams(m)
 		return c, nil
 	}
 }

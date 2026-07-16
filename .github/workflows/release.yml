@@ -4,226 +4,380 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
-  cancel-in-progress: true
+  group: release-main
+  cancel-in-progress: false
 
 on:
   workflow_dispatch:
-
-env:
-  GO_VERSION: "1.25"
+    inputs:
+      build_cmd_ratatoskr:
+        description: 'Build and publish cmd/ratatoskr binaries'
+        type: boolean
+        required: true
+        default: false
 
 jobs:
-  prepare:
-    name: "🔧 Prepare"
+  targets:
+    name: "🧭 Build targets"
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🧭 Define 25 targets
+        id: matrix
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          matrix='{"include":[{"goos":"linux","goarch":"amd64","goarm":"","gomips":"","label":"linux-amd64","ext":""},{"goos":"linux","goarch":"arm64","goarm":"","gomips":"","label":"linux-arm64","ext":""},{"goos":"linux","goarch":"arm","goarm":"7","gomips":"","label":"linux-armv7","ext":""},{"goos":"linux","goarch":"arm","goarm":"6","gomips":"","label":"linux-armv6","ext":""},{"goos":"linux","goarch":"386","goarm":"","gomips":"","label":"linux-386","ext":""},{"goos":"linux","goarch":"riscv64","goarm":"","gomips":"","label":"linux-riscv64","ext":""},{"goos":"linux","goarch":"mips64","goarm":"","gomips":"","label":"linux-mips64","ext":""},{"goos":"linux","goarch":"mips64le","goarm":"","gomips":"","label":"linux-mips64le","ext":""},{"goos":"linux","goarch":"mips","goarm":"","gomips":"softfloat","label":"linux-mips-softfloat","ext":""},{"goos":"linux","goarch":"mipsle","goarm":"","gomips":"softfloat","label":"linux-mipsle-softfloat","ext":""},{"goos":"linux","goarch":"ppc64","goarm":"","gomips":"","label":"linux-ppc64","ext":""},{"goos":"linux","goarch":"ppc64le","goarm":"","gomips":"","label":"linux-ppc64le","ext":""},{"goos":"linux","goarch":"s390x","goarm":"","gomips":"","label":"linux-s390x","ext":""},{"goos":"windows","goarch":"amd64","goarm":"","gomips":"","label":"windows-amd64","ext":".exe"},{"goos":"windows","goarch":"arm64","goarm":"","gomips":"","label":"windows-arm64","ext":".exe"},{"goos":"windows","goarch":"386","goarm":"","gomips":"","label":"windows-386","ext":".exe"},{"goos":"darwin","goarch":"amd64","goarm":"","gomips":"","label":"darwin-amd64","ext":""},{"goos":"darwin","goarch":"arm64","goarm":"","gomips":"","label":"darwin-arm64","ext":""},{"goos":"freebsd","goarch":"amd64","goarm":"","gomips":"","label":"freebsd-amd64","ext":""},{"goos":"freebsd","goarch":"arm64","goarm":"","gomips":"","label":"freebsd-arm64","ext":""},{"goos":"freebsd","goarch":"386","goarm":"","gomips":"","label":"freebsd-386","ext":""},{"goos":"openbsd","goarch":"amd64","goarm":"","gomips":"","label":"openbsd-amd64","ext":""},{"goos":"openbsd","goarch":"arm64","goarm":"","gomips":"","label":"openbsd-arm64","ext":""},{"goos":"netbsd","goarch":"amd64","goarm":"","gomips":"","label":"netbsd-amd64","ext":""},{"goos":"netbsd","goarch":"arm64","goarm":"","gomips":"","label":"netbsd-arm64","ext":""}]}'
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  stage:
+    name: "🔧 Stage bumped root source"
+    runs-on: ubuntu-latest
+    outputs:
+      base-sha: ${{ steps.bump.outputs.base-sha }}
+      build-name: ${{ steps.build-env.outputs.name }}
+      build-ver: ${{ steps.build-env.outputs.version }}
+    steps:
+      - name: 🛎️ Checkout main
+        uses: actions/checkout@v7
         with:
           ref: main
-          fetch-depth: 1
+          fetch-depth: 0
 
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
+
+      - name: 📦 Increment minor version locally
+        id: bump
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          echo "base-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
+          new_version=$(GOWORK=off go run "$gometagen" version minor -source _run/values.yml)
+          echo "Staged version ${new_version}"
 
       - uses: ./.github/actions/tidy-all-and-generate
 
-      - name: 📦 Upload source
+      - name: 📥 Read build metadata
+        id: build-env
+        uses: ./.github/actions/generate-build-env
+
+      - name: 📦 Upload staged root source
         uses: actions/upload-artifact@v7
         with:
-          name: src-gen
-          path: .
+          name: release-root-src
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .
+            !.git
+            !.git/**
 
-  test:
-    name: "🧪 Test [${{ matrix.os }}]"
-    needs: [ prepare ]
+  root-test:
+    name: "🧪 Release root [${{ matrix.os }}]"
+    needs: [ stage ]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15, windows-latest ]
-
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout base
+        uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ needs.stage.outputs.base-sha }}
           fetch-depth: 1
 
-      - name: 📥 Download source
+      - name: 📥 Download staged root source
         uses: actions/download-artifact@v8
         with:
-          name: src-gen
+          name: release-root-src
           path: .
 
-
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
       - uses: ./.github/actions/run-tests
+        with:
+          run-benchmarks: 'false'
 
-  cross-build:
-    name: "🛠️ Build [${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('/v{0}', matrix.goarm) || '' }}${{ matrix.gomips && format('/{0}', matrix.gomips) || '' }}]"
-    needs: [ prepare ]
+  root-cross-build:
+    name: "🛠️ Root [${{ matrix.label }}]"
+    needs: [ targets, stage, root-test ]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: linux, goarch: arm, goarm: "7" }
-          - { goos: linux, goarch: arm, goarm: "6" }
-          - { goos: linux, goarch: "386" }
-          - { goos: linux, goarch: riscv64 }
-          - { goos: linux, goarch: mips64 }
-          - { goos: linux, goarch: mips64le }
-          - { goos: linux, goarch: mips, gomips: softfloat }
-          - { goos: linux, goarch: mipsle, gomips: softfloat }
-          - { goos: linux, goarch: ppc64 }
-          - { goos: linux, goarch: ppc64le }
-          - { goos: linux, goarch: s390x }
-          - { goos: windows, goarch: amd64 }
-          - { goos: windows, goarch: arm64 }
-          - { goos: windows, goarch: "386" }
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
-          - { goos: freebsd, goarch: amd64 }
-          - { goos: freebsd, goarch: arm64 }
-          - { goos: freebsd, goarch: "386" }
-          - { goos: openbsd, goarch: amd64 }
-          - { goos: openbsd, goarch: arm64 }
-          - { goos: netbsd, goarch: amd64 }
-          - { goos: netbsd, goarch: arm64 }
-
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout base
+        uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ needs.stage.outputs.base-sha }}
           fetch-depth: 1
 
-      - name: 📥 Download source
+      - name: 📥 Download staged root source
         uses: actions/download-artifact@v8
         with:
-          name: src-gen
+          name: release-root-src
           path: .
-
 
       - uses: ./.github/actions/init-go
         with:
-          go-version: ${{ env.GO_VERSION }}
+          cache-suffix: root-${{ matrix.label }}
 
       - uses: ./.github/actions/cross-build-check
         with:
           goos: ${{ matrix.goos }}
           goarch: ${{ matrix.goarch }}
-          goarm: ${{ matrix.goarm || '' }}
-          gomips: ${{ matrix.gomips || '' }}
+          goarm: ${{ matrix.goarm }}
+          gomips: ${{ matrix.gomips }}
 
-  bump-version:
-    name: "📦 Minor version bump"
-    needs: [ test, cross-build ]
+  cmd-stage:
+    name: "🔧 Stage cmd/ratatoskr"
+    needs: [ stage ]
+    if: inputs.build_cmd_ratatoskr
     runs-on: ubuntu-latest
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout base
+        uses: actions/checkout@v7
         with:
-          ref: main
-          fetch-depth: 0
+          ref: ${{ needs.stage.outputs.base-sha }}
+          fetch-depth: 1
 
-      - uses: ./.github/actions/github-setup-user
+      - name: 📥 Download staged root source
+        uses: actions/download-artifact@v8
+        with:
+          name: release-root-src
+          path: .
 
       - uses: ./.github/actions/init-go
         with:
-          go-version: ${{ env.GO_VERSION }}
+          cache-scope: cmd
 
-      - name: 📦 Increment minor version
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          new_ver=$(./_run/scripts/sys.sh --increment --minor)
-          echo "New version: $new_ver"
+      - uses: ./.github/actions/prepare-cmd
+        with:
+          scope: ratatoskr
+          check-clean: 'false'
 
-          git add _run/values/ver.txt
-          git commit -m "minor(${new_ver}): release"
-          git push origin HEAD:main
-
-      - name: 🛠️ Regenerate with new version
-        shell: bash
-        run: |
-          set -Eeuo pipefail
-          mkdir -p target tmp
-          go work sync
-          go generate .
-          ./_run/scripts/go_tidy_all.sh
-
-      - uses: ./.github/actions/generate-build-env
-
-      - name: 📦 Upload bumped source
+      - name: 📦 Upload staged CLI source
         uses: actions/upload-artifact@v7
         with:
-          name: src-bumped
+          name: release-cmd-src
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .
+            !.git
+            !.git/**
+
+  cmd-test:
+    name: "🧪 Release cmd/ratatoskr [${{ matrix.os }}]"
+    needs: [ stage, cmd-stage ]
+    if: inputs.build_cmd_ratatoskr && needs.cmd-stage.result == 'success'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    steps:
+      - name: 🛎️ Checkout base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.stage.outputs.base-sha }}
+          fetch-depth: 1
+
+      - name: 📥 Download staged CLI source
+        uses: actions/download-artifact@v8
+        with:
+          name: release-cmd-src
           path: .
 
+      - uses: ./.github/actions/init-go
+        with:
+          cache-scope: cmd
+
+      - name: 🧪 Test cmd/ratatoskr
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            GOWORK=off CGO_ENABLED=0 go -C cmd/ratatoskr test -v ./...
+          else
+            GOWORK=off CGO_ENABLED=1 go -C cmd/ratatoskr test -race -v ./...
+          fi
+
+  cmd-build:
+    name: "🛠️ CLI [${{ matrix.label }}]"
+    needs: [ targets, stage, cmd-stage, cmd-test ]
+    if: inputs.build_cmd_ratatoskr && needs.cmd-test.result == 'success'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
+    steps:
+      - name: 🛎️ Checkout base
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.stage.outputs.base-sha }}
+          fetch-depth: 1
+
+      - name: 📥 Download staged CLI source
+        uses: actions/download-artifact@v8
+        with:
+          name: release-cmd-src
+          path: .
+
+      - uses: ./.github/actions/init-go
+        with:
+          cache-scope: cmd
+          cache-suffix: cmd-${{ matrix.label }}
+
+      - name: 🛠️ Build cmd/ratatoskr
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: '0'
+          OUTPUT_NAME: ratatoskr-${{ matrix.label }}${{ matrix.ext }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p dist
+          GOWORK=off go -C cmd/ratatoskr build -trimpath -ldflags='-s -w' -o "${GITHUB_WORKSPACE}/dist/${OUTPUT_NAME}" .
+
+      - name: 📦 Upload CLI binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: cli-${{ matrix.label }}
+          if-no-files-found: error
+          path: dist/*
+
   release:
-    name: "🚀 Release"
-    needs: [ bump-version ]
+    name: "🚀 Publish release"
+    needs:
+      - targets
+      - stage
+      - root-test
+      - root-cross-build
+      - cmd-stage
+      - cmd-test
+      - cmd-build
+    if: >-
+      !cancelled() &&
+      needs.stage.result == 'success' &&
+      needs.root-test.result == 'success' &&
+      needs.root-cross-build.result == 'success' &&
+      (
+        (!inputs.build_cmd_ratatoskr && needs.cmd-stage.result == 'skipped' && needs.cmd-test.result == 'skipped' && needs.cmd-build.result == 'skipped') ||
+        (inputs.build_cmd_ratatoskr && needs.cmd-stage.result == 'success' && needs.cmd-test.result == 'success' && needs.cmd-build.result == 'success')
+      )
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout base
+        uses: actions/checkout@v7
         with:
-          ref: main
+          ref: ${{ needs.stage.outputs.base-sha }}
           fetch-depth: 0
 
-      - name: 📥 Download bumped source
+      - name: 📥 Download staged root source
         uses: actions/download-artifact@v8
         with:
-          name: src-bumped
+          name: release-root-src
           path: .
 
+      - name: 📥 Download CLI binaries
+        if: inputs.build_cmd_ratatoskr
+        uses: actions/download-artifact@v8
+        with:
+          pattern: cli-*
+          merge-multiple: true
+          path: dist
 
-      - name: 🗒️ Source env
+      - name: 🗒️ Load build metadata
         shell: bash
-        run: cat build_env.txt >> $GITHUB_ENV
+        run: cat build_env.txt >> "$GITHUB_ENV"
 
       - uses: ./.github/actions/github-setup-user
 
-      - name: 🏷️ Create stripped commit and tag ${{ env.BUILD_VER }}
+      - name: 📦 Commit release bump
+        id: bump
         shell: bash
         run: |
           set -Eeuo pipefail
-          ORIG_SHA=$(git rev-parse HEAD)
+          base_sha="${{ needs.stage.outputs.base-sha }}"
+          git fetch origin main --tags
+          current_sha=$(git rev-parse refs/remotes/origin/main)
+          if [ "$current_sha" != "$base_sha" ]; then
+            echo "main moved from ${base_sha} to ${current_sha}" >&2
+            exit 1
+          fi
+          git add _run/values.yml
+          git diff --cached --quiet && { echo "release bump is empty" >&2; exit 1; }
+          git commit -m "minor(${BUILD_VER}): release [skip ci]"
+          echo "bump-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-          git add -f target
-          git rm -f -r --cached --ignore-unmatch .github .idea _generate _run cli cmd gen.go go.work .gitignore
+      - name: 🏷️ Create and verify stripped tag
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          bump_sha="${{ steps.bump.outputs.bump-sha }}"
 
-          git commit -m "release(${BUILD_VER}): strip heavy assets"
-          git tag -a "${BUILD_VER}" -m "Release ${BUILD_VER}"
-          git push origin "${BUILD_VER}"
+          git add -f target go.sum
+          paths=()
+          while IFS= read -r -d '' path; do
+            paths+=("$path")
+          done < <(
+            git ls-files -z |
+              grep -zE '^(\.github/|\.idea/|_generate/|_run/|cmd/|tests/)|^(gen\.go|go\.work|go\.work\.sum|\.gitignore)$' || true
+          )
+          if [ "${#paths[@]}" -gt 0 ]; then
+            git rm -r --cached --ignore-unmatch -- "${paths[@]}"
+          fi
 
-          git reset --hard "$ORIG_SHA"
+          git commit -m "release(${BUILD_VER}): embed generated source, strip development assets"
+          git tag -a "$BUILD_VER" -m "Release ${BUILD_VER}"
 
-      - name: 🚀 Create GitHub release
-        uses: softprops/action-gh-release@v2
+          verify_dir="${RUNNER_TEMP}/ratatoskr-tag-verify"
+          mkdir -p "$verify_dir"
+          git archive "$BUILD_VER" | tar -x -C "$verify_dir"
+          GOWORK=off CGO_ENABLED=0 go -C "$verify_dir" build ./...
+
+          git reset --hard "$bump_sha"
+
+      - name: 📤 Push bump and tag atomically
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          base_sha="${{ needs.stage.outputs.base-sha }}"
+          git push --atomic origin HEAD:main "refs/tags/${BUILD_VER}" --force-with-lease="refs/heads/main:${base_sha}"
+
+      - name: 🚀 Create module release
+        if: '!inputs.build_cmd_ratatoskr'
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.BUILD_VER }}
           name: ${{ env.BUILD_VER }}
           generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 🚀 Create module and CLI release
+        if: inputs.build_cmd_ratatoskr
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.BUILD_VER }}
+          name: ${{ env.BUILD_VER }}
+          generate_release_notes: true
+          files: dist/*
+          fail_on_unmatched_files: true
 
       - name: 🧹 Cleanup artifacts
         if: always()
         uses: geekyeggo/delete-artifact@v6
         with:
           name: |
-            src-gen
-            src-bumped
+            release-root-src
+            release-cmd-src
+            cli-*
           failOnError: false

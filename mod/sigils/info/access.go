@@ -2,7 +2,11 @@ package info
 
 // // // // // // // // // //
 
-// Info returns the sigil's typed data.
+// Info returns an independent copy of the identity-card configuration.
 func (o *Obj) Info() *ConfigObj {
-	return o.conf
+	if o.conf == nil {
+		return nil
+	}
+	c := cloneConfig(o.conf)
+	return &c
 }

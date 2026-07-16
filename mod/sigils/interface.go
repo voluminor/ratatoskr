@@ -2,28 +2,22 @@ package sigils
 
 // // // // // // // // // //
 
-// Interface defines a typed block of NodeInfo data.
-// Each sigil owns one or more top-level keys in the NodeInfo map.
+// Interface defines one cloneable NodeInfo schema and its current data.
 type Interface interface {
+	// GetName returns the unique sigil name.
 	GetName() string
+	// GetParams returns the top-level NodeInfo keys owned by the sigil.
 	GetParams() []string
 
-	// SetParams writes sigil data into a copy of NodeInfo; never mutates the input.
-	SetParams(map[string]any) (map[string]any, error)
-
-	// ParseParams extracts this sigil's keys from foreign NodeInfo
-	// and stores the result into the object for later retrieval via Params.
+	// ParseParams extracts owned keys from foreign NodeInfo and may update the receiver.
 	ParseParams(map[string]any) map[string]any
 
-	// Match checks whether foreign NodeInfo contains this sigil
-	// with correct structure and JSON types.
+	// Match reports whether foreign NodeInfo satisfies the sigil schema.
 	Match(map[string]any) bool
 
-	// Params returns the sigil's current data as a NodeInfo fragment.
+	// Params returns an independent NodeInfo fragment containing current data.
 	Params() map[string]any
 
-	// Clone returns a deep copy of the sigil with its current state.
-	// Allows a single Interface value to act as both a contract
-	// and a data carrier for third-party sigils.
+	// Clone returns an independent copy of the schema and current data.
 	Clone() Interface
 }

@@ -16,7 +16,7 @@ func makePeerInfo(uri string, up bool, latency time.Duration) yggcore.PeerInfo {
 // //
 
 func TestBuildResults_allPresent(t *testing.T) {
-	candidates := []peerEntryObj{
+	candidates := []PeerEntryObj{
 		{URI: "tls://a:1", Scheme: "tls"},
 		{URI: "tcp://b:2", Scheme: "tcp"},
 	}
@@ -37,7 +37,7 @@ func TestBuildResults_allPresent(t *testing.T) {
 }
 
 func TestBuildResults_missing(t *testing.T) {
-	candidates := []peerEntryObj{{URI: "tls://a:1", Scheme: "tls"}}
+	candidates := []PeerEntryObj{{URI: "tls://a:1", Scheme: "tls"}}
 	results := buildResults(candidates, nil)
 	if len(results) != 1 {
 		t.Fatalf("expected 1, got %d", len(results))
@@ -47,8 +47,61 @@ func TestBuildResults_missing(t *testing.T) {
 	}
 }
 
+func TestBuildResults_matchesPeerWithoutQuery(t *testing.T) {
+	candidates := []PeerEntryObj{{
+		URI:      "tls://a:1?password=x",
+		Scheme:   "tls",
+		MatchURI: "tls://a:1",
+	}}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1", true, 10*time.Millisecond),
+	}
+	results := buildResults(candidates, peers)
+	if len(results) != 1 {
+		t.Fatalf("expected 1, got %d", len(results))
+	}
+	if !results[0].Up {
+		t.Fatalf("candidate with query should match query-free PeerInfo: %+v", results[0])
+	}
+	if results[0].URI != "tls://a:1?password=x" {
+		t.Fatalf("candidate URI should be preserved, got %q", results[0].URI)
+	}
+}
+
+func TestBuildResults_prefersUpPeerOnNormalizedCollision(t *testing.T) {
+	candidates := []PeerEntryObj{{
+		URI:      "tls://a:1?password=x",
+		Scheme:   "tls",
+		MatchURI: "tls://a:1",
+	}}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1?old", false, 0),
+		makePeerInfo("tls://a:1", true, 10*time.Millisecond),
+	}
+	results := buildResults(candidates, peers)
+	if len(results) != 1 || !results[0].Up {
+		t.Fatalf("expected up peer to win normalized collision, got %v", results)
+	}
+}
+
+func TestBuildResults_prefersLowestLatencyOnNormalizedCollision(t *testing.T) {
+	candidates := []PeerEntryObj{{
+		URI:      "tls://a:1?password=x",
+		Scheme:   "tls",
+		MatchURI: "tls://a:1",
+	}}
+	peers := []yggcore.PeerInfo{
+		makePeerInfo("tls://a:1?slow", true, 20*time.Millisecond),
+		makePeerInfo("tls://a:1?fast", true, 5*time.Millisecond),
+	}
+	results := buildResults(candidates, peers)
+	if len(results) != 1 || results[0].Latency != 5*time.Millisecond {
+		t.Fatalf("expected lowest latency peer to win normalized collision, got %v", results)
+	}
+}
+
 func TestBuildResults_orderPreserved(t *testing.T) {
-	candidates := []peerEntryObj{
+	candidates := []PeerEntryObj{
 		{URI: "tls://a:1", Scheme: "tls"},
 		{URI: "tls://b:2", Scheme: "tls"},
 		{URI: "tls://c:3", Scheme: "tls"},
@@ -67,7 +120,7 @@ func TestBuildResults_orderPreserved(t *testing.T) {
 }
 
 func TestBuildResults_schemeFromCandidate(t *testing.T) {
-	candidates := []peerEntryObj{{URI: "quic://h:9000", Scheme: "quic"}}
+	candidates := []PeerEntryObj{{URI: "quic://h:9000", Scheme: "quic"}}
 	results := buildResults(candidates, nil)
 	if results[0].Proto != "quic" {
 		t.Errorf("expected proto=quic, got %s", results[0].Proto)
@@ -116,6 +169,28 @@ func TestSelectBest_sortsByLatency(t *testing.T) {
 	}
 }
 
+func TestSelectBest_placesUnknownLatencyAfterMeasured(t *testing.T) {
+	results := []peerResultObj{
+		{URI: "tls://unknown:1", Proto: "tls", Up: true, Latency: 0},
+		{URI: "tls://measured:1", Proto: "tls", Up: true, Latency: 5 * time.Millisecond},
+	}
+	selected := selectBest(results, 1)
+	if len(selected) != 1 || selected[0].URI != "tls://measured:1" {
+		t.Fatalf("selected = %v, want measured peer", selected)
+	}
+}
+
+func TestSelectBestBreaksLatencyTiesByNormalizedURI(t *testing.T) {
+	results := []peerResultObj{
+		{URI: "tls://b:1", Proto: "tls", Up: true, Latency: 5 * time.Millisecond},
+		{URI: "tls://a:1", Proto: "tls", Up: true, Latency: 5 * time.Millisecond},
+	}
+	selected := selectBest(results, 1)
+	if len(selected) != 1 || selected[0].URI != "tls://a:1" {
+		t.Fatalf("selected = %v, want stable URI tie-break", selected)
+	}
+}
+
 func TestSelectBest_onlyUpPeers(t *testing.T) {
 	results := []peerResultObj{
 		{URI: "tls://a:1", Proto: "tls", Up: false},
@@ -147,6 +222,15 @@ func TestSelectBest_maxLargerThanGroup(t *testing.T) {
 	selected := selectBest(results, 100)
 	if len(selected) != 1 {
 		t.Errorf("expected 1, got %d", len(selected))
+	}
+}
+
+func TestSelectBest_nonPositiveMax(t *testing.T) {
+	results := []peerResultObj{
+		{URI: "tls://a:1", Proto: "tls", Up: true, Latency: 10 * time.Millisecond},
+	}
+	if selected := selectBest(results, -2); len(selected) != 0 {
+		t.Errorf("expected empty selection for invalid max, got %v", selected)
 	}
 }
 
@@ -193,78 +277,5 @@ func TestCountUp_allUp(t *testing.T) {
 func TestCountUp_empty(t *testing.T) {
 	if n := countUp(nil); n != 0 {
 		t.Errorf("expected 0, got %d", n)
-	}
-}
-
-// //
-
-func TestCountUpActive_mixed(t *testing.T) {
-	active := []string{"tls://a:1", "tls://b:2", "tcp://c:3"}
-	peers := []yggcore.PeerInfo{
-		makePeerInfo("tls://a:1", true, 5*time.Millisecond),
-		makePeerInfo("tls://b:2", false, 0),
-		makePeerInfo("tcp://c:3", true, 10*time.Millisecond),
-		makePeerInfo("quic://d:4", true, 1*time.Millisecond), // not in active
-	}
-	if n := countUpActive(active, peers); n != 2 {
-		t.Errorf("expected 2, got %d", n)
-	}
-}
-
-func TestCountUpActive_empty(t *testing.T) {
-	if n := countUpActive(nil, nil); n != 0 {
-		t.Errorf("expected 0, got %d", n)
-	}
-}
-
-func TestCountUpActive_allDown(t *testing.T) {
-	active := []string{"tls://a:1", "tls://b:2"}
-	peers := []yggcore.PeerInfo{
-		makePeerInfo("tls://a:1", false, 0),
-		makePeerInfo("tls://b:2", false, 0),
-	}
-	if n := countUpActive(active, peers); n != 0 {
-		t.Errorf("expected 0, got %d", n)
-	}
-}
-
-// //
-
-func BenchmarkBuildResults(b *testing.B) {
-	candidates := make([]peerEntryObj, 50)
-	peers := make([]yggcore.PeerInfo, 50)
-	for i := range candidates {
-		uri := "tls://host" + string(rune('a'+i%26)) + ":1234"
-		candidates[i] = peerEntryObj{URI: uri, Scheme: "tls"}
-		peers[i] = makePeerInfo(uri, i%3 != 0, time.Duration(i+1)*time.Millisecond)
-	}
-	for b.Loop() {
-		buildResults(candidates, peers)
-	}
-}
-
-func BenchmarkSelectBest(b *testing.B) {
-	protos := []string{"tls", "tcp", "quic", "ws", "wss"}
-	results := make([]peerResultObj, 100)
-	for i := range results {
-		results[i] = peerResultObj{
-			URI:     "tls://h" + string(rune('a'+i%26)) + ":1",
-			Proto:   protos[i%len(protos)],
-			Up:      i%4 != 0,
-			Latency: time.Duration(i+1) * time.Millisecond,
-		}
-	}
-	for b.Loop() {
-		selectBest(results, 3)
-	}
-}
-
-func BenchmarkCountUp(b *testing.B) {
-	results := make([]peerResultObj, 1000)
-	for i := range results {
-		results[i] = peerResultObj{Up: i%3 != 0}
-	}
-	for b.Loop() {
-		countUp(results)
 	}
 }

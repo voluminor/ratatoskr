@@ -1,21 +1,30 @@
-name: 'Read version with Build scripts'
-description: 'Read the version of the assembly and retain'
+name: 'Read build metadata'
+description: 'Read the release name and version from the manifest'
+outputs:
+  name:
+    description: 'Build package name'
+    value: ${{ steps.ver.outputs.name }}
+  version:
+    description: 'Build version'
+    value: ${{ steps.ver.outputs.version }}
 
 runs:
   using: 'composite'
   steps:
-    - name: 📥 Read version with Build scripts
+    - name: 📥 Read build metadata
       id: ver
       shell: bash
       run: |
         set -Eeuo pipefail
-        nameBuild=$(./_run/scripts/sys.sh -n)
-        versionBuild=$(./_run/scripts/sys.sh -v)
+        gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
+        build_name=$(GOWORK=off go run "$gometagen" manifest get -source ./_run/values.yml -field name)
+        build_version=$(GOWORK=off go run "$gometagen" version print -source ./_run/values.yml)
 
-        echo "BUILD_NAME=$nameBuild"   >  build_env.txt
-        echo "BUILD_VER=$versionBuild" >> build_env.txt
+        {
+          echo "BUILD_NAME=${build_name}"
+          echo "BUILD_VER=${build_version}"
+        } > build_env.txt
 
-        echo "name=$nameBuild"   >> $GITHUB_OUTPUT
-        echo "version=$versionBuild" >> $GITHUB_OUTPUT
-
-        echo "✔️ Found version: $versionBuild (Package Name: $nameBuild)"
+        echo "name=${build_name}" >> "$GITHUB_OUTPUT"
+        echo "version=${build_version}" >> "$GITHUB_OUTPUT"
+        echo "Found version ${build_version} for ${build_name}"

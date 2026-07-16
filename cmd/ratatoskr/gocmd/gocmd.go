@@ -1,13 +1,13 @@
+// Package gocmd executes parsed CLI utility commands.
 package gocmd
 
 import (
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 )
 
 // // // // // // // // // //
 
-// Run dispatches the active command from the go trigger group.
-// Returns (true, err) if a command was handled, (false, nil) otherwise.
+// Run executes the selected utility command and reports whether one was set.
 func Run(cfg *gsettings.GoObj) (bool, error) {
 	if handled, err := keyCmd(&cfg.Key); handled {
 		return true, err

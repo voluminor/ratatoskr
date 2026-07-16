@@ -1,59 +1,146 @@
 # mod/sigils/sigil_core
 
-Sigil registration, assembly, and metadata management for local NodeInfo.
+Concurrency-safe registration and assembly of sigils into local NodeInfo. The object owns copies of the base map and
+every registered sigil and maintains the `ratatoskr` metadata key.
 
-Takes a base `map[string]any` (NodeInfo) and a set of sigils, validates and merges them, and maintains the `ratatoskr`
-metadata key that lists active sigils and the library version.
+## Contents
 
-## Obj
+- [Assembly flow](#assembly-flow)
+- [Construction](#construction)
+- [Registry operations](#registry-operations)
+- [Ownership and concurrency](#ownership-and-concurrency)
+- [Metadata](#metadata)
+- [Limits and errors](#limits-and-errors)
+- [Example](#example)
 
-```go
-obj, errs := sigil_core.New(nodeInfo, sigils...)
-```
-
-Creates an `Obj` from a base NodeInfo map and optional sigils. If `nodeInfo` is `nil`, an empty map is used. Errors are
-non-fatal: each failed sigil is skipped, the rest are applied normally.
-
-| Method      | Signature                          | Description                                                        |
-|-------------|------------------------------------|--------------------------------------------------------------------|
-| `NodeInfo`  | `() map[string]any`                | Returns the assembled map ready for `yggcore.SetNodeInfo`          |
-| `Sigils`    | `() map[string]sigils.Interface`   | Returns registered sigils                                          |
-| `Add`       | `(sg ...sigils.Interface) []error` | Registers sigils, writes keys into map, updates ratatoskr metadata |
-| `Get`       | `(name string) sigils.Interface`   | Returns sigil by name or `nil`                                     |
-| `Del`       | `(name string) error`              | Removes sigil, its keys, and updates ratatoskr metadata            |
-| `String`    | `() string`                        | Human-readable summary                                             |
-| `LenSigils` | `() int`                           | Number of registered sigils                                        |
-| `LenLocal`  | `() int`                           | Number of keys in assembled NodeInfo                               |
-| `Len`       | `() int`                           | `LenSigils() + LenLocal()`                                         |
-
-`Add` validates each sigil name, checks for duplicates, calls `SetParams` to merge keys into the internal map, and
-updates the `ratatoskr` metadata key via `CompileInfo`.
-
-`Del` removes the sigil's param keys from the map and recompiles the metadata key.
-
-## Package-level functions
-
-| Function      | Signature                              | Description                                                |
-|---------------|----------------------------------------|------------------------------------------------------------|
-| `CompileInfo` | `(map[string]sigils.Interface) string` | Assembles the ratatoskr metadata string from sigil names   |
-| `ParseInfo`   | `(string) (string, []string, error)`   | Parses a ratatoskr info string into version and sigil list |
-
-### Metadata format
-
-```
-[sigil1,sigil2] v0.1.3
-```
-
-Sigil names are sorted alphabetically. The version comes from `target.GlobalVersion`.
+## Assembly flow
 
 ```mermaid
-flowchart LR
-    base["base NodeInfo map"]
-    sg["sigils"]
-    base --> Obj
-    sg --> Add["Add: validate + SetParams"]
-    Add --> compile["CompileInfo"]
-    compile --> meta["ratatoskr key: '[inet,info] v0.1.3'"]
-    meta --> Obj
-    Obj --> NodeInfo["NodeInfo() → map[string]any"]
+flowchart TB
+    Base[Base NodeInfo]
+    CloneBase[Deep-copy and validate base]
+    Sigils[Sigil list]
+    Validate[Validate name, count, keys, and Params]
+    CloneSigil[Clone accepted sigil]
+    Merge[Merge independent fragment]
+    Metadata[Compile ratatoskr metadata]
+    Obj[sigil_core.Obj]
+    Result[Deep-copied NodeInfo]
+
+    Base --> CloneBase
+    CloneBase --> Obj
+    Sigils --> Validate
+    Validate --> CloneSigil
+    CloneSigil --> Merge
+    Merge --> Metadata
+    Metadata --> Obj
+    Obj --> Result
+```
+
+## Construction
+
+```go
+builder, errs := sigil_core.New(baseNodeInfo, sigils...)
+```
+
+`New` deep-copies the base NodeInfo and processes every sigil independently. Invalid entries are skipped and returned as
+separate errors; valid entries remain available in the returned object. A nil base becomes an empty map.
+
+This partial-result contract lets callers choose strict or permissive handling:
+
+```go
+builder, errs := sigil_core.New(baseNodeInfo, configuredSigils...)
+if len(errs) != 0 {
+    return errors.Join(errs...)
+}
+nodeInfo := builder.NodeInfo()
+```
+
+## Registry operations
+
+| Method      | Contract                                                                  |
+|-------------|---------------------------------------------------------------------------|
+| `NodeInfo`  | returns a deep copy of assembled data                                     |
+| `Sigils`    | returns a new map containing cloned sigils                                |
+| `Add`       | validates, clones, merges, and updates metadata; returns per-entry errors |
+| `Get`       | returns a clone or nil                                                    |
+| `Del`       | removes a sigil, populated keys, and its metadata name                    |
+| `LenSigils` | returns registered sigil count                                            |
+| `LenLocal`  | returns assembled NodeInfo key count, including metadata                  |
+| `Len`       | returns `LenSigils() + LenLocal()`                                        |
+| `String`    | returns the metadata key and value                                        |
+
+`Del` removes keys present in the stored sigil's current `Params`. An optional key that the sigil did not populate is
+preserved when it came from the base NodeInfo.
+
+## Ownership and concurrency
+
+`Obj` serializes registry mutation with `sync.RWMutex`. Its methods may be called concurrently.
+
+Ownership boundaries are stronger than the lock alone:
+
+- base NodeInfo is deep-copied;
+- each accepted sigil is cloned before storage;
+- sigil `Params` is deep-copied before merge;
+- `NodeInfo`, `Sigils`, and `Get` return independent data.
+
+A third-party sigil whose `Clone` returns nil is rejected. Cyclic or deeper-than-64-level NodeInfo data is rejected
+through [`internal/common.CloneNodeInfo`](../../../internal/common/README.md#nodeinfo-ownership).
+
+## Metadata
+
+The top-level `ratatoskr` key has this format:
+
+```text
+[inet,info,services] v1.0.0
+```
+
+Names are sorted and deduplicated. An empty explicit version falls back to the generated Ratatoskr version.
+
+| Function             | Contract                                                |
+|----------------------|---------------------------------------------------------|
+| `CompileInfo`        | compiles registry names with the current version        |
+| `CompileInfoVersion` | compiles registry names with a supplied version         |
+| `CompileInfoNames`   | copies, sorts, and deduplicates a name slice            |
+| `ParseInfo`          | parses an optional prefix, bracketed names, and version |
+
+`ParseInfo` accepts at most 64 unique sigil names. Each name must satisfy `sigils.ValidateName`. The version is limited
+to 64 printable ASCII characters.
+
+## Limits and errors
+
+- no more than 64 sigils can be registered;
+- duplicate names are rejected;
+- a key conflict with base NodeInfo or another sigil rejects that sigil;
+- nil sigils and invalid names are rejected;
+- cyclic or excessively deep parameters are rejected;
+- `Add` continues after an invalid entry and returns all collected errors;
+- `Del` returns an error when the name is absent.
+
+## Example
+
+```go
+identity, err := info.New(info.ConfigObj{
+    Name: "edge.example.net",
+    Type: "router",
+})
+if err != nil {
+    return err
+}
+
+servicesList, err := services.New(map[string]uint16{"http": 80})
+if err != nil {
+    return err
+}
+
+builder, errs := sigil_core.New(
+    map[string]any{"operator": "example"},
+    identity,
+    servicesList,
+)
+if len(errs) != 0 {
+    return errors.Join(errs...)
+}
+
+nodeInfo := builder.NodeInfo()
 ```

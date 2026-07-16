@@ -4,28 +4,27 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/voluminor/ratatoskr/internal/common"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
-// adminCaptureObj
 
 func TestAdminCapture(t *testing.T) {
-	cap := &adminCaptureObj{handlers: make(map[string]yggcore.AddHandlerFunc)}
+	cap := common.NewAdminCapture()
 	fn := func(json.RawMessage) (interface{}, error) { return nil, nil }
 	if err := cap.AddHandler("test_fn", "desc", nil, fn); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cap.handlers["test_fn"] == nil {
+	if cap.Handlers["test_fn"] == nil {
 		t.Fatal("handler not captured")
 	}
-	if cap.handlers["missing"] != nil {
+	if cap.Handlers["missing"] != nil {
 		t.Fatal("unexpected handler for missing key")
 	}
 }
 
 // // // // // // // // // //
-// extractSoftware
 
 func TestExtractSoftware_allFields(t *testing.T) {
 	extra := map[string]any{
@@ -85,7 +84,6 @@ func TestExtractSoftware_nonString_ignored(t *testing.T) {
 }
 
 // // // // // // // // // //
-// callNodeInfo response parsing
 
 func TestCallNodeInfo_wrongType(t *testing.T) {
 	obj := &Obj{
@@ -125,20 +123,5 @@ func TestCallNodeInfo_validResponse(t *testing.T) {
 	}
 	if string(raw) != `{"name":"test"}` {
 		t.Fatalf("unexpected raw: %s", raw)
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkExtractSoftware(b *testing.B) {
-	for b.Loop() {
-		extra := map[string]any{
-			"buildname":     "yggdrasil",
-			"buildversion":  "0.5.13",
-			"buildplatform": "linux",
-			"buildarch":     "amd64",
-			"custom":        "value",
-		}
-		extractSoftware(extra)
 	}
 }

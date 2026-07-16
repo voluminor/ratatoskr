@@ -1,639 +1,205 @@
 package info
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
 
 // // // // // // // // // //
-// Name / Keys
 
-func TestName(t *testing.T) {
-	if Name() != "info" {
-		t.Fatalf("expected info, got %s", Name())
+func validConfig() ConfigObj {
+	return ConfigObj{Name: "node.example", Type: "server"}
+}
+
+func TestNewValidation(t *testing.T) {
+	maxGroups := make(map[string][]string, maxContactGroups)
+	for i := range maxContactGroups {
+		maxGroups["group"+string(rune('a'+i))] = []string{"contact-value"}
+	}
+	tooManyGroups := cloneContacts(maxGroups)
+	tooManyGroups["extra"] = []string{"contact-value"}
+	maxContacts := make([]string, maxContactsPerGroup)
+	for i := range maxContacts {
+		maxContacts[i] = "contact-" + strings.Repeat("a", i+1)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*ConfigObj)
+		valid  bool
+	}{
+		{name: "minimal", valid: true},
+		{name: "full", mutate: func(c *ConfigObj) {
+			c.Location = "Warsaw, Poland"
+			c.Description = "Public relay node"
+			c.Contacts = map[string][]string{"email": {"admin@example.com"}}
+		}, valid: true},
+		{name: "name boundaries", mutate: func(c *ConfigObj) { c.Name = strings.Repeat("a", 4) }, valid: true},
+		{name: "name maximum", mutate: func(c *ConfigObj) { c.Name = strings.Repeat("a", 64) }, valid: true},
+		{name: "type boundaries", mutate: func(c *ConfigObj) { c.Type = "ab" }, valid: true},
+		{name: "type maximum", mutate: func(c *ConfigObj) { c.Type = strings.Repeat("a", 32) }, valid: true},
+		{name: "maximum contact groups", mutate: func(c *ConfigObj) { c.Contacts = maxGroups }, valid: true},
+		{name: "maximum contacts", mutate: func(c *ConfigObj) { c.Contacts = map[string][]string{"email": maxContacts} }, valid: true},
+		{name: "missing name", mutate: func(c *ConfigObj) { c.Name = "" }},
+		{name: "short name", mutate: func(c *ConfigObj) { c.Name = "abc" }},
+		{name: "long name", mutate: func(c *ConfigObj) { c.Name = strings.Repeat("a", 65) }},
+		{name: "uppercase name", mutate: func(c *ConfigObj) { c.Name = "Node.example" }},
+		{name: "space in name", mutate: func(c *ConfigObj) { c.Name = "node example" }},
+		{name: "missing type", mutate: func(c *ConfigObj) { c.Type = "" }},
+		{name: "short type", mutate: func(c *ConfigObj) { c.Type = "a" }},
+		{name: "long type", mutate: func(c *ConfigObj) { c.Type = strings.Repeat("a", 33) }},
+		{name: "uppercase type", mutate: func(c *ConfigObj) { c.Type = "Server" }},
+		{name: "short location", mutate: func(c *ConfigObj) { c.Location = "x" }},
+		{name: "long location", mutate: func(c *ConfigObj) { c.Location = strings.Repeat("x", 515) }},
+		{name: "leading location space", mutate: func(c *ConfigObj) { c.Location = " Warsaw" }},
+		{name: "trailing description space", mutate: func(c *ConfigObj) { c.Description = "public " }},
+		{name: "control description", mutate: func(c *ConfigObj) { c.Description = "bad\nvalue" }},
+		{name: "format location", mutate: func(c *ConfigObj) { c.Location = "bad\u200bvalue" }},
+		{name: "too many contact groups", mutate: func(c *ConfigObj) { c.Contacts = tooManyGroups }},
+		{name: "empty contact group", mutate: func(c *ConfigObj) { c.Contacts = map[string][]string{"email": {}} }},
+		{name: "too many contacts", mutate: func(c *ConfigObj) {
+			c.Contacts = map[string][]string{"email": append(maxContacts, "extra-contact")}
+		}},
+		{name: "invalid contact group", mutate: func(c *ConfigObj) { c.Contacts = map[string][]string{"E": {"contact-value"}} }},
+		{name: "short contact", mutate: func(c *ConfigObj) { c.Contacts = map[string][]string{"email": {"ab"}} }},
+		{name: "control contact", mutate: func(c *ConfigObj) { c.Contacts = map[string][]string{"email": {"bad\nvalue"}} }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config := validConfig()
+			if test.mutate != nil {
+				test.mutate(&config)
+			}
+			obj, err := New(config)
+			if test.valid {
+				if err != nil || obj == nil {
+					t.Fatalf("New() = (%v, %v), want valid object", obj, err)
+				}
+				return
+			}
+			if err == nil || obj != nil {
+				t.Fatalf("New() = (%v, %v), want validation error", obj, err)
+			}
+		})
 	}
 }
 
-func TestKeys(t *testing.T) {
-	k := Keys()
-	if len(k) != 5 {
-		t.Fatalf("expected 5 keys, got %d", len(k))
-	}
-}
-
-// // // // // // // // // //
-// New — validation
-
-func TestNew_minimal(t *testing.T) {
-	obj, err := New(ConfigObj{
-		Name: "test.node",
-		Type: "server",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if obj.GetName() != "info" {
-		t.Fatal("wrong name")
-	}
-}
-
-func TestNew_full(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Location: "Moscow datacenter",
-		Contacts: map[string][]string{
-			"email": {"admin@example.com"},
-			"xmpp":  {"admin@jabber.example.com"},
-		},
-		Description: "open peering policy",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_missingName(t *testing.T) {
-	_, err := New(ConfigObj{Type: "server"})
-	if err == nil {
-		t.Fatal("expected error for missing name")
-	}
-}
-
-func TestNew_missingType(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test.node"})
-	if err == nil {
-		t.Fatal("expected error for missing type")
-	}
-}
-
-func TestNew_emptyNameAndType(t *testing.T) {
-	_, err := New(ConfigObj{})
-	if err == nil {
-		t.Fatal("expected error for empty config")
-	}
-}
-
-// //
-
-func TestNew_nameTooShort(t *testing.T) {
-	_, err := New(ConfigObj{Name: "abc", Type: "server"}) // 3 chars, min 4
-	if err == nil {
-		t.Fatal("expected error for short name")
-	}
-}
-
-func TestNew_nameExact4(t *testing.T) {
-	_, err := New(ConfigObj{Name: "abcd", Type: "sv"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_nameExact64(t *testing.T) {
-	_, err := New(ConfigObj{Name: strings.Repeat("a", 64), Type: "sv"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_nameTooLong(t *testing.T) {
-	_, err := New(ConfigObj{Name: strings.Repeat("a", 65), Type: "sv"})
-	if err == nil {
-		t.Fatal("expected error for 65-char name")
-	}
-}
-
-func TestNew_nameUppercase(t *testing.T) {
-	_, err := New(ConfigObj{Name: "Test.Node", Type: "sv"})
-	if err == nil {
-		t.Fatal("expected error for uppercase name")
-	}
-}
-
-func TestNew_nameWithSpace(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test node", Type: "sv"})
-	if err == nil {
-		t.Fatal("expected error for name with space")
-	}
-}
-
-// //
-
-func TestNew_typeTooShort(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test.node", Type: "a"}) // 1 char, min 2
-	if err == nil {
-		t.Fatal("expected error for short type")
-	}
-}
-
-func TestNew_typeExact2(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test.node", Type: "sv"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_typeExact32(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test.node", Type: strings.Repeat("a", 32)})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_typeTooLong(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test.node", Type: strings.Repeat("a", 33)})
-	if err == nil {
-		t.Fatal("expected error for 33-char type")
-	}
-}
-
-func TestNew_typeUppercase(t *testing.T) {
-	_, err := New(ConfigObj{Name: "test.node", Type: "Server"})
-	if err == nil {
-		t.Fatal("expected error for uppercase type")
-	}
-}
-
-// //
-
-func TestNew_invalidPeering_singleChar(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Description: "a", // reText requires at least 2 non-space chars
-	})
-	if err == nil {
-		t.Fatal("expected error for single-char peering")
-	}
-}
-
-func TestNew_invalidPeering_leadingSpace(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Description: " leading space",
-	})
-	if err == nil {
-		t.Fatal("expected error for leading space in peering")
-	}
-}
-
-func TestNew_invalidPeering_trailingSpace(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Description: "trailing space ",
-	})
-	if err == nil {
-		t.Fatal("expected error for trailing space in peering")
-	}
-}
-
-func TestNew_validPeering_minimal(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Description: "ok",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_peeringTooLong(t *testing.T) {
-	// reText: ^\S[\S ]{0,512}\S$ — so total max is 514 chars
-	_, err := New(ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Description: "x" + strings.Repeat(" ", 513) + "x", // 515 chars
-	})
-	if err == nil {
-		t.Fatal("expected error for too long peering")
-	}
-}
-
-func TestNew_emptyPeering_ok(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name: "test.node",
-		Type: "server",
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// //
-
-func TestNew_tooManyContactGroups(t *testing.T) {
-	contacts := make(map[string][]string)
-	for i := range 9 {
-		name := strings.Repeat("a", 2) + strings.Repeat("b", i)
-		contacts[name] = []string{"contact@example.com"}
-	}
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: contacts,
-	})
-	if err == nil {
-		t.Fatal("expected error for >8 contact groups")
-	}
-}
-
-func TestNew_exactMaxContactGroups(t *testing.T) {
-	contacts := make(map[string][]string)
-	for i := range 8 {
-		name := strings.Repeat("a", 2) + strings.Repeat("b", i)
-		contacts[name] = []string{"contact@example.com"}
-	}
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: contacts,
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-func TestNew_emptyContactGroup(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: map[string][]string{"email": {}},
-	})
-	if err == nil {
-		t.Fatal("expected error for empty contact group")
-	}
-}
-
-func TestNew_tooManyContactsPerGroup(t *testing.T) {
-	contacts := make([]string, 9)
-	for i := range contacts {
-		contacts[i] = "contact" + strings.Repeat("x", i) + "@example.com"
-	}
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: map[string][]string{"email": contacts},
-	})
-	if err == nil {
-		t.Fatal("expected error for >8 contacts per group")
-	}
-}
-
-func TestNew_invalidContactGroupName(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: map[string][]string{"A": {"foo@bar.com"}}, // uppercase, too short
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid group name")
-	}
-}
-
-func TestNew_invalidContactValue(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: map[string][]string{"email": {"a"}}, // too short for reContacts
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid contact value")
-	}
-}
-
-func TestNew_validContact(t *testing.T) {
-	_, err := New(ConfigObj{
-		Name:     "test.node",
-		Type:     "server",
-		Contacts: map[string][]string{"email": {"admin@example.com"}},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// // // // // // // // // //
-// Match
-
-func TestMatch_valid_nameAndType(t *testing.T) {
-	ni := map[string]any{"name": "test", "type": "server"}
-	if !Match(ni) {
-		t.Fatal("expected match with name+type")
-	}
-}
-
-func TestMatch_valid_full(t *testing.T) {
-	ni := map[string]any{
-		"name":        "test",
+func TestMatchForeignNodeInfo(t *testing.T) {
+	validFull := map[string]any{
+		"name":        "node.example",
 		"type":        "server",
-		"location":    "Moscow",
-		"contact":     map[string]any{"email": []any{"foo@bar.com"}},
-		"description": "open",
+		"location":    "Warsaw, Poland",
+		"description": "Public relay node",
+		"contact":     map[string]any{"email": []any{"admin@example.com"}},
 	}
-	if !Match(ni) {
-		t.Fatal("expected match with full data")
+	tests := []struct {
+		name     string
+		nodeInfo map[string]any
+		match    bool
+	}{
+		{name: "minimal", nodeInfo: map[string]any{"name": "node.example", "type": "server"}, match: true},
+		{name: "full JSON shape", nodeInfo: validFull, match: true},
+		{name: "typed contacts", nodeInfo: map[string]any{"name": "node.example", "type": "server", "contact": map[string][]string{"email": {"admin@example.com"}}}, match: true},
+		{name: "missing name", nodeInfo: map[string]any{"type": "server"}},
+		{name: "missing type", nodeInfo: map[string]any{"name": "node.example"}},
+		{name: "name not string", nodeInfo: map[string]any{"name": 1.0, "type": "server"}},
+		{name: "type not string", nodeInfo: map[string]any{"name": "node.example", "type": nil}},
+		{name: "invalid name", nodeInfo: map[string]any{"name": "Node.example", "type": "server"}},
+		{name: "location not string", nodeInfo: map[string]any{"name": "node.example", "type": "server", "location": 1.0}},
+		{name: "invalid location", nodeInfo: map[string]any{"name": "node.example", "type": "server", "location": "x"}},
+		{name: "description not string", nodeInfo: map[string]any{"name": "node.example", "type": "server", "description": []any{}}},
+		{name: "contact wrong type", nodeInfo: map[string]any{"name": "node.example", "type": "server", "contact": []any{}}},
+		{name: "contact value not array", nodeInfo: map[string]any{"name": "node.example", "type": "server", "contact": map[string]any{"email": "admin@example.com"}}},
+		{name: "contact element not string", nodeInfo: map[string]any{"name": "node.example", "type": "server", "contact": map[string]any{"email": []any{1.0}}}},
+		{name: "empty contact group", nodeInfo: map[string]any{"name": "node.example", "type": "server", "contact": map[string]any{"email": []any{}}}},
 	}
-}
-
-func TestMatch_missingName(t *testing.T) {
-	ni := map[string]any{"type": "server"}
-	if Match(ni) {
-		t.Fatal("expected no match without name")
-	}
-}
-
-func TestMatch_missingType(t *testing.T) {
-	ni := map[string]any{"name": "test"}
-	if Match(ni) {
-		t.Fatal("expected no match without type")
-	}
-}
-
-func TestMatch_nameNotString(t *testing.T) {
-	ni := map[string]any{"name": 123, "type": "server"}
-	if Match(ni) {
-		t.Fatal("expected no match for non-string name")
-	}
-}
-
-func TestMatch_typeNotString(t *testing.T) {
-	ni := map[string]any{"name": "test", "type": 123}
-	if Match(ni) {
-		t.Fatal("expected no match for non-string type")
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := Match(test.nodeInfo); got != test.match {
+				t.Fatalf("Match() = %v, want %v", got, test.match)
+			}
+		})
 	}
 }
 
-func TestMatch_locationNotString(t *testing.T) {
-	ni := map[string]any{"name": "test", "type": "server", "location": 123}
-	if Match(ni) {
-		t.Fatal("expected no match for non-string location")
-	}
-}
-
-func TestMatch_contactWrongType(t *testing.T) {
-	ni := map[string]any{"name": "test", "type": "server", "contact": "string"}
-	if Match(ni) {
-		t.Fatal("expected no match for string contact")
-	}
-}
-
-func TestMatch_contactValueNotArray(t *testing.T) {
-	ni := map[string]any{
-		"name": "test", "type": "server",
-		"contact": map[string]any{"email": "not-array"},
-	}
-	if Match(ni) {
-		t.Fatal("expected no match for non-array contact value")
-	}
-}
-
-func TestMatch_contactElementNotString(t *testing.T) {
-	ni := map[string]any{
-		"name": "test", "type": "server",
-		"contact": map[string]any{"email": []any{123}},
-	}
-	if Match(ni) {
-		t.Fatal("expected no match for non-string contact element")
-	}
-}
-
-func TestMatch_empty(t *testing.T) {
-	ni := map[string]any{}
-	if Match(ni) {
-		t.Fatal("expected no match for empty map")
-	}
-}
-
-func TestMatch_peeringNotString(t *testing.T) {
-	ni := map[string]any{"name": "test", "type": "server", "description": 42}
-	if Match(ni) {
-		t.Fatal("expected no match for non-string peering")
-	}
-}
-
-// // // // // // // // // //
-// Parse
-
-func TestParse_valid(t *testing.T) {
-	ni := map[string]any{
-		"name":        "test.node",
-		"type":        "server",
-		"location":    "EU",
-		"description": "open",
-		"contact": map[string]any{
-			"email": []any{"a@b.com"},
-		},
-	}
-	obj, err := Parse(ni)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	p := obj.Params()
-	if p["name"] != "test.node" {
-		t.Fatalf("unexpected name: %v", p["name"])
-	}
-	if p["location"] != "EU" {
-		t.Fatalf("unexpected location: %v", p["location"])
-	}
-}
-
-func TestParse_noMatch(t *testing.T) {
-	_, err := Parse(map[string]any{"foo": "bar"})
-	if err == nil {
-		t.Fatal("expected error for non-matching NodeInfo")
-	}
-}
-
-func TestParse_nameAndTypeOnly(t *testing.T) {
-	obj, err := Parse(map[string]any{"name": "test", "type": "sv"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	p := obj.Params()
-	if p["name"] != "test" || p["type"] != "sv" {
-		t.Fatalf("unexpected params: %v", p)
-	}
-	if _, ok := p["location"]; ok {
-		t.Fatal("location should be absent")
-	}
-}
-
-// // // // // // // // // //
-// ParseParams
-
-func TestParseParams_selectsOnlyKeys(t *testing.T) {
-	ni := map[string]any{
-		"name":    "test",
+func TestParseAndObjectUpdate(t *testing.T) {
+	nodeInfo := map[string]any{
+		"name":    "node.example",
 		"type":    "server",
-		"unknown": "data",
+		"contact": map[string]any{"email": []any{"admin@example.com"}},
+		"other":   true,
 	}
-	pp := ParseParams(ni)
-	if _, ok := pp["name"]; !ok {
-		t.Fatal("expected name")
-	}
-	if _, ok := pp["unknown"]; ok {
-		t.Fatal("unexpected unknown key")
-	}
-}
-
-func TestParseParams_empty(t *testing.T) {
-	pp := ParseParams(map[string]any{})
-	if len(pp) != 0 {
-		t.Fatalf("expected empty, got %v", pp)
-	}
-}
-
-// // // // // // // // // //
-// SetParams
-
-func TestSetParams_noConflict(t *testing.T) {
-	obj, _ := New(ConfigObj{Name: "test.node", Type: "sv"})
-	result, err := obj.SetParams(map[string]any{"other": "data"})
+	obj, err := Parse(nodeInfo)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Parse: %v", err)
 	}
-	if result["name"] != "test.node" {
-		t.Fatal("name not set")
+	want := &ConfigObj{Name: "node.example", Type: "server", Contacts: map[string][]string{"email": {"admin@example.com"}}}
+	if got := obj.Info(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Info() = %#v, want %#v", got, want)
 	}
-	if result["type"] != "sv" {
-		t.Fatal("type not set")
+	if _, err := Parse(map[string]any{}); err == nil {
+		t.Fatal("Parse accepted missing info data")
 	}
-	if result["other"] != "data" {
-		t.Fatal("other lost")
+	if _, err := Parse(map[string]any{"name": "Node.example", "type": "server"}); err == nil {
+		t.Fatal("Parse accepted invalid name")
+	}
+
+	current, err := New(validConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := current.ParseParams(nodeInfo)
+	if _, exists := parsed["other"]; exists {
+		t.Fatalf("ParseParams retained unrelated key: %#v", parsed)
+	}
+	if got := current.Info(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("object was not updated: %#v", got)
+	}
+	current.ParseParams(map[string]any{"name": "Node.example", "type": "server"})
+	if got := current.Info(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("invalid update changed object: %#v", got)
 	}
 }
 
-func TestSetParams_conflict(t *testing.T) {
-	obj, _ := New(ConfigObj{Name: "test.node", Type: "sv"})
-	_, err := obj.SetParams(map[string]any{"name": "existing"})
-	if err == nil {
-		t.Fatal("expected conflict error")
+func TestOwnershipAndMerge(t *testing.T) {
+	input := validConfig()
+	input.Contacts = map[string][]string{"email": {"admin@example.com"}}
+	obj, err := New(input)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
+	input.Contacts["email"][0] = "changed@example.com"
+	info := obj.Info()
+	info.Name = "changed.example"
+	info.Contacts["email"][0] = "changed@example.com"
+	params := obj.Params()
+	params["contact"].(map[string][]string)["email"][0] = "changed@example.com"
+	clone := obj.Clone().(*Obj)
+	clone.conf.Contacts["email"][0] = "changed@example.com"
+	if got := obj.Info().Contacts["email"][0]; got != "admin@example.com" {
+		t.Fatalf("mutable alias changed object: %q", got)
+	}
 
-func TestSetParams_skipsEmpty(t *testing.T) {
-	obj, _ := New(ConfigObj{Name: "test.node", Type: "sv"})
-	result, _ := obj.SetParams(map[string]any{})
-	if _, ok := result["location"]; ok {
-		t.Fatal("empty location should not be set")
+	base := map[string]any{"other": "value"}
+	merged, err := obj.SetParams(base)
+	if err != nil {
+		t.Fatalf("SetParams: %v", err)
 	}
-	if _, ok := result["description"]; ok {
-		t.Fatal("empty peering should not be set")
+	if _, exists := base["name"]; exists {
+		t.Fatal("SetParams mutated input")
 	}
-	if _, ok := result["contact"]; ok {
-		t.Fatal("empty contacts should not be set")
+	if got := merged["name"]; got != "node.example" {
+		t.Fatalf("merged name = %#v", got)
 	}
-}
+	if _, err := obj.SetParams(map[string]any{"name": "occupied"}); err == nil {
+		t.Fatal("SetParams accepted a key conflict")
+	}
+	if obj.GetName() != Name() || !reflect.DeepEqual(obj.GetParams(), Keys()) {
+		t.Fatal("interface identity does not match package identity")
+	}
 
-func TestSetParams_doesNotMutateInput(t *testing.T) {
-	obj, _ := New(ConfigObj{Name: "test.node", Type: "sv"})
-	ni := map[string]any{"other": "data"}
-	obj.SetParams(ni)
-	if _, ok := ni["name"]; ok {
-		t.Fatal("SetParams should not mutate input")
-	}
-}
-
-// // // // // // // // // //
-// Obj.ParseParams
-
-func TestObjParseParams(t *testing.T) {
-	obj, _ := New(ConfigObj{Name: "original", Type: "sv"})
-	ni := map[string]any{
-		"name":     "foreign",
-		"type":     "router",
-		"location": "US",
-	}
-	obj.ParseParams(ni)
-	p := obj.Params()
-	if p["name"] != "foreign" {
-		t.Fatalf("expected foreign, got %v", p["name"])
-	}
-	if p["type"] != "router" {
-		t.Fatalf("expected router, got %v", p["type"])
-	}
-	if p["location"] != "US" {
-		t.Fatalf("expected US, got %v", p["location"])
-	}
-}
-
-// // // // // // // // // //
-// Params
-
-func TestParams_emptyFields(t *testing.T) {
-	obj := &Obj{conf: &ConfigObj{}}
-	p := obj.Params()
-	if len(p) != 0 {
-		t.Fatalf("expected empty params, got %v", p)
-	}
-}
-
-func TestParams_allFields(t *testing.T) {
-	obj, _ := New(ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Location:    "EU",
-		Description: "open policy",
-		Contacts:    map[string][]string{"email": {"a@b.com"}},
-	})
-	p := obj.Params()
-	if p["name"] != "test.node" {
-		t.Fatal("missing name")
-	}
-	if p["type"] != "server" {
-		t.Fatal("missing type")
-	}
-	if p["location"] != "EU" {
-		t.Fatal("missing location")
-	}
-	if p["description"] != "open policy" {
-		t.Fatal("missing peering")
-	}
-	if p["contact"] == nil {
-		t.Fatal("missing contact")
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkNew(b *testing.B) {
-	conf := ConfigObj{
-		Name:        "test.node",
-		Type:        "server",
-		Location:    "Moscow",
-		Contacts:    map[string][]string{"email": {"admin@example.com"}},
-		Description: "open peering",
-	}
-	for b.Loop() {
-		New(conf)
-	}
-}
-
-func BenchmarkMatch(b *testing.B) {
-	ni := map[string]any{
-		"name":        "test",
-		"type":        "server",
-		"location":    "EU",
-		"contact":     map[string]any{"email": []any{"a@b.com"}},
-		"description": "open",
-	}
-	for b.Loop() {
-		Match(ni)
-	}
-}
-
-func BenchmarkParse(b *testing.B) {
-	ni := map[string]any{
-		"name":     "test",
-		"type":     "server",
-		"location": "EU",
-		"contact":  map[string]any{"email": []any{"a@b.com"}},
-	}
-	for b.Loop() {
-		Parse(ni)
+	var zero Obj
+	if len(zero.Params()) != 0 || zero.Info() != nil {
+		t.Fatal("zero-value object exposed data")
 	}
 }

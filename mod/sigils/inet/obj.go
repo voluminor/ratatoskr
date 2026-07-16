@@ -31,60 +31,94 @@ func validateAddrs(addrs []string) error {
 	return nil
 }
 
-// Obj — real internet addresses of the node.
+func cloneAddrs(addrs []string) []string {
+	return append([]string(nil), addrs...)
+}
+
+func parseAddrs(NodeInfo map[string]any) ([]string, bool) {
+	raw, ok := ParseParams(NodeInfo)[sigName]
+	if !ok {
+		return nil, false
+	}
+
+	switch arr := raw.(type) {
+	case []any:
+		if len(arr) > maxAddrs {
+			return nil, false
+		}
+		addrs := make([]string, 0, len(arr))
+		for _, item := range arr {
+			s, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			addrs = append(addrs, s)
+		}
+		return addrs, true
+	case []string:
+		return cloneAddrs(arr), true
+	default:
+		return nil, false
+	}
+}
+
+// Obj owns a validated list of public Internet addresses.
 type Obj struct {
 	addrs []string
 }
 
-// New creates the "inet" sigil. Max 32 addresses, no duplicates.
+// New creates an inet sigil with 1 to 32 unique addresses.
 func New(addrs []string) (*Obj, error) {
 	if err := validateAddrs(addrs); err != nil {
 		return nil, err
 	}
-	return &Obj{addrs: addrs}, nil
+	return &Obj{addrs: cloneAddrs(addrs)}, nil
 }
 
 // //
 
+// GetName returns Name.
 func (o *Obj) GetName() string {
 	return Name()
 }
 
+// GetParams returns Keys.
 func (o *Obj) GetParams() []string {
 	return Keys()
 }
 
+// SetParams merges the current fragment into a copy of NodeInfo.
 func (o *Obj) SetParams(NodeInfo map[string]any) (map[string]any, error) {
 	return sigils.MergeParams(NodeInfo, o.Params())
 }
 
+// ParseParams extracts the inet fragment and replaces current data when valid.
 func (o *Obj) ParseParams(NodeInfo map[string]any) map[string]any {
 	parsed := ParseParams(NodeInfo)
 
-	if raw, ok := parsed[sigName].([]any); ok {
-		addrs := make([]string, 0, len(raw))
-		for _, item := range raw {
-			if s, ok := item.(string); ok {
-				addrs = append(addrs, s)
-			}
+	if addrs, ok := parseAddrs(parsed); ok {
+		if err := validateAddrs(addrs); err == nil {
+			o.addrs = cloneAddrs(addrs)
 		}
-		o.addrs = addrs
 	}
 
 	return parsed
 }
 
+// Match reports whether NodeInfo contains a valid inet fragment.
 func (o *Obj) Match(NodeInfo map[string]any) bool {
 	return Match(NodeInfo)
 }
 
+// Clone returns an independent copy.
 func (o *Obj) Clone() sigils.Interface {
-	return &Obj{addrs: append([]string(nil), o.addrs...)}
+	return &Obj{addrs: cloneAddrs(o.addrs)}
 }
 
+// Params returns an independent NodeInfo fragment.
 func (o *Obj) Params() map[string]any {
 	if len(o.addrs) == 0 {
 		return map[string]any{}
 	}
-	return map[string]any{sigName: o.addrs}
+	return map[string]any{sigName: cloneAddrs(o.addrs)}
 }

@@ -8,9 +8,9 @@ import (
 
 func TestErrors_distinct(t *testing.T) {
 	errs := []error{
-		ErrCoreRequired, ErrLoggerRequired, ErrRemotePeersNotCaptured,
-		ErrInvalidCacheTTL, ErrMaxDepthRequired, ErrInvalidKeyLength,
-		ErrKeyNotInTree, ErrNoActivePath, ErrNodeUnreachable,
+		ErrSourceRequired, ErrRemotePeersNotCaptured,
+		ErrMaxDepthRequired, ErrInvalidKeyLength,
+		ErrKeyNotInTree, ErrNoActivePath,
 		ErrRemotePeersDisabled, ErrTreeEmpty, ErrNoRoot, ErrLookupTimedOut,
 	}
 	seen := make(map[string]bool, len(errs))

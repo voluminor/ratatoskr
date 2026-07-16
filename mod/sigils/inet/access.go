@@ -2,7 +2,7 @@ package inet
 
 // // // // // // // // // //
 
-// Addrs returns the address list.
+// Addrs returns an independent copy of the address list.
 func (o *Obj) Addrs() []string {
-	return o.addrs
+	return cloneAddrs(o.addrs)
 }

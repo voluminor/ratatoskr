@@ -29,34 +29,34 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Plain TCP server
 	tcpListener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
 		fmt.Println("Error: listen TCP:", err)
 		return
 	}
-	go (&http.Server{
+	tcpServer := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, "hello from the network")
+			_, _ = fmt.Fprint(w, "hello from the network")
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
-	}).Serve(tcpListener)
+	}
+	go func() { _ = tcpServer.Serve(tcpListener) }()
+	defer func() { _ = tcpServer.Close() }()
 	fmt.Printf("HTTP    http://localhost:%d\n", port)
 
 	// //
 
-	// Yggdrasil server
 	cfg := yggconfig.GenerateConfig()
 	cfg.AdminListen = "none"
 	cfg.Peers = []string{peer}
 
-	node, err := ratatoskr.New(ratatoskr.ConfigObj{Ctx: ctx, Config: cfg, CoreStopTimeout: shutdownTimeout})
+	node, err := ratatoskr.New(ratatoskr.ConfigObj{Ctx: ctx, Config: cfg, CloseTimeout: shutdownTimeout})
 	if err != nil {
 		fmt.Println("Error: start yggdrasil:", err)
 		return
 	}
-	defer node.Close()
+	defer func() { _ = node.Close() }()
 
 	yggAddr := fmt.Sprintf("[%s]:%d", node.Address(), port)
 	yggListener, err := node.Listen("tcp", yggAddr)
@@ -64,13 +64,15 @@ func main() {
 		fmt.Println("Error: listen yggdrasil:", err)
 		return
 	}
-	go (&http.Server{
+	yggServer := &http.Server{
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprint(w, "hello from the Yggdrasil network")
+			_, _ = fmt.Fprint(w, "hello from the Yggdrasil network")
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
-	}).Serve(yggListener)
+	}
+	go func() { _ = yggServer.Serve(yggListener) }()
+	defer func() { _ = yggServer.Close() }()
 	fmt.Printf("Yggdrasil http://[%s]:%d\n", node.Address(), port)
 
 	// //

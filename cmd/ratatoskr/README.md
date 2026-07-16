@@ -1,117 +1,140 @@
-# ratatoskr
+# Ratatoskr CLI
 
-## Build
+This module contains a generated-settings CLI plus key, configuration, NodeInfo, peer, forwarding, and probe utilities.
 
-```bash
-go build -ldflags="-s -w" -trimpath -o ratatoskr .
+## Current status
+
+The CLI and its subpackages compile and pass their unit tests. Network-facing commands still need live end-to-end
+validation before the binary should be treated as a supported operational tool.
+
+## Contents
+
+- [Architecture](#architecture)
+- [Generation and build](#generation-and-build)
+- [Runtime configuration mode](#runtime-configuration-mode)
+- [Utility command mode](#utility-command-mode)
+- [Security and output](#security-and-output)
+- [Subpackages](#subpackages)
+
+## Architecture
+
+```mermaid
+flowchart TD
+    main["main"]
+    detect["detect -go.* arguments"]
+    runtime["generated target/settings"]
+    command["gsettings parser"]
+    execute["gocmd executor"]
+    main --> detect
+    detect -->|no utility flag| runtime
+    detect -->|- go . * present| command
+    command --> execute
 ```
 
-## Info & help
+Runtime configuration flags and `-go.*` utility flags are separate modes and cannot be combined in one invocation.
+
+## Generation and build
+
+The configuration schema lives in `yml/config`. `go generate` recreates `target/settings` through `goconfgen`; generated
+files must not be edited manually.
 
 ```bash
-./ratatoskr -i
+cd cmd/ratatoskr
+go generate .
+GOWORK=off go test ./...
+GOWORK=off go build -trimpath -ldflags='-s -w' -o ../../tmp/ratatoskr-cli .
 ```
+
+The generator version defaults to `latest` by project policy and may be overridden through the generator's supported
+environment expansion.
+
+## Runtime configuration mode
+
+Without `-go.*`, the CLI loads defaults, optionally merges a YAML, JSON, or HJSON configuration and flag overrides,
+validates it, and prints effective JSON:
 
 ```bash
-./ratatoskr -h
+../../tmp/ratatoskr-cli \
+  -config ./ratatoskr-config.yml \
+  -yggdrasil.if.mtu 65535
 ```
 
-## Key utilities
-
-### Generate vanity key
+Show generated flag help:
 
 ```bash
-./ratatoskr -go.key.gen 10s
+../../tmp/ratatoskr-cli -h
 ```
 
-### Show address for a key
+## Utility command mode
+
+Generate a vanity key for 10 seconds:
 
 ```bash
-./ratatoskr -go.key.addr <hex-private-128|hex-public-64|path-to-pem>
+../../tmp/ratatoskr-cli -go.key.gen 10s
 ```
 
-### Convert hex key to PEM
+Show the address for a hexadecimal key or PEM path:
 
 ```bash
-./ratatoskr -go.key.to_pem key.pem -go.key.addr 5623515376dcafe397e79de5a5ba125adc71beb36f9659a189ee7cb8640855580000278fa1ad5448ce0217a6174f7894acdd921d1021e05758da518aaf73ad80
+../../tmp/ratatoskr-cli -go.key.addr key.pem
 ```
 
-### Convert PEM to hex key
+Generate configuration:
 
 ```bash
-./ratatoskr -go.key.from_pem key.pem
+../../tmp/ratatoskr-cli \
+  -go.conf.generate.path ../../tmp/config \
+  -go.conf.generate.preset medium \
+  -go.conf.generate.format yml
 ```
 
-## Configuration utilities
-
-### Generate default config
+Query NodeInfo:
 
 ```bash
-./ratatoskr -go.conf.generate.path ./
+../../tmp/ratatoskr-cli \
+  -go.ask.addr '<public-key>.pk.ygg' \
+  -go.ask.peer 'tls://peer.example:443' \
+  -go.ask.timeout 10s \
+  -go.ask.format json
 ```
+
+Inspect peers:
 
 ```bash
-./ratatoskr -go.conf.generate.path ./ -go.conf.generate.preset medium
+../../tmp/ratatoskr-cli \
+  -go.peer_info.peer 'tls://peer.example:443' \
+  -go.peer_info.format json
 ```
+
+Forward local TCP:
 
 ```bash
-./ratatoskr -go.conf.generate.path ./ -go.conf.generate.preset full -go.conf.generate.format conf
+../../tmp/ratatoskr-cli \
+  -go.forward.from '127.0.0.1:8080' \
+  -go.forward.to '[200::1]:80' \
+  -go.forward.proto tcp \
+  -go.forward.peer 'tls://peer.example:443'
 ```
 
-### Import Yggdrasil config
+Trace a route:
 
 ```bash
-./ratatoskr -go.conf.import.from /etc/yggdrasil/yggdrasil.conf -go.conf.import.to /etc/ratatoskr
+../../tmp/ratatoskr-cli \
+  -go.probe.trace '<64-character-public-key>' \
+  -go.probe.peer 'tls://peer.example:443'
 ```
 
-### Export to Yggdrasil config
+## Security and output
 
-```bash
-./ratatoskr -go.conf.export.from /etc/ratatoskr/ratatoskr-config.yml -go.conf.export.to /etc/yggdrasil
-```
+- Generated and converted private-key files use mode `0600`.
+- The utility logger suppresses debug/info messages and writes warnings/errors to stderr.
+- Forwarding creates listeners from caller-supplied addresses; binding a wildcard exposes the service accordingly.
+- Utility commands connect to caller-supplied peer URIs and should not be run with untrusted configuration.
+- Generated configuration output can contain private key material.
 
-## Ask
+## Subpackages
 
-Query remote node's NodeInfo by address:
-
-```bash
-./ratatoskr -go.ask.addr [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.ask.addr 200:abcd::1 -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.format json
-```
-
-```bash
-./ratatoskr -go.ask.addr a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924.pk.ygg -go.ask.peer tcp://yggdrasil.sunsung.fun:4442 -go.ask.timeout 10s
-```
-
-## Peer info
-
-```bash
-./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442,quic://yggdrasil.sunsung.fun:4441
-```
-
-```bash
-./ratatoskr -go.peer_info.peer tcp://yggdrasil.sunsung.fun:4442 -go.peer_info.format json
-```
-
-## Port forwarding
-
-```bash
-./ratatoskr -go.forward.from 127.0.0.1:8080 -go.forward.to [200:b0aa:c535:89fb:4c73:bbd:c30b:2665]:80 -go.forward.peer  tcp://yggdrasil.sunsung.fun:4442
-```
-
-## Probe
-
-```bash
-./ratatoskr -go.probe.trace a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.probe.scan -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
-```
-
-```bash
-./ratatoskr -go.probe.ping a7aa9d653b0259c67a211e7a6ccd281219db1246c75e4ebcf9edbdbdaff55924 -go.probe.peer tcp://yggdrasil.sunsung.fun:4442
-```
+- [gsettings](gsettings/README.md): utility flag parsing and typed command values.
+- [gocmd](gocmd/README.md): utility command execution.
+- `target/settings`: third-party generated runtime settings. It is recreated by `go generate` and intentionally has no
+  hand-written files.

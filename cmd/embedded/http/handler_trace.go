@@ -5,8 +5,8 @@ import (
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/voluminor/ratatoskr/mod/probe"
@@ -14,41 +14,37 @@ import (
 
 // // // // // // // // // //
 
-// traceNodeJSON is a recursive JSON representation of NodeObj.
-// Unreachable is true when the node did not respond to a peer query in Tree().
-type traceNodeJSON struct {
-	Key         string           `json:"key"`
-	Parent      string           `json:"parent,omitempty"`
-	Depth       int              `json:"depth"`
-	Sequence    uint64           `json:"sequence,omitempty"`
-	RTT         float64          `json:"rtt_ms,omitempty"`
-	Unreachable bool             `json:"unreachable,omitempty"`
-	Children    []*traceNodeJSON `json:"children,omitempty"`
+type traceNodeJSONObj struct {
+	Key         string              `json:"key"`
+	Parent      string              `json:"parent,omitempty"`
+	Depth       int                 `json:"depth"`
+	Sequence    uint64              `json:"sequence,omitempty"`
+	RTT         float64             `json:"rtt_ms,omitempty"`
+	Unreachable bool                `json:"unreachable,omitempty"`
+	Children    []*traceNodeJSONObj `json:"children,omitempty"`
 }
 
-// traceHopJSON is a single pathfinder hop.
-type traceHopJSON struct {
+type traceHopJSONObj struct {
 	Key   string `json:"key,omitempty"`
 	Port  uint64 `json:"port"`
 	Index int    `json:"index"`
 }
 
-// traceResponseJSON is the /probe.json response.
-type traceResponseJSON struct {
-	Target   string           `json:"target"`
-	Path     []*traceNodeJSON `json:"path,omitempty"`
-	Hops     []traceHopJSON   `json:"hops,omitempty"`
-	Duration float64          `json:"duration_ms"`
-	Error    string           `json:"error,omitempty"`
+type traceResponseJSONObj struct {
+	Target   string              `json:"target"`
+	Path     []*traceNodeJSONObj `json:"path,omitempty"`
+	Hops     []traceHopJSONObj   `json:"hops,omitempty"`
+	Duration float64             `json:"duration_ms"`
+	Error    string              `json:"error,omitempty"`
 }
 
 // //
 
-func nodeToJSON(n *probe.NodeObj) *traceNodeJSON {
+func nodeToJSON(n *probe.NodeObj) *traceNodeJSONObj {
 	if n == nil {
 		return nil
 	}
-	j := &traceNodeJSON{
+	j := &traceNodeJSONObj{
 		Key:         hex.EncodeToString(n.Key),
 		Parent:      hex.EncodeToString(n.Parent),
 		Depth:       n.Depth,
@@ -57,7 +53,7 @@ func nodeToJSON(n *probe.NodeObj) *traceNodeJSON {
 		Unreachable: n.Unreachable,
 	}
 	if len(n.Children) > 0 {
-		j.Children = make([]*traceNodeJSON, len(n.Children))
+		j.Children = make([]*traceNodeJSONObj, len(n.Children))
 		for i, ch := range n.Children {
 			j.Children[i] = nodeToJSON(ch)
 		}
@@ -65,10 +61,8 @@ func nodeToJSON(n *probe.NodeObj) *traceNodeJSON {
 	return j
 }
 
-// nodeToJSONFlat converts a NodeObj to JSON without children or unreachable flag.
-// Used for path serialization where only the linear chain matters.
-func nodeToJSONFlat(n *probe.NodeObj) *traceNodeJSON {
-	return &traceNodeJSON{
+func nodeToJSONFlat(n *probe.NodeObj) *traceNodeJSONObj {
+	return &traceNodeJSONObj{
 		Key:      hex.EncodeToString(n.Key),
 		Parent:   hex.EncodeToString(n.Parent),
 		Depth:    n.Depth,
@@ -79,8 +73,6 @@ func nodeToJSONFlat(n *probe.NodeObj) *traceNodeJSON {
 
 // //
 
-// newTraceHandler traces a route to the given key.
-// GET ?key=<hex>. Returns path (spanning tree) with RTT, hops (pathfinder), subtree.
 func newTraceHandler(tr *probe.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		keyHex := r.URL.Query().Get("key")
@@ -103,7 +95,7 @@ func newTraceHandler(tr *probe.Obj) http.Handler {
 		result, err := tr.Trace(ctx, pubKey)
 		elapsed := time.Since(start)
 
-		resp := traceResponseJSON{
+		resp := traceResponseJSONObj{
 			Target:   keyHex,
 			Duration: float64(elapsed.Microseconds()) / 1000.0,
 		}
@@ -114,16 +106,16 @@ func newTraceHandler(tr *probe.Obj) http.Handler {
 
 		if result != nil {
 			if result.TreePath != nil {
-				resp.Path = make([]*traceNodeJSON, len(result.TreePath))
+				resp.Path = make([]*traceNodeJSONObj, len(result.TreePath))
 				for i, n := range result.TreePath {
 					resp.Path[i] = nodeToJSONFlat(n)
 				}
 			}
 
 			if result.Hops != nil {
-				resp.Hops = make([]traceHopJSON, len(result.Hops))
+				resp.Hops = make([]traceHopJSONObj, len(result.Hops))
 				for i, h := range result.Hops {
-					hop := traceHopJSON{Port: h.Port, Index: h.Index}
+					hop := traceHopJSONObj{Port: h.Port, Index: h.Index}
 					if len(h.Key) > 0 {
 						hop.Key = hex.EncodeToString(h.Key)
 					}
@@ -141,15 +133,10 @@ func newTraceHandler(tr *probe.Obj) http.Handler {
 
 // //
 
-// newTreeHandler returns the BFS peer topology tree.
-// GET ?depth=N&concurrency=N. depth is required and must be > 0.
-// 30s timeout — BFS can take a while on large networks.
 func newTreeHandler(tr *probe.Obj) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var depth int
-		var concurrency int
-		fmt.Sscanf(r.URL.Query().Get("depth"), "%d", &depth)
-		fmt.Sscanf(r.URL.Query().Get("concurrency"), "%d", &concurrency)
+		depth, _ := strconv.Atoi(r.URL.Query().Get("depth"))
+		concurrency, _ := strconv.Atoi(r.URL.Query().Get("concurrency"))
 
 		if depth <= 0 || depth > 65535 {
 			data, _ := json.Marshal(map[string]string{"error": "depth must be between 1 and 65535"})
@@ -185,7 +172,7 @@ func newTreeHandler(tr *probe.Obj) http.Handler {
 // //
 
 func writeTraceError(w http.ResponseWriter, msg string) {
-	resp := traceResponseJSON{Error: msg}
+	resp := traceResponseJSONObj{Error: msg}
 	data, _ := json.Marshal(resp)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusBadRequest)

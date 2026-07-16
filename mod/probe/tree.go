@@ -8,66 +8,41 @@ import (
 
 // // // // // // // // // //
 
-// buildTree builds a tree from flat TreeEntryInfo. Root is the self-parented node.
-func buildTree(entries []yggcore.TreeEntryInfo, logger yggcore.Logger) (*NodeObj, error) {
+func spanningTreePath(entries []yggcore.TreeEntryInfo, key ed25519.PublicKey) ([]*NodeObj, error) {
 	if len(entries) == 0 {
 		return nil, ErrTreeEmpty
 	}
-
-	nodes := make([]NodeObj, len(entries))
-	index := make(map[[ed25519.PublicKeySize]byte]*NodeObj, len(entries))
-	for i, e := range entries {
-		nodes[i] = NodeObj{
-			Key:      e.Key,
-			Parent:   e.Parent,
-			Sequence: e.Sequence,
+	index := make(map[[ed25519.PublicKeySize]byte]yggcore.TreeEntryInfo, len(entries))
+	for _, e := range entries {
+		index[toKeyArray(e.Key)] = e
+	}
+	cur := toKeyArray(key)
+	if _, ok := index[cur]; !ok {
+		return nil, ErrKeyNotInTree
+	}
+	reversed := make([]*NodeObj, 0, len(index))
+	for i := 0; i <= len(index); i++ {
+		e, ok := index[cur]
+		if !ok {
+			return nil, ErrNoRoot
 		}
-		index[toKeyArray(e.Key)] = &nodes[i]
-	}
-
-	orphans := 0
-	var root *NodeObj
-	for k, node := range index {
-		pk := toKeyArray(node.Parent)
-		if pk == k {
-			root = node
-			continue
+		reversed = append(reversed, &NodeObj{Key: e.Key, Parent: e.Parent, Sequence: e.Sequence})
+		pk := toKeyArray(e.Parent)
+		if pk == cur {
+			path := make([]*NodeObj, len(reversed))
+			for j, n := range reversed {
+				n.Depth = len(reversed) - 1 - j
+				path[n.Depth] = n
+			}
+			return path, nil
 		}
-		if parent, ok := index[pk]; ok {
-			parent.Children = append(parent.Children, node)
-		} else {
-			orphans++
-		}
+		cur = pk
 	}
-
-	if orphans > 0 && logger != nil {
-		logger.Warnf("[probe] buildTree: %d orphan nodes (parent not in tree)", orphans)
-	}
-
-	if root == nil {
-		return nil, ErrNoRoot
-	}
-	setDepth(root, 0, 1024)
-	return root, nil
-}
-
-// //
-
-// setDepth recursively assigns depth. maxDepth guards against cycles.
-func setDepth(n *NodeObj, d, maxDepth int) {
-	n.Depth = d
-	if d >= maxDepth {
-		n.Children = nil
-		return
-	}
-	for _, ch := range n.Children {
-		setDepth(ch, d+1, maxDepth)
-	}
+	return nil, ErrNoRoot
 }
 
 // // // // // // // // // //
 
-// resolveHops converts PathEntryInfo to HopObj slice, resolving ports to keys via peers.
 func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj {
 	portToKey := make(map[uint64]ed25519.PublicKey, len(peers))
 	for _, p := range peers {
@@ -89,7 +64,6 @@ func resolveHops(path yggcore.PathEntryInfo, peers []yggcore.PeerInfo) []HopObj 
 
 // // // // // // // // // //
 
-// toKeyArray converts ed25519.PublicKey to a fixed-size array for map keys.
 func toKeyArray(key ed25519.PublicKey) [ed25519.PublicKeySize]byte {
 	var arr [ed25519.PublicKeySize]byte
 	copy(arr[:], key)

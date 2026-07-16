@@ -2,13 +2,49 @@ package ninfo
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
+	"github.com/voluminor/ratatoskr/mod/sigils"
+	"github.com/voluminor/ratatoskr/mod/sigils/inet"
 	"github.com/voluminor/ratatoskr/target"
 )
 
 // // // // // // // // // //
-// Parse
+
+type emptyParseSigilObj struct {
+	name string
+	keys []string
+}
+
+var _ sigils.Interface = &emptyParseSigilObj{}
+
+func (e *emptyParseSigilObj) GetName() string { return e.name }
+func (e *emptyParseSigilObj) GetParams() []string {
+	return append([]string(nil), e.keys...)
+}
+func (e *emptyParseSigilObj) ParseParams(map[string]any) map[string]any {
+	return nil
+}
+func (e *emptyParseSigilObj) Match(map[string]any) bool {
+	return true
+}
+func (e *emptyParseSigilObj) Params() map[string]any {
+	return nil
+}
+func (e *emptyParseSigilObj) Clone() sigils.Interface {
+	return &emptyParseSigilObj{name: e.name, keys: append([]string(nil), e.keys...)}
+}
+
+type nilCloneParseSigilObj struct {
+	emptyParseSigilObj
+}
+
+func (n *nilCloneParseSigilObj) Clone() sigils.Interface {
+	return nil
+}
+
+// // // // // // // // // //
 
 func TestParse_noRatatoskrKey(t *testing.T) {
 	m := map[string]any{"custom": "data"}
@@ -26,14 +62,14 @@ func TestParse_noRatatoskrKey(t *testing.T) {
 
 func TestParse_withRatatoskrKey(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: "[] v1.0",
-		"extra_key":       "extra_val",
+		target.Name: "[] v1.0",
+		"extra_key": "extra_val",
 	}
 	p := Parse(m)
 	if p.Version != "v1.0" {
 		t.Fatalf("expected version v1.0, got %s", p.Version)
 	}
-	if _, ok := p.Extra[target.GlobalName]; ok {
+	if _, ok := p.Extra[target.Name]; ok {
 		t.Fatal("ratatoskr key should be removed from Extra")
 	}
 	if p.Extra["extra_key"] != "extra_val" {
@@ -41,22 +77,54 @@ func TestParse_withRatatoskrKey(t *testing.T) {
 	}
 }
 
+func TestParse_builtinSigilNameIsReserved(t *testing.T) {
+	m := map[string]any{
+		target.Name:  "[" + inet.Name() + "] " + target.Version,
+		inet.Name():  []any{"example.org"},
+		"shadow_key": "keep",
+	}
+
+	p := Parse(m, newMockSigil(inet.Name(), "shadow_key"))
+	if p.Sigils == nil || p.Sigils[inet.Name()] == nil {
+		t.Fatal("built-in sigil parser should handle reserved names")
+	}
+	if _, ok := p.Extra[inet.Name()]; ok {
+		t.Fatal("built-in sigil key should be removed from Extra")
+	}
+	if p.Extra["shadow_key"] != "keep" {
+		t.Fatal("custom sigil with reserved name should not override built-in parser")
+	}
+}
+
 func TestParse_invalidRatatoskrString(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: "invalid format",
+		target.Name: "invalid format",
 	}
 	p := Parse(m)
 	if p.Version != "" {
 		t.Fatal("expected empty Version for invalid format")
 	}
-	if _, ok := p.Extra[target.GlobalName]; !ok {
+	if _, ok := p.Extra[target.Name]; !ok {
+		t.Fatal("ratatoskr key should remain in Extra on parse failure")
+	}
+}
+
+func TestParse_invalidVersionLeavesMetadataInExtra(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[abc] " + strings.Repeat("x", 65),
+	}
+	p := Parse(m)
+	if p.Version != "" {
+		t.Fatal("expected empty Version for invalid version")
+	}
+	if _, ok := p.Extra[target.Name]; !ok {
 		t.Fatal("ratatoskr key should remain in Extra on parse failure")
 	}
 }
 
 func TestParse_nonStringRatatoskrKey(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: 12345,
+		target.Name: 12345,
 	}
 	p := Parse(m)
 	if p.Version != "" {
@@ -66,11 +134,11 @@ func TestParse_nonStringRatatoskrKey(t *testing.T) {
 
 func TestParse_doesNotMutateInput(t *testing.T) {
 	m := map[string]any{
-		target.GlobalName: "[] v1",
-		"keep":            "me",
+		target.Name: "[] v1",
+		"keep":      "me",
 	}
 	Parse(m)
-	if _, ok := m[target.GlobalName]; !ok {
+	if _, ok := m[target.Name]; !ok {
 		t.Fatal("Parse should not mutate the input map")
 	}
 	if m["keep"] != "me" {
@@ -78,8 +146,62 @@ func TestParse_doesNotMutateInput(t *testing.T) {
 	}
 }
 
+func TestParse_userSigilWithOptionalKeysIsAccepted(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	p := Parse(m, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
+	if p.Sigils == nil || p.Sigils["custom"] == nil {
+		t.Fatal("matched user sigil should be accepted")
+	}
+	if _, ok := p.Extra["custom"]; ok {
+		t.Fatal("declared sigil key should be claimed from Extra")
+	}
+}
+
+func TestParse_absentUserSigilIsSkipped(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	p := Parse(m, newMockSigil("custom", "absent"))
+	if p.Sigils != nil {
+		t.Fatal("absent sigil should not be accepted")
+	}
+	if p.Extra["custom"] != "value" {
+		t.Fatal("absent sigil must leave custom data in Extra")
+	}
+}
+
+func TestParse_nilUserSigilIsSkipped(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	p := Parse(m, nil, &emptyParseSigilObj{name: "custom", keys: []string{"custom"}})
+	if p.Sigils == nil || p.Sigils["custom"] == nil {
+		t.Fatal("nil sigil must not disrupt parsing of valid sigils")
+	}
+}
+
+func TestParse_nilCloneUserSigilIsSkipped(t *testing.T) {
+	m := map[string]any{
+		target.Name: "[custom] " + target.Version,
+		"custom":    "value",
+	}
+	p := Parse(m, &nilCloneParseSigilObj{
+		emptyParseSigilObj: emptyParseSigilObj{name: "custom", keys: []string{"custom"}},
+	})
+	if p.Sigils != nil {
+		t.Fatal("nil-clone sigil should not be accepted")
+	}
+	if p.Extra["custom"] != "value" {
+		t.Fatal("nil-clone sigil must leave custom data in Extra")
+	}
+}
+
 // // // // // // // // // //
-// NodeInfo
 
 func TestParsedObj_NodeInfo_plain(t *testing.T) {
 	m := map[string]any{"custom": "data"}
@@ -91,14 +213,13 @@ func TestParsedObj_NodeInfo_plain(t *testing.T) {
 }
 
 func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
-	obj := newTestObj()
-	obj.AddSigil(newMockSigil("aaa", "key1"))
+	parser := newMockSigil("aaa", "key1")
 	m := map[string]any{
-		target.GlobalName: "[aaa] " + target.GlobalVersion,
-		"key1":            "test",
-		"extra":           "val",
+		target.Name: "[aaa] " + target.Version,
+		"key1":      "test",
+		"extra":     "val",
 	}
-	p := Parse(m, obj.sigilSlice()...)
+	p := Parse(m, parser)
 	ni := p.NodeInfo()
 	if ni["extra"] != "val" {
 		t.Fatal("extra key should be in NodeInfo")
@@ -106,21 +227,50 @@ func TestParsedObj_NodeInfo_withSigils(t *testing.T) {
 	if ni["key1"] != "test" {
 		t.Fatal("sigil key should be reassembled")
 	}
-	if _, ok := ni[target.GlobalName]; !ok {
+	if _, ok := ni[target.Name]; !ok {
 		t.Fatal("ratatoskr metadata key should be present")
+	}
+}
+
+func TestParsedObj_NodeInfo_preservesRemoteVersion(t *testing.T) {
+	parser := newMockSigil("aaa", "key1")
+	m := map[string]any{
+		target.Name: "[aaa] v9.9.9",
+		"key1":      "test",
+	}
+	p := Parse(m, parser)
+	ni := p.NodeInfo()
+	if ni[target.Name] != "[aaa] v9.9.9" {
+		t.Fatalf("unexpected metadata: %v", ni[target.Name])
+	}
+}
+
+func TestParsedObj_NodeInfo_preservesUnknownSigilNames(t *testing.T) {
+	parser := newMockSigil("aaa", "key1")
+	m := map[string]any{
+		target.Name: "[aaa,zzz] v9.9.9",
+		"key1":      "test",
+		"zzz":       "opaque",
+	}
+	p := Parse(m, parser)
+	ni := p.NodeInfo()
+	if ni[target.Name] != "[aaa,zzz] v9.9.9" {
+		t.Fatalf("unexpected metadata: %v", ni[target.Name])
+	}
+	if ni["zzz"] != "opaque" {
+		t.Fatal("unknown sigil params should stay in NodeInfo")
 	}
 }
 
 func TestParsedObj_NodeInfo_noVersion(t *testing.T) {
 	p := &ParsedObj{Extra: map[string]any{"foo": "bar"}}
 	ni := p.NodeInfo()
-	if _, ok := ni[target.GlobalName]; ok {
+	if _, ok := ni[target.Name]; ok {
 		t.Fatal("ratatoskr key should not be present without Version")
 	}
 }
 
 // // // // // // // // // //
-// String
 
 func TestParsedObj_String_validJSON(t *testing.T) {
 	m := map[string]any{"name": "test", "version": "1.0"}
@@ -140,29 +290,5 @@ func TestParsedObj_String_empty(t *testing.T) {
 	s := p.String()
 	if s != "{}" {
 		t.Fatalf("expected {}, got %s", s)
-	}
-}
-
-// // // // // // // // // //
-
-func BenchmarkParse_withRatatoskr(b *testing.B) {
-	m := map[string]any{
-		target.GlobalName: "[inet,info] v0.1.3",
-		"buildname":       "yggdrasil",
-		"buildversion":    "0.5.13",
-		"extra":           "data",
-	}
-	for b.Loop() {
-		Parse(m)
-	}
-}
-
-func BenchmarkParse_plain(b *testing.B) {
-	m := map[string]any{
-		"name":    "test",
-		"version": "1.0",
-	}
-	for b.Loop() {
-		Parse(m)
 	}
 }

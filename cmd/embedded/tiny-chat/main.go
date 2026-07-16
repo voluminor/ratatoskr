@@ -61,7 +61,7 @@ func main() {
 		fmt.Println("Error: failed to start node:", err)
 		return
 	}
-	defer node.Close()
+	defer func() { _ = node.Close() }()
 
 	yggAddr := fmt.Sprintf("[%s]:%d", node.Address(), chatPort)
 	listener, err := node.Listen("tcp", yggAddr)
@@ -78,8 +78,8 @@ func main() {
 		Handler:  mux,
 		ErrorLog: log.New(io.Discard, "", 0),
 	}
-	go srv.Serve(listener)
-	defer srv.Close()
+	go func() { _ = srv.Serve(listener) }()
+	defer func() { _ = srv.Close() }()
 
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -118,7 +118,7 @@ func main() {
 		resp, err := client.Get(peerURL + "/ping")
 		if err == nil {
 			body, _ := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if string(body) == "OK-chat" {
 				break
 			}
@@ -142,7 +142,7 @@ func main() {
 	for {
 		select {
 		case <-shutdownCh:
-			os.Exit(0)
+			return
 		case <-ctx.Done():
 			return
 		case line, ok := <-inputCh:
@@ -155,7 +155,7 @@ func main() {
 			if line == "/bye" {
 				sendMessage(client, peerURL, "/bye")
 				fmt.Println("Bye!")
-				os.Exit(0)
+				return
 			}
 			sendMessage(client, peerURL, line)
 		}
@@ -165,7 +165,7 @@ func main() {
 // //
 
 func handlePing(w http.ResponseWriter, _ *http.Request) {
-	fmt.Fprint(w, "OK-chat")
+	_, _ = fmt.Fprint(w, "OK-chat")
 }
 
 func handleInput(w http.ResponseWriter, r *http.Request) {
@@ -188,11 +188,10 @@ func handleInput(w http.ResponseWriter, r *http.Request) {
 // //
 
 func sendMessage(client *http.Client, peerURL string, msg string) {
-	go func() {
-		resp, err := client.Post(peerURL+"/input", "text/plain", strings.NewReader(msg))
-		if err != nil {
-			return
-		}
-		resp.Body.Close()
-	}()
+	resp, err := client.Post(peerURL+"/input", "text/plain", strings.NewReader(msg))
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }

@@ -11,8 +11,8 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -46,10 +46,10 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:             ctx,
-		Config:          nodeCfg,
-		Logger:          logger,
-		CoreStopTimeout: 5 * time.Second,
+		Ctx:          ctx,
+		Config:       nodeCfg,
+		Logger:       logger,
+		CloseTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     cfg.Peer,
 			BatchSize: len(cfg.Peer),
@@ -58,9 +58,8 @@ func peerInfo(cfg *gsettings.GoPeerInfoObj) error {
 	if err != nil {
 		return fmt.Errorf("start node: %w", err)
 	}
-	defer func() { go node.Close() }()
+	defer func() { _ = node.Close() }()
 
-	// Wait for connections or timeout
 	frame := 0
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
@@ -100,7 +99,7 @@ wait:
 
 // //
 
-type peerInfoJSON struct {
+type peerInfoJSONObj struct {
 	URI       string  `json:"uri"`
 	Up        bool    `json:"up"`
 	Inbound   bool    `json:"inbound,omitempty"`
@@ -115,9 +114,9 @@ type peerInfoJSON struct {
 
 func outputPeerInfo(peers []ratatoskr.PeerSnapshotObj, format gsettings.GoAskFormatEnum) error {
 	if format == gsettings.GoAskFormatJson {
-		out := make([]peerInfoJSON, len(peers))
+		out := make([]peerInfoJSONObj, len(peers))
 		for i, p := range peers {
-			out[i] = peerInfoJSON{
+			out[i] = peerInfoJSONObj{
 				URI:       p.URI,
 				Up:        p.Up,
 				Inbound:   p.Inbound,
@@ -136,7 +135,6 @@ func outputPeerInfo(peers []ratatoskr.PeerSnapshotObj, format gsettings.GoAskFor
 		return nil
 	}
 
-	// Text output
 	fmt.Fprintf(os.Stderr, "%-40s %-6s %-10s %-16s %10s %10s\n",
 		"URI", "STATUS", "LATENCY", "KEY", "RX", "TX")
 

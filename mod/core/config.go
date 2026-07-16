@@ -1,25 +1,18 @@
 package core
 
 import (
-	"time"
-
 	"github.com/yggdrasil-network/yggdrasil-go/src/config"
 	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
 
-// ConfigObj — Yggdrasil node creation parameters
+// ConfigObj contains node construction parameters.
 type ConfigObj struct {
-	// Yggdrasil configuration (keys, peers, listen); nil → random keys
+	// Config is captured during construction. Treat it and nested values as
+	// immutable for the node lifetime. Nil generates a default node config.
 	Config *config.NodeConfig
 
-	// Logger; nil → logs are discarded
+	// Logger receives Yggdrasil logs. Nil discards them.
 	Logger yggcore.Logger
-
-	// core.Stop() timeout; 0 → unlimited wait
-	CoreStopTimeout time.Duration
-
-	// RST packet deferred queue size; 0 → 100
-	RSTQueueSize int
 }

@@ -1,0 +1,161 @@
+# goconfgen schema for the ratatoskr CLI runtime configuration.
+
+yggdrasil:
+  usage: "Yggdrasil network node configuration."
+  gen_interface: true
+  key:
+    usage: "Node private key; empty means runtime key generation."
+    text:
+      type: string
+      usage: "Hex-encoded Ed25519 private key."
+    path:
+      type: string
+      usage: "Path to a private key file in PEM format."
+  listen:
+    type: "[]string"
+    usage: "Listener addresses for incoming connections."
+  inputs:
+    type: "[]string"
+    usage: "Real externally reachable addresses for internal publication."
+  peers:
+    usage: "Peer connections."
+    url:
+      type: "[]string"
+      usage: "Outbound peer URIs."
+    interface:
+      type: "map[string][]string"
+      usage: "Outbound peers bound to network interfaces."
+    manager:
+      usage: "Smart peer manager settings."
+      enable:
+        type: bool
+        value: true
+        usage: "When disabled, peer URLs are passed directly to Yggdrasil."
+      probe_timeout:
+        type: time.Duration
+        value: "10s"
+        usage: "Probe connection timeout."
+      refresh_interval:
+        type: time.Duration
+        usage: "Re-evaluation interval; zero means startup only."
+      max_per_proto:
+        type: int
+        usage: "Best peers per protocol."
+      batch_size:
+        type: int
+        usage: "Probing batch size."
+  allowed_public_keys:
+    type: "[]string"
+    usage: "Hex-encoded public keys allowed for incoming peering."
+  admin_listen:
+    type: string
+    value: "none"
+    usage: "Admin socket listen address."
+  if:
+    usage: "TUN adapter."
+    name:
+      type: string
+      value: "none"
+      usage: "TUN interface name."
+    mtu:
+      type: uint64
+      value: 65535
+      usage: "TUN interface MTU."
+  node:
+    usage: "Node identity and metadata."
+    info:
+      type: "map[string]any"
+      usage: "Node metadata visible to the network."
+    privacy:
+      type: bool
+      usage: "Hide default nodeinfo."
+    auto:
+      type: bool
+      value: true
+      usage: "Auto-populate NodeInfo."
+  log_lookups:
+    type: bool
+    usage: "Log address lookups."
+  core_stop_timeout:
+    type: time.Duration
+    value: "5s"
+    usage: "Aggregate Ratatoskr shutdown timeout."
+  rst_queue_size:
+    type: int
+    value: 100
+    usage: "RST packet deferred queue size."
+  multicast:
+    usage: "Multicast peer discovery."
+    regex:
+      type: string
+      value: ".*"
+      usage: "Interface name regex for multicast discovery."
+    beacon:
+      type: bool
+      value: true
+      usage: "Advertise presence via multicast."
+    listen:
+      type: bool
+      value: true
+      usage: "Listen for multicast advertisements."
+    port:
+      type: uint16
+      usage: "Multicast port."
+    priority:
+      type: uint16
+      usage: "Peer priority."
+    password:
+      type: string
+      usage: "Multicast peering password."
+  socks:
+    usage: "SOCKS5 proxy configuration."
+    addr:
+      type: string
+      usage: "SOCKS5 listen address."
+    max_connections:
+      type: int
+      usage: "Maximum simultaneous SOCKS5 connections."
+
+log:
+  usage: "Logging configuration."
+  compress:
+    type: bool
+    value: true
+    usage: "Compress rotated log files."
+  file_path:
+    type: string
+    usage: "Log file path."
+  format:
+    enum_name: output-format
+    enum: [ text, json ]
+    value: text
+    usage: "Console output format."
+  level:
+    usage: "Log level thresholds."
+    console:
+      enum_name: console-log-level
+      enum: [ debug, info, warn, error, fatal, panic, disabled ]
+      value: debug
+      usage: "Console log level."
+    file:
+      enum_name: file-log-level
+      enum: [ debug, info, warn, error, fatal, panic, disabled ]
+      value: info
+      usage: "File log level."
+  max_age:
+    type: int
+    value: 30
+    usage: "Log file max age in days."
+  max_backups:
+    type: int
+    value: 3
+    usage: "Log file max backups."
+  max_size:
+    type: int
+    value: 32
+    usage: "Log file max size in MB."
+  output:
+    enum_name: log-output
+    enum: [ console, file, both ]
+    value: both
+    usage: "Log output mode."

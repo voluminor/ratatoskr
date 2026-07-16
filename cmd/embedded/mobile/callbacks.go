@@ -7,13 +7,13 @@ import (
 
 // // // // // // // // // //
 
-// LogCallback receives log lines. Implementations must not block
-type LogCallback interface {
+// LogCallbackInterface receives log lines and must not block.
+type LogCallbackInterface interface {
 	Log(message string)
 }
 
-// PeerChangeCallback — notification of peer count changes. Must not block
-type PeerChangeCallback interface {
+// PeerChangeCallbackInterface receives peer-count changes and must not block.
+type PeerChangeCallbackInterface interface {
 	OnPeerCountChanged(connected, total int64)
 }
 
@@ -44,10 +44,9 @@ func parseLogLevel(level string) int {
 
 // //
 
-// logBridgeObj — bridge from core.Logger to LogCallback
 type logBridgeObj struct {
 	mu    sync.RWMutex
-	cb    LogCallback
+	cb    LogCallbackInterface
 	level int
 }
 
@@ -55,7 +54,7 @@ func newLogBridge() *logBridgeObj {
 	return &logBridgeObj{level: logLevelInfo}
 }
 
-func (b *logBridgeObj) setCallback(cb LogCallback) {
+func (b *logBridgeObj) setCallback(cb LogCallbackInterface) {
 	b.mu.Lock()
 	b.cb = cb
 	b.mu.Unlock()
@@ -75,7 +74,7 @@ func (b *logBridgeObj) emit(levelVal int, prefix, msg string) {
 	if cb == nil || levelVal < min {
 		return
 	}
-	go cb.Log(prefix + msg)
+	cb.Log(prefix + msg)
 }
 
 func (b *logBridgeObj) Printf(f string, args ...interface{}) {
@@ -112,17 +111,16 @@ func (b *logBridgeObj) Traceln(args ...interface{}) {
 
 // //
 
-// peerBridgeObj — bridge for PeerChangeCallback
 type peerBridgeObj struct {
 	mu sync.RWMutex
-	cb PeerChangeCallback
+	cb PeerChangeCallbackInterface
 }
 
 func newPeerBridge() *peerBridgeObj {
 	return &peerBridgeObj{}
 }
 
-func (b *peerBridgeObj) setCallback(cb PeerChangeCallback) {
+func (b *peerBridgeObj) setCallback(cb PeerChangeCallbackInterface) {
 	b.mu.Lock()
 	b.cb = cb
 	b.mu.Unlock()
@@ -135,5 +133,5 @@ func (b *peerBridgeObj) OnPeerCountChanged(connected, total int64) {
 	if cb == nil {
 		return
 	}
-	go cb.OnPeerCountChanged(connected, total)
+	cb.OnPeerCountChanged(connected, total)
 }

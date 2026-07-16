@@ -1,7 +1,4 @@
-// Package mobile provides gomobile bindings for Ratatoskr.
-//
-// Android: gomobile bind -target=android -o ratatoskr.aar .
-// iOS:     gomobile bind -target=ios -o Ratatoskr.xcframework .
+// Package mobile exposes Ratatoskr through gomobile-compatible types.
 package mobile
 
 import (
@@ -27,41 +24,49 @@ const (
 
 // //
 
-// Ratatoskr — main type of the mobile binding. Created via NewRatatoskr().
-type Ratatoskr struct {
+// RatatoskrObj owns one mobile Ratatoskr node and its forwarding configuration.
+type RatatoskrObj struct {
 	mu         sync.Mutex
 	node       *ratatoskr.Obj
 	nodeCfg    *config.NodeConfig
 	logBridge  *logBridgeObj
 	peerBridge *peerBridgeObj
 
-	// fwdMgr is created in NewRatatoskr(), started in Start()
-	fwdMgr    *forward.ManagerObj
-	fwdCancel context.CancelFunc
-	peerMonWg sync.WaitGroup
+	fwdMgr      *forward.Obj
+	runCancel   context.CancelFunc
+	peerMonDone chan struct{}
+	stopRun     *mobileStopObj
 
-	// Options before Start()
+	localTCPs  []forward.TCPMappingObj
+	localUDPs  []forward.UDPMappingObj
+	remoteTCPs []forward.TCPMappingObj
+	remoteUDPs []forward.UDPMappingObj
+
 	udpTimeout   time.Duration
 	coreStopMs   int64
 	multicast    bool
 	socksMaxConn int
 }
 
-// NewRatatoskr creates a new Ratatoskr instance.
-func NewRatatoskr() *Ratatoskr {
+type mobileStopObj struct {
+	done chan struct{}
+	err  error
+}
+
+// NewRatatoskr creates a stopped mobile node.
+func NewRatatoskr() *RatatoskrObj {
 	lb := newLogBridge()
-	return &Ratatoskr{
+	return &RatatoskrObj{
 		logBridge:  lb,
 		peerBridge: newPeerBridge(),
 		udpTimeout: defaultUDPSessionTimeout,
-		fwdMgr:     forward.New(lb, defaultUDPSessionTimeout),
 	}
 }
 
 // // // // // // // // // //
 
-// LoadConfigJSON parses the NodeConfig JSON and stores it for Start(). Error if the node is running
-func (y *Ratatoskr) LoadConfigJSON(jsonStr string) error {
+// LoadConfigJSON replaces the Yggdrasil configuration while the node is stopped.
+func (y *RatatoskrObj) LoadConfigJSON(jsonStr string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
 	if y.node != nil {
@@ -77,47 +82,48 @@ func (y *Ratatoskr) LoadConfigJSON(jsonStr string) error {
 	return nil
 }
 
-// SetLogCallback registers the log callback; can be called at any time
-func (y *Ratatoskr) SetLogCallback(cb LogCallback) {
+// SetLogCallback replaces the callback that receives log messages.
+func (y *RatatoskrObj) SetLogCallback(cb LogCallbackInterface) {
 	y.logBridge.setCallback(cb)
 }
 
-// SetLogLevel — minimum level: "trace", "debug", "info" (default), "warn", "error"
-func (y *Ratatoskr) SetLogLevel(level string) {
+// SetLogLevel sets the minimum callback level to trace, debug, info, warn, or error.
+func (y *RatatoskrObj) SetLogLevel(level string) {
 	y.logBridge.setLevel(level)
 }
 
-// SetPeerChangeCallback — callback on peer count change; can be called at any time
-func (y *Ratatoskr) SetPeerChangeCallback(cb PeerChangeCallback) {
+// SetPeerChangeCallback replaces the callback that receives peer-count changes.
+func (y *RatatoskrObj) SetPeerChangeCallback(cb PeerChangeCallbackInterface) {
 	y.peerBridge.setCallback(cb)
 }
 
-// SetCoreStopTimeout — max core stop wait in ms; 0 = infinite. Before Start()
-func (y *Ratatoskr) SetCoreStopTimeout(ms int64) {
+// SetCoreStopTimeout sets the aggregate node shutdown budget in milliseconds.
+// Zero uses the library default. Call it before Start.
+func (y *RatatoskrObj) SetCoreStopTimeout(ms int64) {
 	y.mu.Lock()
 	y.coreStopMs = ms
 	y.mu.Unlock()
 }
 
-// SetSessionTimeout — UDP session inactivity timeout in ms; default 120000. Before Start()
-func (y *Ratatoskr) SetSessionTimeout(ms int64) {
+// SetSessionTimeout sets UDP session inactivity in milliseconds. Non-positive
+// values leave the current value unchanged. Call it before Start.
+func (y *RatatoskrObj) SetSessionTimeout(ms int64) {
 	y.mu.Lock()
 	if ms > 0 {
 		y.udpTimeout = time.Duration(ms) * time.Millisecond
-		y.fwdMgr.SetTimeout(y.udpTimeout)
 	}
 	y.mu.Unlock()
 }
 
-// SetMulticastEnabled — mDNS peer discovery on the local network. Before Start()
-func (y *Ratatoskr) SetMulticastEnabled(enabled bool) {
+// SetMulticastEnabled configures local multicast peer discovery before Start.
+func (y *RatatoskrObj) SetMulticastEnabled(enabled bool) {
 	y.mu.Lock()
 	y.multicast = enabled
 	y.mu.Unlock()
 }
 
-// SetSOCKSMaxConnections — SOCKS5 connection limit; 0 = unlimited. Before Start()
-func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
+// SetSOCKSMaxConnections configures the SOCKS5 connection limit before Start.
+func (y *RatatoskrObj) SetSOCKSMaxConnections(max int) {
 	y.mu.Lock()
 	y.socksMaxConn = max
 	y.mu.Unlock()
@@ -125,9 +131,8 @@ func (y *Ratatoskr) SetSOCKSMaxConnections(max int) {
 
 // // // // // // // // // //
 
-// AddPeer adds a peer; tcp, tls, quic, ws, wss.
-// Before Start() → stored in config; while running → connect immediately
-func (y *Ratatoskr) AddPeer(uri string) error {
+// AddPeer stores a peer while stopped or connects it immediately while running.
+func (y *RatatoskrObj) AddPeer(uri string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
 	if y.node != nil {
@@ -146,8 +151,8 @@ func (y *Ratatoskr) AddPeer(uri string) error {
 	return nil
 }
 
-// RemovePeer removes a peer; before Start() → from config, while running → disconnect
-func (y *Ratatoskr) RemovePeer(uri string) error {
+// RemovePeer removes a stored peer or disconnects it while running.
+func (y *RatatoskrObj) RemovePeer(uri string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
 	if y.node != nil {
@@ -168,82 +173,109 @@ func (y *Ratatoskr) RemovePeer(uri string) error {
 
 // // // // // // // // // //
 
-// AddLocalTCPMapping — forward local TCP to Yggdrasil; "127.0.0.1:8080" → "[200:...]:80". Before Start()
-func (y *Ratatoskr) AddLocalTCPMapping(local, remote string) error {
+// AddLocalTCPMapping adds a local TCP listener mapped to Yggdrasil. Call it
+// before Start.
+func (y *RatatoskrObj) AddLocalTCPMapping(local, remote string) error {
 	m, err := parseTCPMapping(local, remote)
 	if err != nil {
 		return err
 	}
 	y.mu.Lock()
-	y.fwdMgr.AddLocalTCP(m)
-	y.mu.Unlock()
+	defer y.mu.Unlock()
+	if y.node != nil || y.stopRun != nil {
+		return fmt.Errorf("cannot change mappings while running")
+	}
+	y.localTCPs = append(y.localTCPs, m)
 	return nil
 }
 
-// AddLocalUDPMapping — forward local UDP to Yggdrasil. Before Start()
-func (y *Ratatoskr) AddLocalUDPMapping(local, remote string) error {
+// AddLocalUDPMapping adds a local UDP listener mapped to Yggdrasil. Call it
+// before Start.
+func (y *RatatoskrObj) AddLocalUDPMapping(local, remote string) error {
 	m, err := parseUDPMapping(local, remote)
 	if err != nil {
 		return err
 	}
 	y.mu.Lock()
-	y.fwdMgr.AddLocalUDP(m)
-	y.mu.Unlock()
+	defer y.mu.Unlock()
+	if y.node != nil || y.stopRun != nil {
+		return fmt.Errorf("cannot change mappings while running")
+	}
+	y.localUDPs = append(y.localUDPs, m)
 	return nil
 }
 
-// AddRemoteTCPMapping — expose local TCP to Yggdrasil; port → local. Before Start()
-func (y *Ratatoskr) AddRemoteTCPMapping(port int, local string) error {
+// AddRemoteTCPMapping exposes a local TCP service on a Yggdrasil port. Call it
+// before Start.
+func (y *RatatoskrObj) AddRemoteTCPMapping(port int, local string) error {
 	m, err := parseRemoteTCPMapping(port, local)
 	if err != nil {
 		return err
 	}
 	y.mu.Lock()
-	y.fwdMgr.AddRemoteTCP(m)
-	y.mu.Unlock()
+	defer y.mu.Unlock()
+	if y.node != nil || y.stopRun != nil {
+		return fmt.Errorf("cannot change mappings while running")
+	}
+	y.remoteTCPs = append(y.remoteTCPs, m)
 	return nil
 }
 
-// AddRemoteUDPMapping — expose local UDP to Yggdrasil; port → local. Before Start()
-func (y *Ratatoskr) AddRemoteUDPMapping(port int, local string) error {
+// AddRemoteUDPMapping exposes a local UDP service on a Yggdrasil port. Call it
+// before Start.
+func (y *RatatoskrObj) AddRemoteUDPMapping(port int, local string) error {
 	m, err := parseRemoteUDPMapping(port, local)
 	if err != nil {
 		return err
 	}
 	y.mu.Lock()
-	y.fwdMgr.AddRemoteUDP(m)
-	y.mu.Unlock()
+	defer y.mu.Unlock()
+	if y.node != nil || y.stopRun != nil {
+		return fmt.Errorf("cannot change mappings while running")
+	}
+	y.remoteUDPs = append(y.remoteUDPs, m)
 	return nil
 }
 
-// ClearLocalMappings clears local forwarding rules. Before Start()
-func (y *Ratatoskr) ClearLocalMappings() {
+// ClearLocalMappings clears local forwarding rules while stopped.
+func (y *RatatoskrObj) ClearLocalMappings() {
 	y.mu.Lock()
-	y.fwdMgr.ClearLocal()
+	if y.node == nil && y.stopRun == nil {
+		y.localTCPs = nil
+		y.localUDPs = nil
+	}
 	y.mu.Unlock()
 }
 
-// ClearRemoteMappings clears remote forwarding rules. Before Start()
-func (y *Ratatoskr) ClearRemoteMappings() {
+// ClearRemoteMappings clears remote forwarding rules while stopped.
+func (y *RatatoskrObj) ClearRemoteMappings() {
 	y.mu.Lock()
-	y.fwdMgr.ClearRemote()
+	if y.node == nil && y.stopRun == nil {
+		y.remoteTCPs = nil
+		y.remoteUDPs = nil
+	}
 	y.mu.Unlock()
 }
 
 // // // // // // // // // //
 
-// Start starts the node. socksAddr: SOCKS5 address (empty = disabled); nameserver: DNS for .ygg (empty = disabled)
-func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
+// Start starts the node, optional SOCKS5 listener, and configured mappings.
+// Empty socksAddr disables SOCKS5; empty nameserver disables .ygg DNS.
+func (y *RatatoskrObj) Start(socksAddr, nameserver string) error {
 	y.mu.Lock()
 	defer y.mu.Unlock()
 	if y.node != nil {
 		return fmt.Errorf("already running; call Stop() first")
+	}
+	if y.stopRun != nil {
+		return fmt.Errorf("stop is still in progress")
 	}
 
 	nodeCfg := y.nodeCfg
 	if nodeCfg == nil {
 		nodeCfg = config.GenerateConfig()
 		nodeCfg.AdminListen = "none"
+		y.nodeCfg = nodeCfg
 	}
 
 	cfg := ratatoskr.ConfigObj{
@@ -251,7 +283,7 @@ func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 		Logger: y.logBridge,
 	}
 	if y.coreStopMs > 0 {
-		cfg.CoreStopTimeout = time.Duration(y.coreStopMs) * time.Millisecond
+		cfg.CloseTimeout = time.Duration(y.coreStopMs) * time.Millisecond
 	}
 
 	node, err := ratatoskr.New(cfg)
@@ -271,42 +303,77 @@ func (y *Ratatoskr) Start(socksAddr, nameserver string) error {
 	}
 
 	if y.multicast {
-		if err = node.EnableMulticast(); err != nil {
+		if err = node.Core().EnableMulticast(); err != nil {
 			_ = node.Close()
 			return fmt.Errorf("enable multicast: %w", err)
 		}
 	}
 
+	runCtx, runCancel := context.WithCancel(context.Background())
+	fwdMgr, err := forward.New(forward.ConfigObj{
+		Logger:     y.logBridge,
+		Node:       node.Core(),
+		UDPTimeout: y.udpTimeout,
+		LocalTCP:   y.localTCPs,
+		RemoteTCP:  y.remoteTCPs,
+		LocalUDP:   y.localUDPs,
+		RemoteUDP:  y.remoteUDPs,
+	})
+	if err != nil {
+		runCancel()
+		_ = node.Close()
+		return fmt.Errorf("start forwarding: %w", err)
+	}
+
 	y.node = node
-
-	fwdCtx, fwdCancel := context.WithCancel(context.Background())
-	y.fwdCancel = fwdCancel
-	y.fwdMgr.Start(fwdCtx, node)
-
-	y.peerMonWg.Add(1)
-	go y.peerMonitorLoop(fwdCtx)
+	y.fwdMgr = fwdMgr
+	y.runCancel = runCancel
+	y.peerMonDone = make(chan struct{})
+	go y.peerMonitorLoop(runCtx, node, y.peerMonDone)
 
 	return nil
 }
 
-// Stop stops the node and forwarding; safe if not running
-func (y *Ratatoskr) Stop() error {
+// Stop closes forwarding and the node. It is safe to call while stopped.
+func (y *RatatoskrObj) Stop() error {
 	y.mu.Lock()
-	defer y.mu.Unlock()
+	if y.stopRun != nil {
+		run := y.stopRun
+		y.mu.Unlock()
+		<-run.done
+		return run.err
+	}
 	if y.node == nil {
+		y.mu.Unlock()
 		return nil
 	}
-	y.fwdCancel()
-	err := y.node.Close()
-	y.fwdMgr.Wait()
-	y.peerMonWg.Wait()
+	run := &mobileStopObj{done: make(chan struct{})}
+	y.stopRun = run
+	node := y.node
+	mgr := y.fwdMgr
+	cancel := y.runCancel
+	peerDone := y.peerMonDone
+	y.mu.Unlock()
+
+	cancel()
+	_ = mgr.Close()
+	<-peerDone
+	err := node.Close()
+
+	y.mu.Lock()
 	y.node = nil
-	y.fwdCancel = nil
+	y.fwdMgr = nil
+	y.runCancel = nil
+	y.peerMonDone = nil
+	run.err = err
+	y.stopRun = nil
+	close(run.done)
+	y.mu.Unlock()
 	return err
 }
 
-// IsRunning — whether the node is running
-func (y *Ratatoskr) IsRunning() bool {
+// IsRunning reports whether the node is running.
+func (y *RatatoskrObj) IsRunning() bool {
 	y.mu.Lock()
 	running := y.node != nil
 	y.mu.Unlock()
@@ -315,8 +382,8 @@ func (y *Ratatoskr) IsRunning() bool {
 
 // // // // // // // // // //
 
-// GetAddress — node IPv6 address; empty if not running
-func (y *Ratatoskr) GetAddress() string {
+// GetAddress returns the node IPv6 address, or an empty string while stopped.
+func (y *RatatoskrObj) GetAddress() string {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
@@ -326,8 +393,8 @@ func (y *Ratatoskr) GetAddress() string {
 	return node.Address().String()
 }
 
-// GetSubnet — node IPv6 subnet; empty if not running
-func (y *Ratatoskr) GetSubnet() string {
+// GetSubnet returns the node IPv6 subnet, or an empty string while stopped.
+func (y *RatatoskrObj) GetSubnet() string {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
@@ -338,8 +405,9 @@ func (y *Ratatoskr) GetSubnet() string {
 	return s.String()
 }
 
-// GetPublicKey — Ed25519 key (hex); empty if not running
-func (y *Ratatoskr) GetPublicKey() string {
+// GetPublicKey returns the hexadecimal Ed25519 public key, or an empty string
+// while stopped.
+func (y *RatatoskrObj) GetPublicKey() string {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
@@ -349,8 +417,8 @@ func (y *Ratatoskr) GetPublicKey() string {
 	return hex.EncodeToString(node.PublicKey())
 }
 
-// GetPeers — URI of all peers as a JSON array; "[]" if not running
-func (y *Ratatoskr) GetPeers() string {
+// GetPeers returns peer URIs as a JSON array, or "[]" while stopped.
+func (y *RatatoskrObj) GetPeers() string {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
@@ -369,7 +437,6 @@ func (y *Ratatoskr) GetPeers() string {
 	return string(b)
 }
 
-// peerJSONObj — detailed peer information for JSON
 type peerJSONObj struct {
 	URI           string `json:"uri"`
 	Up            bool   `json:"up"`
@@ -383,8 +450,8 @@ type peerJSONObj struct {
 	LastError     string `json:"last_error,omitempty"`
 }
 
-// GetPeersJSON — detailed peer stats (URI, traffic, latency, uptime) as JSON
-func (y *Ratatoskr) GetPeersJSON() string {
+// GetPeersJSON returns detailed peer state as JSON, or "[]" while stopped.
+func (y *RatatoskrObj) GetPeersJSON() string {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
@@ -417,21 +484,18 @@ func (y *Ratatoskr) GetPeersJSON() string {
 	return string(b)
 }
 
-// RetryPeersNow initiates immediate reconnection to all disconnected peers.
-// No-op if the node is not running.
-func (y *Ratatoskr) RetryPeersNow() {
+// RetryPeersNow requests immediate reconnection while running.
+func (y *RatatoskrObj) RetryPeersNow() {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
 	if node != nil {
-		node.RetryPeers()
+		_ = node.Core().RetryPeers()
 	}
 }
 
-// TriggerPeerUpdate calls PeerChangeCallback with the current peer count.
-// Useful for refreshing the UI after registering a callback while running.
-// No-op if the node is not running or the callback is not set.
-func (y *Ratatoskr) TriggerPeerUpdate() {
+// TriggerPeerUpdate emits the current peer counts while running.
+func (y *RatatoskrObj) TriggerPeerUpdate() {
 	y.mu.Lock()
 	node := y.node
 	y.mu.Unlock()
@@ -450,9 +514,8 @@ func (y *Ratatoskr) TriggerPeerUpdate() {
 
 // // // // // // // // // //
 
-// peerMonitorLoop periodically checks peer state and notifies the callback
-func (y *Ratatoskr) peerMonitorLoop(ctx context.Context) {
-	defer y.peerMonWg.Done()
+func (y *RatatoskrObj) peerMonitorLoop(ctx context.Context, node *ratatoskr.Obj, done chan<- struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(defaultPeerMonitorInterval)
 	defer ticker.Stop()
 
@@ -463,12 +526,6 @@ func (y *Ratatoskr) peerMonitorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			y.mu.Lock()
-			node := y.node
-			y.mu.Unlock()
-			if node == nil {
-				return
-			}
 			var connected, total int64
 			for _, p := range node.GetPeers() {
 				total++

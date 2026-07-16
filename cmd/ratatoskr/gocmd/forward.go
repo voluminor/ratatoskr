@@ -12,10 +12,10 @@ import (
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"
 
 	"github.com/voluminor/ratatoskr"
+	gsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 	"github.com/voluminor/ratatoskr/mod/forward"
 	"github.com/voluminor/ratatoskr/mod/peermgr"
 	"github.com/voluminor/ratatoskr/target"
-	gsettings "github.com/voluminor/ratatoskr/target/settings"
 )
 
 // // // // // // // // // //
@@ -57,16 +57,16 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 	nodeCfg.NodeInfoPrivacy = false
 	nodeCfg.NodeInfo = map[string]interface{}{
 		"type":      "forward",
-		"ratatoskr": target.GlobalVersion,
+		"ratatoskr": target.Version,
 	}
 
 	logger := &cliLoggerObj{}
 
 	node, err := ratatoskr.New(ratatoskr.ConfigObj{
-		Ctx:             ctx,
-		Config:          nodeCfg,
-		Logger:          logger,
-		CoreStopTimeout: 5 * time.Second,
+		Ctx:          ctx,
+		Config:       nodeCfg,
+		Logger:       logger,
+		CloseTimeout: 5 * time.Second,
 		Peers: &peermgr.ConfigObj{
 			Peers:     cfg.Peer,
 			BatchSize: len(cfg.Peer),
@@ -75,11 +75,15 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 	if err != nil {
 		return fmt.Errorf("start node: %w", err)
 	}
-	defer func() { go node.Close() }()
+	defer func() { _ = node.Close() }()
 
-	mgr := forward.New(logger, defaultUDPSessionTimeout)
+	forwardCfg := forward.ConfigObj{
+		Logger:     logger,
+		Node:       node.Core(),
+		UDPTimeout: defaultUDPSessionTimeout,
+	}
 
-	useTCP := cfg.Proto == gsettings.GoForwardProtoTcp || cfg.Proto == 0
+	useTCP := cfg.Proto == gsettings.GoForwardProtoTcp || cfg.Proto == ""
 	if useTCP {
 		listenAddr, err := net.ResolveTCPAddr("tcp", cfg.From)
 		if err != nil {
@@ -89,7 +93,7 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 		if err != nil {
 			return fmt.Errorf("invalid remote address: %w", err)
 		}
-		mgr.AddLocalTCP(forward.TCPMappingObj{Listen: listenAddr, Mapped: mappedAddr})
+		forwardCfg.LocalTCP = []forward.TCPMappingObj{{Listen: listenAddr, Mapped: mappedAddr}}
 		fmt.Fprintf(os.Stderr, "forwarding tcp %s → %s\n", cfg.From, cfg.To)
 	} else {
 		listenAddr, err := net.ResolveUDPAddr("udp", cfg.From)
@@ -100,16 +104,17 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 		if err != nil {
 			return fmt.Errorf("invalid remote address: %w", err)
 		}
-		mgr.AddLocalUDP(forward.UDPMappingObj{Listen: listenAddr, Mapped: mappedAddr})
+		forwardCfg.LocalUDP = []forward.UDPMappingObj{{Listen: listenAddr, Mapped: mappedAddr}}
 		fmt.Fprintf(os.Stderr, "forwarding udp %s → %s\n", cfg.From, cfg.To)
 	}
 
-	mgr.Start(ctx, node)
+	mgr, err := forward.New(forwardCfg)
+	if err != nil {
+		return fmt.Errorf("start forwarding: %w", err)
+	}
 
 	fmt.Fprintln(os.Stderr, "running (Ctrl+C to stop)")
 	<-ctx.Done()
 	fmt.Fprintln(os.Stderr, "shutting down...")
-	mgr.Wait()
-
-	return nil
+	return mgr.Close()
 }

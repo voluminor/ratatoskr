@@ -26,17 +26,6 @@ func (m *mockSigilObj) Match(mp map[string]any) bool {
 	return true
 }
 
-func (m *mockSigilObj) SetParams(mp map[string]any) (map[string]any, error) {
-	out := make(map[string]any, len(mp)+len(m.data))
-	for k, v := range mp {
-		out[k] = v
-	}
-	for k, v := range m.data {
-		out[k] = v
-	}
-	return out, nil
-}
-
 func (m *mockSigilObj) ParseParams(mp map[string]any) map[string]any {
 	out := make(map[string]any)
 	for _, k := range m.params {

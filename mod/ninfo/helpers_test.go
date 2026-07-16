@@ -3,6 +3,7 @@ package ninfo
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"sync/atomic"
 	"testing"
 
 	"github.com/voluminor/ratatoskr/mod/sigils"
@@ -40,30 +41,20 @@ var _ sigils.Interface = &mockSigilObj{}
 func (m *mockSigilObj) GetName() string        { return m.name }
 func (m *mockSigilObj) GetParams() []string    { return m.params }
 func (m *mockSigilObj) Params() map[string]any { return m.data }
-func (m *mockSigilObj) Match(mp map[string]any) bool {
+
+func (m *mockSigilObj) Match(nodeInfo map[string]any) bool {
 	for _, k := range m.params {
-		if _, ok := mp[k]; !ok {
+		if _, ok := nodeInfo[k]; !ok {
 			return false
 		}
 	}
 	return true
 }
 
-func (m *mockSigilObj) SetParams(mp map[string]any) (map[string]any, error) {
-	out := make(map[string]any, len(mp)+len(m.data))
-	for k, v := range mp {
-		out[k] = v
-	}
-	for k, v := range m.data {
-		out[k] = v
-	}
-	return out, nil
-}
-
-func (m *mockSigilObj) ParseParams(mp map[string]any) map[string]any {
-	out := make(map[string]any)
+func (m *mockSigilObj) ParseParams(nodeInfo map[string]any) map[string]any {
+	out := make(map[string]any, len(m.params))
 	for _, k := range m.params {
-		if v, ok := mp[k]; ok {
+		if v, ok := nodeInfo[k]; ok {
 			out[k] = v
 		}
 	}
@@ -86,6 +77,19 @@ func newMockSigil(name string, keys ...string) *mockSigilObj {
 		data[k] = "test"
 	}
 	return &mockSigilObj{name: name, params: keys, data: data}
+}
+
+type cloneCountingSigilObj struct {
+	*mockSigilObj
+	clones *atomic.Int64
+}
+
+func (m *cloneCountingSigilObj) Clone() sigils.Interface {
+	m.clones.Add(1)
+	return &cloneCountingSigilObj{
+		mockSigilObj: &mockSigilObj{name: m.name, params: append([]string(nil), m.params...), data: map[string]any{}},
+		clones:       m.clones,
+	}
 }
 
 // //

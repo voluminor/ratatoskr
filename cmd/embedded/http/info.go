@@ -16,7 +16,7 @@ import (
 
 // // // // // // // // // //
 
-type peerJSON struct {
+type peerJSONObj struct {
 	URI           string     `json:"uri"`
 	Up            bool       `json:"up"`
 	RxBytes       uint64     `json:"rx_bytes"`
@@ -26,43 +26,43 @@ type peerJSON struct {
 	LastErrorTime *time.Time `json:"last_error_time,omitempty"`
 }
 
-type bandwidthJSON struct {
+type bandwidthJSONObj struct {
 	RxBytes uint64 `json:"rx_bytes"`
 	TxBytes uint64 `json:"tx_bytes"`
 }
 
-type sessionJSON struct {
+type sessionJSONObj struct {
 	Key       string  `json:"key"`
 	RxBytes   uint64  `json:"rx_bytes"`
 	TxBytes   uint64  `json:"tx_bytes"`
 	UptimeSec float64 `json:"uptime_sec"`
 }
 
-type infoJSON struct {
-	PublicKey     string        `json:"public_key"`
-	YggAddress    string        `json:"ygg_address"`
-	Addresses     []string      `json:"addresses"`
-	YggPorts      []int         `json:"ygg_ports"`
-	IsYggdrasil   bool          `json:"is_yggdrasil"`
-	UptimeSeconds float64       `json:"uptime_seconds"`
-	Bandwidth     bandwidthJSON `json:"bandwidth"`
-	Peers         []peerJSON    `json:"peers"`
-	Sessions      []sessionJSON `json:"sessions"`
-	CachedAt      time.Time     `json:"cached_at"`
+type infoJSONObj struct {
+	PublicKey     string           `json:"public_key"`
+	YggAddress    string           `json:"ygg_address"`
+	Addresses     []string         `json:"addresses"`
+	YggPorts      []int            `json:"ygg_ports"`
+	IsYggdrasil   bool             `json:"is_yggdrasil"`
+	UptimeSeconds float64          `json:"uptime_seconds"`
+	Bandwidth     bandwidthJSONObj `json:"bandwidth"`
+	Peers         []peerJSONObj    `json:"peers"`
+	Sessions      []sessionJSONObj `json:"sessions"`
+	CachedAt      time.Time        `json:"cached_at"`
 }
 
 // //
 
 type cachedMetricsObj struct {
 	snap ratatoskr.SnapshotObj
-	bw   bandwidthJSON
+	bw   bandwidthJSONObj
 	at   time.Time
 }
 
-type InfoHandlerObj struct {
+type infoHandlerObj struct {
 	node      *ratatoskr.Obj
 	tr        *probe.Obj
-	cfg       *ConfigObj
+	cfg       *configObj
 	log       yggcore.Logger
 	startTime time.Time
 	mu        sync.Mutex
@@ -71,14 +71,14 @@ type InfoHandlerObj struct {
 
 // //
 
-func newInfoHandler(node *ratatoskr.Obj, tr *probe.Obj, cfg *ConfigObj, log yggcore.Logger) *InfoHandlerObj {
-	return &InfoHandlerObj{node: node, tr: tr, cfg: cfg, log: log, startTime: time.Now()}
+func newInfoHandler(node *ratatoskr.Obj, tr *probe.Obj, cfg *configObj, log yggcore.Logger) *infoHandlerObj {
+	return &infoHandlerObj{node: node, tr: tr, cfg: cfg, log: log, startTime: time.Now()}
 }
 
-func (h *InfoHandlerObj) refreshMetrics() *cachedMetricsObj {
+func (h *infoHandlerObj) refreshMetrics() *cachedMetricsObj {
 	snap := h.node.Snapshot()
 
-	var bw bandwidthJSON
+	var bw bandwidthJSONObj
 	for _, p := range snap.Peers {
 		bw.RxBytes += p.RXBytes
 		bw.TxBytes += p.TXBytes
@@ -90,7 +90,7 @@ func (h *InfoHandlerObj) refreshMetrics() *cachedMetricsObj {
 	return &cachedMetricsObj{snap: snap, bw: bw, at: time.Now()}
 }
 
-func (h *InfoHandlerObj) getMetrics() *cachedMetricsObj {
+func (h *infoHandlerObj) getMetrics() *cachedMetricsObj {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.cached == nil || time.Since(h.cached.at) >= time.Second {
@@ -99,7 +99,7 @@ func (h *InfoHandlerObj) getMetrics() *cachedMetricsObj {
 	return h.cached
 }
 
-func (h *InfoHandlerObj) buildAddresses() []string {
+func (h *infoHandlerObj) buildAddresses() []string {
 	if h.cfg.Hostname == "localhost" {
 		addrs := make([]string, len(h.cfg.HTTPPorts))
 		for i, p := range h.cfg.HTTPPorts {
@@ -110,13 +110,13 @@ func (h *InfoHandlerObj) buildAddresses() []string {
 	return []string{h.cfg.Hostname}
 }
 
-func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
+func (h *infoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m := h.getMetrics()
 
-		peers := make([]peerJSON, len(m.snap.Peers))
+		peers := make([]peerJSONObj, len(m.snap.Peers))
 		for i, p := range m.snap.Peers {
-			entry := peerJSON{
+			entry := peerJSONObj{
 				URI:       p.URI,
 				Up:        p.Up,
 				RxBytes:   p.RXBytes,
@@ -131,11 +131,10 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 			peers[i] = entry
 		}
 
-		// Sessions from the probe module.
 		rawSessions := h.tr.Sessions()
-		sessions := make([]sessionJSON, len(rawSessions))
+		sessions := make([]sessionJSONObj, len(rawSessions))
 		for i, s := range rawSessions {
-			sessions[i] = sessionJSON{
+			sessions[i] = sessionJSONObj{
 				Key:       hex.EncodeToString(s.Key),
 				RxBytes:   s.RXBytes,
 				TxBytes:   s.TXBytes,
@@ -143,7 +142,7 @@ func (h *InfoHandlerObj) Handler(isYggdrasil bool) http.Handler {
 			}
 		}
 
-		resp := infoJSON{
+		resp := infoJSONObj{
 			PublicKey:     m.snap.PublicKey,
 			YggAddress:    m.snap.Address,
 			Addresses:     h.buildAddresses(),

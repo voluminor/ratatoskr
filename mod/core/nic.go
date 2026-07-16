@@ -13,7 +13,6 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/header"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
-	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 )
 
 // // // // // // // // // //
@@ -21,45 +20,42 @@ import (
 var _ stack.LinkEndpoint = (*nicObj)(nil)
 
 var writeBufPool = sync.Pool{
-	New: func() interface{} { return make([]byte, 65535) },
+	New: func() interface{} {
+		buf := make([]byte, 65535)
+		return &buf
+	},
 }
 
-// nicObj — bridge between gVisor and Yggdrasil at the IPv6 packet level
 type nicObj struct {
-	ns         *netstackObj
 	ipv6rwc    *ipv6rwc.ReadWriteCloser
 	dispatcher atomic.Pointer[stack.NetworkDispatcher]
-	readBuf    []byte
-	rstPackets chan *stack.PacketBuffer
-	rstDropped atomic.Int64
+	mtu        atomic.Uint32
 	done       chan struct{}
 	readDone   chan struct{}
-	rstDone    chan struct{}
 	closeOnce  sync.Once
 	logger     yggcore.Logger
 }
 
-func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpip.Error) {
+func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Error) {
 	rwc := ipv6rwc.NewReadWriteCloser(ygg)
+	mtu := normalizeMTU(ifMTU, rwc.MaxMTU())
+	rwc.SetMTU(mtu)
 	nic := &nicObj{
-		ns:         s,
-		ipv6rwc:    rwc,
-		readBuf:    make([]byte, rwc.MTU()),
-		rstPackets: make(chan *stack.PacketBuffer, rstQueueSize),
-		done:       make(chan struct{}),
-		readDone:   make(chan struct{}),
-		rstDone:    make(chan struct{}),
-		logger:     s.logger,
+		ipv6rwc:  rwc,
+		done:     make(chan struct{}),
+		readDone: make(chan struct{}),
+		logger:   s.logger,
 	}
+	nic.mtu.Store(uint32(mtu))
 	if err := s.stack.CreateNIC(1, nic); err != nil {
 		return nil, err
 	}
 
-	// Read packets from Yggdrasil → deliver to netstack
 	go func() {
 		defer close(nic.readDone)
+		readBuf := make([]byte, nic.ipv6rwc.MaxMTU())
 		for {
-			rx, err := nic.ipv6rwc.Read(nic.readBuf)
+			rx, err := nic.ipv6rwc.Read(readBuf)
 			if err != nil {
 				select {
 				case <-nic.done:
@@ -69,7 +65,7 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 				return
 			}
 			pkb := stack.NewPacketBuffer(stack.PacketBufferOptions{
-				Payload: buffer.MakeWithData(nic.readBuf[:rx]),
+				Payload: buffer.MakeWithData(readBuf[:rx]),
 			})
 			if d := nic.dispatcher.Load(); d != nil {
 				(*d).DeliverNetworkPacket(ipv6.ProtocolNumber, pkb)
@@ -78,28 +74,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 		}
 	}()
 
-	// Deferred sending of RST packets (TCP reset with no payload)
-	go func() {
-		defer close(nic.rstDone)
-		for {
-			select {
-			case <-nic.done:
-				for {
-					select {
-					case pkt := <-nic.rstPackets:
-						pkt.DecRef()
-					default:
-						return
-					}
-				}
-			case pkt := <-nic.rstPackets:
-				_ = nic.writePacket(pkt)
-				pkt.DecRef()
-			}
-		}
-	}()
-
-	// Route for Yggdrasil subnet 0200::/7
 	_, snet, err := net.ParseCIDR("0200::/7")
 	if err != nil {
 		nic.Close()
@@ -115,7 +89,6 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 	}
 	s.stack.AddRoute(tcpip.Route{Destination: subnet, NIC: 1})
 
-	// Register the local address (HandleLocal is always enabled)
 	ip := ygg.Address()
 	if err := s.stack.AddProtocolAddress(
 		1,
@@ -135,6 +108,10 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, rstQueueSize int) (*nicObj, tcpi
 // //
 
 func (e *nicObj) Attach(dispatcher stack.NetworkDispatcher) {
+	if dispatcher == nil {
+		e.dispatcher.Store(nil)
+		return
+	}
 	e.dispatcher.Store(&dispatcher)
 }
 
@@ -142,8 +119,12 @@ func (e *nicObj) IsAttached() bool {
 	return e.dispatcher.Load() != nil
 }
 
-func (e *nicObj) MTU() uint32                                { return uint32(e.ipv6rwc.MTU()) }
-func (e *nicObj) SetMTU(uint32)                              {}
+func (e *nicObj) MTU() uint32 { return e.mtu.Load() }
+func (e *nicObj) SetMTU(mtu uint32) {
+	next := normalizeMTU(uint64(mtu), e.ipv6rwc.MaxMTU())
+	e.ipv6rwc.SetMTU(next)
+	e.mtu.Store(uint32(next))
+}
 func (*nicObj) Capabilities() stack.LinkEndpointCapabilities { return stack.CapabilityNone }
 func (*nicObj) MaxHeaderLength() uint16                      { return 40 }
 func (*nicObj) LinkAddress() tcpip.LinkAddress               { return "" }
@@ -155,15 +136,15 @@ func (*nicObj) Wait()                                        {}
 func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 	vl, offset := pkt.AsViewList()
 	front := vl.Front()
-	// Fast path: single View — send without copying
 	if front != nil && front.Next() == nil {
 		if _, err := e.ipv6rwc.Write(front.AsSlice()[offset:]); err != nil {
 			return &tcpip.ErrAborted{}
 		}
 		return nil
 	}
-	// Multiple Views — assemble into a pool buffer
-	buf := writeBufPool.Get().([]byte)
+	bufPtr := writeBufPool.Get().(*[]byte)
+	defer writeBufPool.Put(bufPtr)
+	buf := *bufPtr
 	n := 0
 	first := true
 	for v := front; v != nil; v = v.Next() {
@@ -175,7 +156,6 @@ func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 		n += copy(buf[n:], s)
 	}
 	_, err := e.ipv6rwc.Write(buf[:n])
-	writeBufPool.Put(buf)
 	if err != nil {
 		return &tcpip.ErrAborted{}
 	}
@@ -183,51 +163,12 @@ func (e *nicObj) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
 }
 
 func (e *nicObj) WritePackets(list stack.PacketBufferList) (int, tcpip.Error) {
-	defer func() {
-		if r := recover(); r != nil {
-			e.logger.Errorf("[core] WritePackets panic: %v", r)
-		}
-	}()
 	for i, pkt := range list.AsSlice() {
-		// TCP RST with no payload — enqueue for deferred sending
-		if pkt.Data().Size() == 0 &&
-			pkt.Network().TransportProtocol() == tcp.ProtocolNumber {
-			tcpHdr := header.TCP(pkt.TransportHeader().Slice())
-			if (tcpHdr.Flags() & header.TCPFlagRst) == header.TCPFlagRst {
-				pkt.IncRef()
-				e.enqueueRST(pkt)
-				continue
-			}
-		}
 		if err := e.writePacket(pkt); err != nil {
 			return i, err
 		}
 	}
 	return list.Len(), nil
-}
-
-// enqueueRST enqueues an RST packet; evicts the oldest on overflow
-func (e *nicObj) enqueueRST(pkt *stack.PacketBuffer) {
-	select {
-	case e.rstPackets <- pkt:
-		return
-	default:
-	}
-	select {
-	case old := <-e.rstPackets:
-		old.DecRef()
-	default:
-	}
-	select {
-	case e.rstPackets <- pkt:
-	default:
-		pkt.DecRef()
-		e.rstDropped.Add(1)
-	}
-}
-
-func (e *nicObj) WriteRawPacket(*stack.PacketBuffer) tcpip.Error {
-	return &tcpip.ErrNotSupported{}
 }
 
 // //
@@ -241,8 +182,6 @@ func (e *nicObj) Close() {
 		close(e.done)
 		_ = e.ipv6rwc.Close()
 		<-e.readDone
-		<-e.rstDone
-		e.ns.stack.RemoveNIC(1)
 	})
 }
 

@@ -1,3 +1,4 @@
+// Package public describes public peering endpoints grouped by transport.
 package public
 
 import (
@@ -6,16 +7,19 @@ import (
 
 // // // // // // // // // //
 
+// Name returns the sigil identifier.
 func Name() string {
 	return sigName
 }
 
+// Keys returns the owned NodeInfo keys.
 func Keys() []string {
-	return sigKeys
+	return append([]string(nil), sigKeys...)
 }
 
 // //
 
+// ParseParams returns the public fragment present in NodeInfo.
 func ParseParams(NodeInfo map[string]any) map[string]any {
 	bufMap := make(map[string]any)
 	if data, ok := NodeInfo[sigName]; ok {
@@ -24,46 +28,22 @@ func ParseParams(NodeInfo map[string]any) map[string]any {
 	return bufMap
 }
 
-// Match expects map[string]any where each value is []any of strings.
+// Match reports whether NodeInfo contains valid grouped peering URIs.
 func Match(NodeInfo map[string]any) bool {
-	raw, ok := NodeInfo[sigName]
+	peers, ok := parsePeers(NodeInfo)
 	if !ok {
 		return false
 	}
-
-	peers, ok := raw.(map[string]any)
-	if !ok {
-		return false
-	}
-	if len(peers) == 0 {
-		return false
-	}
-
-	for group, v := range peers {
-		if !reGroup.MatchString(group) {
-			return false
-		}
-		arr, ok := v.([]any)
-		if !ok {
-			return false
-		}
-		for _, item := range arr {
-			if _, ok := item.(string); !ok {
-				return false
-			}
-		}
-	}
-	return true
+	return validatePeers(peers) == nil
 }
 
 // //
 
-// Parse creates an Obj from foreign NodeInfo.
+// Parse validates foreign NodeInfo and returns the parsed sigil.
 func Parse(NodeInfo map[string]any) (*Obj, error) {
-	if !Match(NodeInfo) {
+	peers, ok := parsePeers(NodeInfo)
+	if !ok {
 		return nil, errors.New("public sigil not found or malformed")
 	}
-	o := &Obj{}
-	o.ParseParams(NodeInfo)
-	return o, nil
+	return New(peers)
 }

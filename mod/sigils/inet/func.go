@@ -1,3 +1,4 @@
+// Package inet describes public Internet addresses associated with a node.
 package inet
 
 import (
@@ -6,16 +7,19 @@ import (
 
 // // // // // // // // // //
 
+// Name returns the sigil identifier.
 func Name() string {
 	return sigName
 }
 
+// Keys returns the owned NodeInfo keys.
 func Keys() []string {
-	return sigKeys
+	return append([]string(nil), sigKeys...)
 }
 
 // //
 
+// ParseParams returns the inet fragment present in NodeInfo.
 func ParseParams(NodeInfo map[string]any) map[string]any {
 	bufMap := make(map[string]any)
 	if data, ok := NodeInfo[sigName]; ok {
@@ -24,37 +28,22 @@ func ParseParams(NodeInfo map[string]any) map[string]any {
 	return bufMap
 }
 
-// Match expects []any of strings.
+// Match reports whether NodeInfo contains a valid inet address list.
 func Match(NodeInfo map[string]any) bool {
-	raw, ok := NodeInfo[sigName]
+	addrs, ok := parseAddrs(NodeInfo)
 	if !ok {
 		return false
 	}
-
-	arr, ok := raw.([]any)
-	if !ok {
-		return false
-	}
-	if len(arr) == 0 {
-		return false
-	}
-
-	for _, item := range arr {
-		if _, ok := item.(string); !ok {
-			return false
-		}
-	}
-	return true
+	return validateAddrs(addrs) == nil
 }
 
 // //
 
-// Parse creates an Obj from foreign NodeInfo.
+// Parse validates foreign NodeInfo and returns the parsed sigil.
 func Parse(NodeInfo map[string]any) (*Obj, error) {
-	if !Match(NodeInfo) {
+	addrs, ok := parseAddrs(NodeInfo)
+	if !ok {
 		return nil, errors.New("inet sigil not found or malformed")
 	}
-	o := &Obj{}
-	o.ParseParams(NodeInfo)
-	return o, nil
+	return New(addrs)
 }

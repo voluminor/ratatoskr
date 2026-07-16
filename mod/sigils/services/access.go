@@ -2,7 +2,7 @@ package services
 
 // // // // // // // // // //
 
-// Services returns the service→port map.
+// Services returns an independent copy of the service map.
 func (o *Obj) Services() map[string]uint16 {
-	return o.services
+	return cloneServices(o.services)
 }

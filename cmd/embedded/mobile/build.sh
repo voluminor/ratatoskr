@@ -1,15 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds gomobile bindings for Android and/or iOS.
-# Usage: ./build.sh [android|ios|all]
-# Default: all
-
 TARGET="${1:-all}"
 OUT_DIR="$(cd "$(dirname "$0")" && pwd)/dist"
 mkdir -p "$OUT_DIR"
 
-# Detect Android SDK
 if [[ -z "${ANDROID_HOME:-}" ]]; then
   for candidate in \
     "$HOME/Library/Android/sdk" \

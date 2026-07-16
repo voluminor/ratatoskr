@@ -2,210 +2,95 @@ package core
 
 import (
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 )
 
 // // // // // // // // // //
 
-func TestComponent_enable(t *testing.T) {
-	c := &componentObj{name: "test"}
-	called := false
-	err := c.enable(func() (any, func() error, error) {
-		called = true
-		return "value", func() error { return nil }, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestComponentLifecycle(t *testing.T) {
+	c := &componentObj[string]{name: "admin"}
+	if value, active := c.get(); value != "" || active {
+		t.Fatalf("initial state = (%q, %t), want zero and inactive", value, active)
 	}
-	if !called {
-		t.Error("start function not called")
-	}
-	if c.get() != "value" {
-		t.Errorf("unexpected value: %v", c.get())
-	}
-}
-
-func TestComponent_enableTwice(t *testing.T) {
-	c := &componentObj{name: "test"}
-	c.enable(func() (any, func() error, error) {
-		return "v1", func() error { return nil }, nil
-	})
-	err := c.enable(func() (any, func() error, error) {
-		return "v2", func() error { return nil }, nil
-	})
-	if err == nil {
-		t.Fatal("expected error on double enable")
-	}
-	if c.get() != "v1" {
-		t.Error("value should not change on failed enable")
-	}
-}
-
-func TestComponent_enableError(t *testing.T) {
-	c := &componentObj{name: "test"}
-	want := errors.New("start failed")
-	err := c.enable(func() (any, func() error, error) {
-		return nil, nil, want
-	})
-	if !errors.Is(err, want) {
-		t.Errorf("expected %v, got %v", want, err)
-	}
-	if c.get() != nil {
-		t.Error("value should be nil after failed enable")
-	}
-}
-
-func TestComponent_disable(t *testing.T) {
-	c := &componentObj{name: "test"}
-	stopped := false
-	c.enable(func() (any, func() error, error) {
-		return "value", func() error {
-			stopped = true
-			return nil
-		}, nil
-	})
 	if err := c.disable(); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("disable inactive component: %v", err)
 	}
-	if !stopped {
-		t.Error("stop function not called")
-	}
-	if c.get() != nil {
-		t.Error("value should be nil after disable")
-	}
-}
 
-func TestComponent_disableWhenInactive(t *testing.T) {
-	c := &componentObj{name: "test"}
+	startErr := errors.New("start failed")
+	if err := c.enable(func() (string, func() error, error) {
+		return "unexpected", nil, startErr
+	}); !errors.Is(err, startErr) {
+		t.Fatalf("enable error = %v, want %v", err, startErr)
+	}
+	if value, active := c.get(); value != "" || active {
+		t.Fatalf("state after failed enable = (%q, %t), want zero and inactive", value, active)
+	}
+
+	stopErr := errors.New("stop failed")
+	startCalls := 0
+	if err := c.enable(func() (string, func() error, error) {
+		startCalls++
+		return "first", func() error { return stopErr }, nil
+	}); err != nil {
+		t.Fatalf("enable: %v", err)
+	}
+	if value, active := c.get(); value != "first" || !active {
+		t.Fatalf("enabled state = (%q, %t), want first and active", value, active)
+	}
+	if err := c.enable(func() (string, func() error, error) {
+		startCalls++
+		return "unexpected", func() error { return nil }, nil
+	}); !errors.Is(err, ErrAlreadyEnabled) || !strings.Contains(err.Error(), "admin") {
+		t.Fatalf("duplicate enable error = %v, want named ErrAlreadyEnabled", err)
+	}
+	if startCalls != 1 {
+		t.Fatalf("start calls = %d, want 1", startCalls)
+	}
+
+	if err := c.disable(); !errors.Is(err, stopErr) {
+		t.Fatalf("disable error = %v, want %v", err, stopErr)
+	}
+	if value, active := c.get(); value != "" || active {
+		t.Fatalf("state after failed stop = (%q, %t), want zero and inactive", value, active)
+	}
+
+	if err := c.enable(func() (string, func() error, error) {
+		return "second", func() error { return nil }, nil
+	}); err != nil {
+		t.Fatalf("re-enable: %v", err)
+	}
 	if err := c.disable(); err != nil {
-		t.Fatalf("unexpected error on inactive disable: %v", err)
+		t.Fatalf("final disable: %v", err)
 	}
 }
 
-func TestComponent_disableError(t *testing.T) {
-	c := &componentObj{name: "test"}
-	want := errors.New("stop failed")
-	c.enable(func() (any, func() error, error) {
-		return "value", func() error { return want }, nil
-	})
-	err := c.disable()
-	if !errors.Is(err, want) {
-		t.Errorf("expected %v, got %v", want, err)
-	}
-	// Even on stop error, value is cleared
-	if c.get() != nil {
-		t.Error("value should be nil even after stop error")
-	}
-}
-
-func TestComponent_getInactive(t *testing.T) {
-	c := &componentObj{name: "test"}
-	if v := c.get(); v != nil {
-		t.Errorf("expected nil, got %v", v)
-	}
-}
-
-func TestComponent_enableDisableEnable(t *testing.T) {
-	c := &componentObj{name: "test"}
-	c.enable(func() (any, func() error, error) {
-		return "v1", func() error { return nil }, nil
-	})
-	c.disable()
-	err := c.enable(func() (any, func() error, error) {
-		return "v2", func() error { return nil }, nil
-	})
-	if err != nil {
-		t.Fatalf("unexpected error after re-enable: %v", err)
-	}
-	if c.get() != "v2" {
-		t.Errorf("expected v2, got %v", c.get())
-	}
-}
-
-func TestComponent_nameInError(t *testing.T) {
-	c := &componentObj{name: "mycomp"}
-	c.enable(func() (any, func() error, error) {
-		return "v", func() error { return nil }, nil
-	})
-	err := c.enable(func() (any, func() error, error) {
-		return "v2", func() error { return nil }, nil
-	})
-	if err == nil || !errors.Is(err, err) {
-		t.Fatal("expected error")
-	}
-	if err.Error() == "" {
-		t.Error("error should contain name")
-	}
-}
-
-// //
-
-func TestComponent_concurrentEnableDisable(t *testing.T) {
-	c := &componentObj{name: "concurrent"}
+func TestComponentConcurrentAccess(t *testing.T) {
+	c := &componentObj[string]{name: "component"}
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(2)
+	for range 100 {
+		wg.Add(3)
 		go func() {
 			defer wg.Done()
-			_ = c.enable(func() (any, func() error, error) {
-				return "v", func() error { return nil }, nil
+			_ = c.enable(func() (string, func() error, error) {
+				return "value", func() error { return nil }, nil
 			})
 		}()
 		go func() {
 			defer wg.Done()
 			_ = c.disable()
 		}()
-	}
-	wg.Wait()
-}
-
-func TestComponent_concurrentGet(t *testing.T) {
-	c := &componentObj{name: "concurrent"}
-	c.enable(func() (any, func() error, error) {
-		return "value", func() error { return nil }, nil
-	})
-	var wg sync.WaitGroup
-	for i := 0; i < 200; i++ {
-		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.get()
+			_, _ = c.get()
 		}()
 	}
 	wg.Wait()
-}
-
-// //
-
-func BenchmarkComponent_enableDisable(b *testing.B) {
-	c := &componentObj{name: "bench"}
-	for b.Loop() {
-		c.enable(func() (any, func() error, error) {
-			return "v", func() error { return nil }, nil
-		})
-		c.disable()
+	if err := c.disable(); err != nil {
+		t.Fatalf("final disable: %v", err)
 	}
-}
-
-func BenchmarkComponent_get(b *testing.B) {
-	c := &componentObj{name: "bench"}
-	c.enable(func() (any, func() error, error) {
-		return "v", func() error { return nil }, nil
-	})
-	for b.Loop() {
-		c.get()
+	if _, active := c.get(); active {
+		t.Fatal("component remained active after final disable")
 	}
-}
-
-func BenchmarkComponent_concurrentGet(b *testing.B) {
-	c := &componentObj{name: "bench"}
-	c.enable(func() (any, func() error, error) {
-		return "v", func() error { return nil }, nil
-	})
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			c.get()
-		}
-	})
 }

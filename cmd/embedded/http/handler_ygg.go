@@ -84,7 +84,7 @@ func (h *yggFileHandlerObj) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	hasher := blake3.New(32, nil)
 	if _, err := io.Copy(hasher, f); err != nil {
