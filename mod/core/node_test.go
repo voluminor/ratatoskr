@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,26 @@ type networkDispatcherObj struct{}
 
 func (networkDispatcherObj) DeliverNetworkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer) {}
 func (networkDispatcherObj) DeliverLinkPacket(tcpip.NetworkProtocolNumber, *stack.PacketBuffer)    {}
+
+type closeLoggerObj struct {
+	readWarning atomic.Bool
+}
+
+func (*closeLoggerObj) Printf(string, ...interface{}) {}
+func (*closeLoggerObj) Println(...interface{})        {}
+func (*closeLoggerObj) Infof(string, ...interface{})  {}
+func (*closeLoggerObj) Infoln(...interface{})         {}
+func (l *closeLoggerObj) Warnf(format string, _ ...interface{}) {
+	if strings.Contains(format, "ipv6rwc read error") {
+		l.readWarning.Store(true)
+	}
+}
+func (*closeLoggerObj) Warnln(...interface{})         {}
+func (*closeLoggerObj) Errorf(string, ...interface{}) {}
+func (*closeLoggerObj) Errorln(...interface{})        {}
+func (*closeLoggerObj) Debugf(string, ...interface{}) {}
+func (*closeLoggerObj) Debugln(...interface{})        {}
+func (*closeLoggerObj) Traceln(...interface{})        {}
 
 // //
 
@@ -187,6 +208,20 @@ func TestObj_CloseDoesNotReenterNIC(t *testing.T) {
 
 	if err = node.Close(); err != nil {
 		t.Fatalf("second close should be idempotent: %v", err)
+	}
+}
+
+func TestObj_CloseDoesNotLogNICReadWarning(t *testing.T) {
+	logger := &closeLoggerObj{}
+	node, err := New(ConfigObj{Logger: logger})
+	if err != nil {
+		t.Fatalf("unexpected new node error: %v", err)
+	}
+	if err := node.Close(); err != nil {
+		t.Fatalf("unexpected close error: %v", err)
+	}
+	if logger.readWarning.Load() {
+		t.Fatal("clean Close logged an ipv6rwc read warning")
 	}
 }
 

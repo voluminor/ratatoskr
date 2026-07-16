@@ -21,7 +21,6 @@ func newRemoteTestObj(handler yggcore.AddHandlerFunc) *Obj {
 	return &Obj{
 		logger:        noopLoggerObj{},
 		tasks:         common.NewTaskGroup(context.Background()),
-		remoteSem:     make(chan struct{}, DefaultMaxConcurrency),
 		remoteFlights: make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
 		remotePeers:   handler,
 	}
@@ -353,8 +352,7 @@ func TestCloseContextReturnsSuccessWhenAlreadyClosed(t *testing.T) {
 
 func TestCallRemotePeersWithoutLifecycleReturnsClosed(t *testing.T) {
 	obj := &Obj{
-		logger:    noopLoggerObj{},
-		remoteSem: make(chan struct{}, 1),
+		logger: noopLoggerObj{},
 		remotePeers: func(json.RawMessage) (interface{}, error) {
 			return yggcore.DebugGetPeersResponse{}, nil
 		},
@@ -376,7 +374,6 @@ func TestCallRemotePeers_sameKeySingleFlight(t *testing.T) {
 	obj := &Obj{
 		logger:        noopLoggerObj{},
 		tasks:         common.NewTaskGroup(context.Background()),
-		remoteSem:     make(chan struct{}, 4),
 		remoteFlights: make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
 		remotePeers: func(json.RawMessage) (interface{}, error) {
 			if calls.Add(1) == 1 {
@@ -428,79 +425,20 @@ func TestCallRemotePeers_sameKeySingleFlight(t *testing.T) {
 	_ = obj.Close()
 }
 
-func TestCallRemotePeers_sameKeySingleFlightWhileSemaphoreSaturated(t *testing.T) {
-	key := genKey(t)
-	sem := make(chan struct{}, 1)
-	sem <- struct{}{}
-	var calls atomic.Int64
-	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
-		calls.Add(1)
-		return yggcore.DebugGetPeersResponse{}, nil
-	})
-	obj.remoteSem = sem
-
-	const callers = 32
-
-	baseCtx, cancel := context.WithCancel(context.Background())
-	observed := make(chan struct{}, callers)
-	results := make(chan error, callers)
-	start := make(chan struct{})
-	for range callers {
-		go func() {
-			<-start
-			ctx := &observedContextObj{Context: baseCtx, observed: observed}
-			_, _, err := obj.callRemotePeers(ctx, key)
-			results <- err
-		}()
-	}
-	close(start)
-	for range callers {
-		<-observed
-	}
-	cancel()
-	for range callers {
-		if err := <-results; !errors.Is(err, context.Canceled) {
-			t.Fatalf("caller error = %v, want context.Canceled", err)
-		}
-	}
-	obj.remoteMu.RLock()
-	flights := len(obj.remoteFlights)
-	flight := obj.remoteFlights[toKeyArray(key)]
-	obj.remoteMu.RUnlock()
-	if flights != 1 || flight == nil {
-		t.Fatalf("published flights = %d, want one flight for the requested key", flights)
-	}
-	if got := calls.Load(); got != 0 {
-		t.Fatalf("underlying calls while saturated = %d, want 0", got)
-	}
-	<-sem
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
-	defer waitCancel()
-	if _, _, err := waitRemoteFlight(waitCtx, flight); err != nil {
-		t.Fatalf("accepted flight after capacity was released: %v", err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("underlying calls = %d, want 1", got)
-	}
-	_ = obj.Close()
-}
-
 func TestCallRemotePeersCapsAcceptedUniqueFlights(t *testing.T) {
-	keys := genKeyN(t, 3)
+	keys := genKeyN(t, 2)
 	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
 		t.Fatal("over-cap call reached remote handler")
 		return nil, nil
 	})
-	obj.remoteSem = make(chan struct{}, 2)
-	for _, key := range keys[:2] {
-		obj.remoteFlights[toKeyArray(key)] = &remoteFlightObj{done: make(chan struct{})}
-	}
+	obj.remoteFlights[toKeyArray(keys[0])] = &remoteFlightObj{done: make(chan struct{})}
+	fillRemoteFlights(obj, 10000, DefaultMaxConcurrency-1)
 
-	if _, _, err := obj.callRemotePeers(context.Background(), keys[2]); !errors.Is(err, ErrProbeBusy) {
+	if _, _, err := obj.callRemotePeers(context.Background(), keys[1]); !errors.Is(err, ErrProbeBusy) {
 		t.Fatalf("new key error = %v, want ErrProbeBusy", err)
 	}
-	if got := len(obj.remoteFlights); got != 2 {
-		t.Fatalf("accepted flights = %d, want 2", got)
+	if got := len(obj.remoteFlights); got != DefaultMaxConcurrency {
+		t.Fatalf("accepted flights = %d, want %d", got, DefaultMaxConcurrency)
 	}
 
 	existing := obj.remoteFlights[toKeyArray(keys[0])]
@@ -508,41 +446,6 @@ func TestCallRemotePeersCapsAcceptedUniqueFlights(t *testing.T) {
 	if _, _, err := obj.callRemotePeers(context.Background(), keys[0]); err != nil {
 		t.Fatalf("existing key must remain joinable at capacity: %v", err)
 	}
-}
-
-func TestCallRemotePeers_canceledCallerDoesNotPoisonQueuedFlight(t *testing.T) {
-	key := genKey(t)
-	sem := make(chan struct{}, 1)
-	sem <- struct{}{}
-	var calls atomic.Int64
-	obj := newRemoteTestObj(func(json.RawMessage) (interface{}, error) {
-		calls.Add(1)
-		return yggcore.DebugGetPeersResponse{}, nil
-	})
-	obj.remoteSem = sem
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, _, err := obj.callRemotePeers(ctx, key); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("call error = %v, want context.DeadlineExceeded", err)
-	}
-	obj.remoteMu.RLock()
-	flight := obj.remoteFlights[toKeyArray(key)]
-	obj.remoteMu.RUnlock()
-	if flight == nil {
-		t.Fatal("accepted flight was removed after its caller canceled")
-	}
-
-	<-sem
-	waitCtx, waitCancel := context.WithTimeout(context.Background(), time.Second)
-	defer waitCancel()
-	if _, _, err := waitRemoteFlight(waitCtx, flight); err != nil {
-		t.Fatalf("accepted flight after capacity was released: %v", err)
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("underlying calls after caller canceled = %d, want 1", got)
-	}
-	_ = obj.Close()
 }
 
 func TestCallRemotePeers_timeoutReturnsButKeepsUnderlyingCallOwned(t *testing.T) {
@@ -555,7 +458,6 @@ func TestCallRemotePeers_timeoutReturnsButKeepsUnderlyingCallOwned(t *testing.T)
 		return yggcore.DebugGetPeersResponse{}, nil
 	})
 	obj.remoteTimeout = 10 * time.Millisecond
-	obj.remoteSem = make(chan struct{}, 1)
 	result := make(chan error, 1)
 	go func() {
 		_, _, err := obj.callRemotePeers(context.Background(), key)
@@ -565,8 +467,11 @@ func TestCallRemotePeers_timeoutReturnsButKeepsUnderlyingCallOwned(t *testing.T)
 	if err := <-result; !errors.Is(err, ErrRemoteCallTimedOut) {
 		t.Fatalf("call error = %v, want ErrRemoteCallTimedOut", err)
 	}
-	if got := len(obj.remoteSem); got != 1 {
-		t.Fatalf("remote slots after timeout = %d, want 1", got)
+	obj.remoteMu.RLock()
+	flight := obj.remoteFlights[toKeyArray(key)]
+	obj.remoteMu.RUnlock()
+	if flight == nil {
+		t.Fatal("timed-out upstream call was removed before it returned")
 	}
 	closed := make(chan struct{})
 	go func() {

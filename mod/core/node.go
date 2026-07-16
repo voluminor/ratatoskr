@@ -131,11 +131,12 @@ func (o *Obj) closeOwned() []error {
 }
 
 func (o *Obj) teardown(c *yggcore.Core, ns *netstackObj) {
-	if c != nil {
-		c.Stop()
-	}
 	if ns != nil {
 		ns.close()
+		return
+	}
+	if c != nil {
+		c.Stop()
 	}
 }
 

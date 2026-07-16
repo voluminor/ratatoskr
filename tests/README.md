@@ -125,7 +125,8 @@ bash tests/scripts/up.sh --verify --keep-state
 
 Hard checks fail the command. They cover node readiness, an active peer on every node, TCP echo, 512-byte UDP echo,
 SOCKS5 TCP and UDP paths, pprof, and trace capture. The 4096-byte UDP echo and the short synthetic TCP load are
-diagnostics: their failure is recorded but does not hide the result of the basic data-path checks.
+diagnostics: their failure is recorded but does not hide the result of the basic data-path checks. The TCP echo check
+allows 120 seconds for route convergence and remains a hard failure after that deadline.
 
 Results are written to `tmp/tests/results/smoke`. See [verifier/README.md](verifier/README.md) for every check and
 output file.

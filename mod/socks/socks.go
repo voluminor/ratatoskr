@@ -417,6 +417,20 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	}
 
 	log := common.NormalizeLogger(cfg.Logger)
+	isUnix := strings.HasPrefix(cfg.Addr, "/") || strings.HasPrefix(cfg.Addr, ".")
+	var (
+		ln  net.Listener
+		err error
+	)
+	if isUnix {
+		ln, err = listenUnix(cfg.Addr, defaultUnixSocketMode)
+	} else {
+		ln, err = net.Listen("tcp", cfg.Addr)
+	}
+	if err != nil {
+		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
+	}
+
 	s.maxConnections.Store(int64(effectiveMaxConnections(cfg.MaxConnections)))
 	s.dialTimeout = effectiveDuration(cfg.DialTimeout, defaultDialTimeout)
 	s.tunnelIdleTimeout = effectiveDuration(cfg.TunnelIdleTimeout, defaultTunnelIdleTime)
@@ -479,26 +493,6 @@ func (s *Obj) Start(cfg ConfigObj) error {
 	server := socks5.NewServer(opts...)
 
 	s.logger = log
-
-	isUnix := strings.HasPrefix(cfg.Addr, "/") || strings.HasPrefix(cfg.Addr, ".")
-	var (
-		ln  net.Listener
-		err error
-	)
-	if isUnix {
-		ln, err = listenUnix(cfg.Addr, defaultUnixSocketMode)
-	} else {
-		ln, err = net.Listen("tcp", cfg.Addr)
-	}
-	if err != nil {
-		s.associateLimiter = nil
-		s.associatePool = nil
-		s.serveTasks = nil
-		s.associatePrincipalMu.Lock()
-		s.associatePrincipals = nil
-		s.associatePrincipalMu.Unlock()
-		return fmt.Errorf("listen %s: %w", cfg.Addr, err)
-	}
 	s.listener = ln
 	s.addr = cfg.Addr
 	s.isUnix = isUnix

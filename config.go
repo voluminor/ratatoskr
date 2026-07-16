@@ -22,6 +22,7 @@ type ConfigObj struct {
 
 	// Config is the Yggdrasil configuration. Nil generates a configuration with
 	// random keys and disables the admin listener.
+	// Treat it and nested values as immutable for the node lifetime.
 	// Config.Peers must be empty if Peers is set.
 	Config *config.NodeConfig
 

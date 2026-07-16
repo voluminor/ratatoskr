@@ -8,9 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/voluminor/ratatoskr/internal/common"
-	yggcore "github.com/yggdrasil-network/yggdrasil-go/src/core"
 )
 
 // // // // // // // // // //
@@ -94,6 +91,14 @@ func (w *udpReverseWriterObj) enqueue(addr net.Addr, payload []byte) bool {
 		}
 		return false
 	}
+}
+
+func enqueueUDPReversePacket(session *udpSessionObj, writer *udpReverseWriterObj, addr net.Addr, payload []byte) bool {
+	if !writer.enqueue(addr, payload) {
+		return false
+	}
+	session.lastActivity.Store(time.Now().UnixMilli())
+	return true
 }
 
 func (w *udpReverseWriterObj) run() {
@@ -264,6 +269,7 @@ func enqueueUDPPacket(session *udpSessionObj, pool *udpBufferPoolObj, packet []b
 	copy(buf.buf, packet)
 	select {
 	case session.out <- buf:
+		session.lastActivity.Store(time.Now().UnixMilli())
 		return udpEnqueueQueued
 	case <-session.ctx.Done():
 		pool.put(buf)
@@ -454,205 +460,6 @@ func runUDPWriter(ctx context.Context, session *udpSessionObj, pool *udpBufferPo
 			if err != nil {
 				return err
 			}
-		}
-	}
-}
-
-func startUDPSessionWorker(ctx context.Context, cfg UDPLoopConfigObj, sessions *udpSessionMapObj, key netip.AddrPort, remoteAddr net.Addr, session *udpSessionObj, pool *udpBufferPoolObj, reverseWriter *udpReverseWriterObj, maxPacketSize int, wg *sync.WaitGroup, log yggcore.Logger) {
-	trackUDPWorker(wg, func() {
-		defer func() {
-			sessions.compareAndDelete(key, session)
-			session.finish()
-		}()
-		dialCtx, cancel := dialTimeoutContext(session.ctx, cfg.DialTimeout)
-		fwdConn, err := cfg.Dial(dialCtx, remoteAddr)
-		cancel()
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Errorf("[forward] failed to dial upstream: %s", err)
-			}
-			drainUDPPackets(session.out, pool)
-			return
-		}
-		if !session.setConn(fwdConn) {
-			_ = fwdConn.Close()
-			drainUDPPackets(session.out, pool)
-			return
-		}
-		reverseDone := make(chan struct{})
-		go func() {
-			defer close(reverseDone)
-			reverseReadUDP(session.ctx, fwdConn, maxPacketSize, func(payload []byte) bool {
-				session.lastActivity.Store(time.Now().UnixMilli())
-				if reverseWriter.enqueue(remoteAddr, payload) {
-					return true
-				}
-				return session.ctx.Err() == nil
-			})
-			session.stop()
-		}()
-		if err := runUDPWriter(session.ctx, session, pool); err != nil && session.ctx.Err() == nil {
-			log.Debugf("[forward] session write error: %s", err)
-		}
-		session.stop()
-		<-reverseDone
-	})
-}
-
-func runUDPLoopWithWait(ctx context.Context, cfg UDPLoopConfigObj, wg *sync.WaitGroup, sharedLimit *admissionLimitObj, stats *statsObj) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	log := common.NormalizeLogger(cfg.Logger)
-	if cfg.Timeout <= 0 {
-		return ErrInvalidSessionTimeout
-	}
-	if cfg.ListenConn == nil {
-		return fmt.Errorf("%w: UDP listen connection is nil", ErrInvalidMapping)
-	}
-	if cfg.Dial == nil {
-		return fmt.Errorf("%w: UDP dial function is nil", ErrInvalidMapping)
-	}
-	loopCtx, loopCancel := context.WithCancel(ctx)
-	defer loopCancel()
-	limit := sharedLimit
-	if limit == nil {
-		if cfg.MaxSessions < 0 {
-			return ErrInvalidLimit
-		}
-		limit = &admissionLimitObj{max: int64(cfg.MaxSessions)}
-	}
-	sessions := newUDPSessionMap()
-	limitLog := intervalLogObj{}
-	readErrorLog := intervalLogObj{}
-	oversizeLog := intervalLogObj{}
-	queueLog := intervalLogObj{}
-	maxPacketSize := clampUDPMaxPacketSize(cfg.MaxPacketSize)
-	packetPool := newUDPBufferPool(maxPacketSize)
-	var reverseDrops *atomic.Uint64
-	var sessionDrops *atomic.Uint64
-	if stats != nil {
-		reverseDrops = &stats.reverseUDPDrops
-		sessionDrops = &stats.sessionUDPDrops
-	}
-	reverseWriter := newUDPReverseWriter(loopCtx, cfg.ListenConn, effectiveUDPWriteTimeout(cfg.WriteTimeout), packetPool, maxPacketSize, reverseDrops)
-	trackUDPWorker(wg, reverseWriter.run)
-	sessionQueueSize := boundedUDPQueueSize(maxPacketSize, udpSessionQueueBytes, udpSessionQueueMaxPackets)
-	readStop := make(chan struct{})
-	readDone := make(chan struct{})
-	go func() {
-		defer close(readDone)
-		select {
-		case <-loopCtx.Done():
-			_ = cfg.ListenConn.Close()
-		case <-readStop:
-		}
-	}()
-	defer func() {
-		close(readStop)
-		<-readDone
-	}()
-
-	trackUDPWorker(wg, func() {
-		ticker := time.NewTicker(udpCleanupInterval(cfg.Timeout))
-		defer ticker.Stop()
-		for {
-			select {
-			case <-loopCtx.Done():
-				for _, e := range sessions.snapshot() {
-					e.session.stop()
-				}
-				return
-			case <-ticker.C:
-				now := time.Now().UnixMilli()
-				for _, e := range sessions.snapshot() {
-					if now-e.session.lastActivity.Load() > cfg.Timeout.Milliseconds() {
-						log.Debugf("[forward] cleaning up inactive UDP session %v", e.key)
-						closeUDPSession(sessions, e.key, e.session)
-					}
-				}
-			}
-		}
-	})
-
-	buf := make([]byte, udpReadBufferSize(maxPacketSize))
-	backoff := time.Duration(0)
-	errorStreak := ioErrorStreakObj{}
-	for {
-		n, remoteAddr, err := cfg.ListenConn.ReadFrom(buf)
-		if err != nil {
-			if loopCtx.Err() != nil {
-				return nil
-			}
-			if errorStreak.terminal(err) {
-				if stats != nil {
-					stats.terminalErrors.Add(1)
-				}
-				return fmt.Errorf("forward: UDP read: %w", err)
-			}
-			if readErrorLog.allow(limitLogInterval) {
-				log.Debugf("[forward] UDP read error: %v", err)
-			}
-			backoff = nextBackoff(backoff)
-			if !sleepContext(loopCtx, backoff) {
-				return nil
-			}
-			continue
-		}
-		errorStreak.reset()
-		backoff = 0
-		if n == 0 {
-			continue
-		}
-		if n > maxPacketSize {
-			if oversizeLog.allow(limitLogInterval) {
-				log.Warnf("[forward] UDP packet from %s exceeds max packet size %d, dropping", remoteAddr, maxPacketSize)
-			}
-			continue
-		}
-
-		key, keyOK := udpSessionKey(remoteAddr)
-		if !keyOK {
-			continue
-		}
-		session, ok := sessions.load(key)
-		created := false
-		if !ok {
-			if !limit.acquire() {
-				if limitLog.allow(limitLogInterval) {
-					log.Warnf("[forward] UDP session limit reached (%d), dropping packet from %s", limit.max, remoteAddr)
-				}
-				continue
-			}
-			sessCtx, sessCancel := context.WithCancel(loopCtx)
-			session = &udpSessionObj{
-				ctx:    sessCtx,
-				cancel: sessCancel,
-				out:    make(chan *udpPacketObj, sessionQueueSize),
-				limit:  limit,
-			}
-			session.lastActivity.Store(time.Now().UnixMilli())
-			sessions.store(key, session)
-			startUDPSessionWorker(loopCtx, cfg, sessions, key, remoteAddr, session, packetPool, reverseWriter, maxPacketSize, wg, log)
-			created = true
-		}
-
-		session.lastActivity.Store(time.Now().UnixMilli())
-		switch enqueueUDPPacket(session, packetPool, buf[:n], sessionDrops) {
-		case udpEnqueueQueued:
-		case udpEnqueueFull:
-			if queueLog.allow(limitLogInterval) {
-				if created {
-					log.Warnf("[forward] UDP session queue full before dial, dropping first packet from %s", remoteAddr)
-				} else {
-					log.Warnf("[forward] UDP session queue full, dropping packet from %s", remoteAddr)
-				}
-			}
-		case udpEnqueueCanceled:
-			if recordUDPChurnDrop(loopCtx, sessionDrops) && queueLog.allow(limitLogInterval) {
-				log.Warnf("[forward] UDP session is closing, dropping packet from %s", remoteAddr)
-			}
-			closeUDPSession(sessions, key, session)
 		}
 	}
 }

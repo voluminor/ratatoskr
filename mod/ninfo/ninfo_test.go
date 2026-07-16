@@ -187,6 +187,100 @@ func TestAsk_sameKeySingleFlightAndCallerCancellation(t *testing.T) {
 	}
 }
 
+func TestAsk_lastWaiterCancellationStopsRetries(t *testing.T) {
+	obj := newTestObj()
+	obj.maxAskTime = time.Second
+	obj.askRetryPause = time.Millisecond
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		return nil, errors.New("remote unavailable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := obj.Ask(ctx, make(ed25519.PublicKey, ed25519.PublicKeySize))
+		done <- err
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ask error = %v, want context.Canceled", err)
+	}
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for {
+		obj.askMu.Lock()
+		flights := len(obj.askFlights)
+		obj.askMu.Unlock()
+		if flights == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("abandoned Ask flight did not stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying calls after cancellation = %d, want 1", got)
+	}
+	if err := obj.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAsk_doesNotJoinAbandonedFlight(t *testing.T) {
+	obj := newTestObj()
+	obj.askRetryPause = -1
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var calls atomic.Int64
+	obj.nodeInfo = func(json.RawMessage) (interface{}, error) {
+		if calls.Add(1) == 1 {
+			close(started)
+			<-release
+			return nil, errors.New("abandoned")
+		}
+		return yggcore.GetNodeInfoResponse{"node": json.RawMessage(`{"name":"test"}`)}, nil
+	}
+	key := make(ed25519.PublicKey, ed25519.PublicKeySize)
+	ctx, cancel := context.WithCancel(context.Background())
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := obj.Ask(ctx, key)
+		firstDone <- err
+	}()
+	<-started
+	cancel()
+	if err := <-firstDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first caller error = %v, want context.Canceled", err)
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := obj.Ask(context.Background(), key)
+		secondDone <- err
+	}()
+	time.Sleep(20 * time.Millisecond)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("underlying calls before abandoned flight exits = %d, want 1", got)
+	}
+	close(release)
+	if err := <-secondDone; err != nil {
+		t.Fatalf("second caller: %v", err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("underlying calls = %d, want 2", got)
+	}
+	if err := obj.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseAskResponse_rejectsOversizedNodeInfo(t *testing.T) {
 	obj := newTestObj()
 	raw := json.RawMessage(`{"data":"` + string(make([]byte, maxNodeInfoBytes)) + `"}`)

@@ -53,6 +53,26 @@ func genKeyN(t testing.TB, n int) []ed25519.PublicKey {
 	return keys
 }
 
+func fillRemoteFlights(obj *Obj, seed, count int) {
+	for i := range count {
+		key := cacheTestKey(seed + i)
+		obj.remoteFlights[toKeyArray(key)] = &remoteFlightObj{done: make(chan struct{})}
+	}
+}
+
+func TestClonePeerKeysOwnsKeys(t *testing.T) {
+	keys := genKeyN(t, 2)
+	cloned := clonePeerKeys(keys)
+	cloned[0][0] ^= 0xff
+	if cloned[0][0] == keys[0][0] {
+		t.Fatal("cloned key aliases source key")
+	}
+	keys[1][0] ^= 0xff
+	if cloned[1][0] == keys[1][0] {
+		t.Fatal("source key aliases cloned key")
+	}
+}
+
 func buildTestTree(t testing.TB) (*NodeObj, []ed25519.PublicKey) {
 	t.Helper()
 	keys := genKeyN(t, 5)

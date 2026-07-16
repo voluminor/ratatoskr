@@ -131,7 +131,8 @@ full. Responses from all sessions in one mapping pass through one bounded revers
 
 The approximate per-session queue budget is 64 KiB and at most 64 packets. With a 65535-byte maximum packet size it
 becomes one packet. UDP remains intentionally lossy under per-session overload. The queue bounds cap memory for a fixed
-session count; total memory remains unbounded when `MaxUDPSessions` is unlimited.
+session count; total memory remains unbounded when `MaxUDPSessions` is unlimited. A packet refreshes session activity
+only after its queue accepts it, so traffic dropped by a full queue cannot keep an otherwise idle session alive.
 
 `RunUDPLoop` and `ReverseProxyUDP` remain available for standalone use. `UDPLoopConfigObj.MaxSessions` follows the same
 limit contract: zero is unlimited and a negative value returns `ErrInvalidLimit`.

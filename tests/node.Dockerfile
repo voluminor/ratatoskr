@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-FROM golang:1.25-bookworm
+FROM golang:1.26.5-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         bash ca-certificates curl jq iproute2 dnsutils netcat-openbsd procps \

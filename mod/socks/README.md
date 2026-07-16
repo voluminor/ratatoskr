@@ -67,7 +67,10 @@ if err != nil {
 defer func() { _ = s.Close() }()
 ```
 
-Creates and starts a SOCKS5 proxy. Close it with `Close`.
+Creates and starts a SOCKS5 proxy. Close it with `Close`. Startup binds the
+listener before launching workers, so a bind failure leaves no background work
+behind. A handle used through `Start` remains disabled and may be retried after
+the address conflict is fixed.
 
 ---
 

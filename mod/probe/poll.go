@@ -32,28 +32,27 @@ func (o *Obj) Trace(ctx context.Context, key ed25519.PublicKey) (*TraceResultObj
 	result := o.collect(key)
 
 	if result != nil && result.TreePath != nil && result.Hops != nil {
-		return result, o.enrichPath(ctx, result.TreePath)
+		return o.enrichTraceResult(ctx, result, nil)
 	}
 
 	o.Lookup(key)
-
-	if result != nil {
-		var resultErr error
-		if result.TreePath != nil && result.Hops == nil {
-			result, resultErr = o.pollFull(ctx, key, result)
-		}
-		if result != nil && result.TreePath != nil {
-			resultErr = errors.Join(resultErr, o.enrichPath(ctx, result.TreePath))
-		}
-		return result, resultErr
+	var err error
+	if result == nil {
+		o.logger.Infof("[probe] lookup started for %x", key[:8])
+		result, err = o.pollFull(ctx, key, nil)
+	} else if result.TreePath != nil && result.Hops == nil {
+		result, err = o.pollFull(ctx, key, result)
 	}
+	return o.enrichTraceResult(ctx, result, err)
+}
 
-	o.logger.Infof("[probe] lookup started for %x", key[:8])
-	result, err := o.pollFull(ctx, key, nil)
-	if result != nil && result.TreePath != nil {
-		err = errors.Join(err, o.enrichPath(ctx, result.TreePath))
+// //
+
+func (o *Obj) enrichTraceResult(ctx context.Context, result *TraceResultObj, err error) (*TraceResultObj, error) {
+	if result == nil || result.TreePath == nil {
+		return result, err
 	}
-	return result, err
+	return result, errors.Join(err, o.enrichPath(ctx, result.TreePath))
 }
 
 // //

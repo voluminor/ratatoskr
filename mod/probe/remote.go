@@ -38,24 +38,6 @@ const maxRemotePeerMessageBytes = 1024 * 1024
 
 // //
 
-func acquireRemoteSlot(lifecycle context.Context, sem chan struct{}) error {
-	if sem == nil {
-		return nil
-	}
-	select {
-	case sem <- struct{}{}:
-		return nil
-	case <-lifecycle.Done():
-		return lifecycle.Err()
-	}
-}
-
-func releaseRemoteSlot(sem chan struct{}) {
-	if sem != nil {
-		<-sem
-	}
-}
-
 func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed25519.PublicKey, time.Duration, error) {
 	if o.isClosed() {
 		return nil, 0, ErrClosed
@@ -75,7 +57,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 
 	keyArray := toKeyArray(key)
 	o.remoteMu.Lock()
-	if o.closed || o.tasks == nil || o.remoteFlights == nil || o.remoteSem == nil {
+	if o.closed || o.tasks == nil || o.remoteFlights == nil {
 		o.remoteMu.Unlock()
 		return nil, 0, ErrClosed
 	}
@@ -83,7 +65,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 		o.remoteMu.Unlock()
 		return waitRemoteFlight(ctx, flight)
 	}
-	if len(o.remoteFlights) >= cap(o.remoteSem) {
+	if len(o.remoteFlights) >= DefaultMaxConcurrency {
 		o.remoteMu.Unlock()
 		return nil, 0, ErrProbeBusy
 	}
@@ -92,7 +74,7 @@ func (o *Obj) callRemotePeers(ctx context.Context, key ed25519.PublicKey) ([]ed2
 	tasks := o.tasks
 	o.remoteMu.Unlock()
 	if !tasks.Go(func(lifecycle context.Context) {
-		o.runRemoteFlight(lifecycle, keyArray, flight, o.remoteSem)
+		o.runRemoteFlight(lifecycle, keyArray, flight)
 	}) {
 		o.finishRemoteFlight(keyArray, flight, ErrClosed)
 	}
@@ -123,15 +105,10 @@ func (o *Obj) finishRemoteFlight(key [ed25519.PublicKeySize]byte, flight *remote
 	flight.signal()
 }
 
-func (o *Obj) runRemoteFlight(lifecycle context.Context, key [ed25519.PublicKeySize]byte, flight *remoteFlightObj, sem chan struct{}) {
+func (o *Obj) runRemoteFlight(lifecycle context.Context, key [ed25519.PublicKeySize]byte, flight *remoteFlightObj) {
 	defer func() {
 		o.finishRemoteFlight(key, flight, nil)
 	}()
-	if err := acquireRemoteSlot(lifecycle, sem); err != nil {
-		flight.err = ErrClosed
-		return
-	}
-	defer releaseRemoteSlot(sem)
 	result := make(chan remoteResultObj, 1)
 	go func() { result <- o.queryRemotePeers(key) }()
 

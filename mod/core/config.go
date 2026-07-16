@@ -9,7 +9,8 @@ import (
 
 // ConfigObj contains node construction parameters.
 type ConfigObj struct {
-	// Config is copied during construction. Nil generates a default node config.
+	// Config is captured during construction. Treat it and nested values as
+	// immutable for the node lifetime. Nil generates a default node config.
 	Config *config.NodeConfig
 
 	// Logger receives Yggdrasil logs. Nil discards them.

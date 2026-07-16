@@ -15,7 +15,7 @@ get_json() {
 }
 
 post_json() {
-  curl -fsS --max-time "${4:-20}" -H 'Content-Type: application/json' -d "$3" "http://$1:$2"
+  curl -sS --max-time "${4:-20}" -H 'Content-Type: application/json' -d "$3" "http://$1:$2"
 }
 
 wait_health() {
@@ -84,6 +84,9 @@ retry_json_ok() {
     fi
     sleep 2
   done
+  if [ -s "$out" ]; then
+    echo "[smoke] last failed response: $(jq -c . "$out" 2>/dev/null || cat "$out")" >&2
+  fi
   return 1
 }
 
@@ -133,7 +136,7 @@ run_smoke() {
   udp_b=$(jq -r '.udp_echo_addr' "$OUT/node-b-health.json")
   log "[smoke] node-b=${addr_b} node-c=${addr_c}"
 
-  hard "TCP echo node-a -> node-b" retry_json_ok "$OUT/tcp-small.json" 60 \
+  hard "TCP echo node-a -> node-b" retry_json_ok "$OUT/tcp-small.json" 120 \
     post_json node-a "8080/check/tcp" "{\"address\":\"${tcp_b}\",\"payload\":\"ratatoskr-smoke\",\"timeout_ms\":5000}" 15
 
   hard "UDP echo 512B node-a -> node-b" retry_json_ok "$OUT/udp-small.json" 60 \

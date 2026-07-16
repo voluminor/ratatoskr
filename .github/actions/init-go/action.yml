@@ -1,10 +1,10 @@
 name: 'Set up Go with cache'
-description: 'Install Go from go.mod and restore module/build caches'
+description: 'Install the CI Go toolchain and restore module/build caches'
 inputs:
   go-version:
-    description: 'Deprecated compatibility input; go.mod is the source of truth'
+    description: 'Go toolchain version used by CI'
     required: false
-    default: ''
+    default: '1.26.5'
   cache-suffix:
     description: 'Optional cache discriminator for parallel target builds'
     required: false
@@ -17,11 +17,11 @@ inputs:
 runs:
   using: 'composite'
   steps:
-    - name: 🔧 Install Go from go.mod
+    - name: 🔧 Install Go
       uses: actions/setup-go@v5
       with:
         cache: false
-        go-version-file: go.mod
+        go-version: ${{ inputs.go-version }}
 
     - name: 🧭 Read Go cache paths
       id: go-env

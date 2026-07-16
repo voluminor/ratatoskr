@@ -8,6 +8,7 @@ Key contracts:
 - `DialContext`, `Listen`, and `ListenPacket` operate on Yggdrasil IPv6 addresses.
 - `Close() error` is idempotent and closes owned listeners and packet endpoints.
 - `ConfigObj.Config` may be nil; this generates a node with random keys.
+- a supplied `ConfigObj.Config` and its nested values are immutable for the node lifetime.
 - the optional admin socket is an unsafe upstream pass-through; read the
   [admin warning](admin/README.md) before enabling it.
 
@@ -78,7 +79,9 @@ func main() {
 
 `Logger == nil` discards logs. Construction copies the node-config struct,
 copies `MulticastInterfaces`, and deep-clones JSON-shaped `NodeInfo`. Cyclic or
-unsupported `NodeInfo` values return `ErrInvalidNodeInfo`.
+unsupported `NodeInfo` values return `ErrInvalidNodeInfo`. This is not a promise
+to recursively clone every field of the upstream configuration: callers must
+not mutate the supplied config or its nested values during the node lifetime.
 
 The configured MTU is clamped to the upstream maximum. A non-zero value below
 the IPv6 minimum of 1280 is raised to 1280 unless the upstream maximum itself is

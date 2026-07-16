@@ -208,8 +208,16 @@ func TestEnqueueUDPPacketCountsOnlyQueueFull(t *testing.T) {
 	if got := enqueueUDPPacket(session, pool, []byte("first"), &drops); got != udpEnqueueQueued {
 		t.Fatal("first packet was not enqueued")
 	}
+	firstActivity := session.lastActivity.Load()
+	if firstActivity == 0 {
+		t.Fatal("queued packet did not update session activity")
+	}
+	time.Sleep(2 * time.Millisecond)
 	if got := enqueueUDPPacket(session, pool, []byte("full"), &drops); got != udpEnqueueFull {
 		t.Fatal("packet unexpectedly fit in full queue")
+	}
+	if got := session.lastActivity.Load(); got != firstActivity {
+		t.Fatalf("queue-full packet updated activity to %d, want %d", got, firstActivity)
 	}
 	if got := drops.Load(); got != 1 {
 		t.Fatalf("queue-full drops = %d, want 1", got)
@@ -224,6 +232,37 @@ func TestEnqueueUDPPacketCountsOnlyQueueFull(t *testing.T) {
 	}
 
 	drainUDPPackets(session.out, pool)
+}
+
+func TestEnqueueUDPReversePacketUpdatesOnlyAcceptedTraffic(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pool := newUDPBufferPool(512)
+	writer := newUDPReverseWriter(ctx, &failingPacketConnObj{writes: make(chan struct{}, 1)}, time.Second, pool, 512, nil)
+	session := &udpSessionObj{}
+	addr := &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1}
+
+	for range cap(writer.out) {
+		if !enqueueUDPReversePacket(session, writer, addr, []byte("accepted")) {
+			t.Fatal("reverse queue rejected a packet before reaching capacity")
+		}
+	}
+	acceptedActivity := session.lastActivity.Load()
+	if acceptedActivity == 0 {
+		t.Fatal("accepted reverse packet did not update session activity")
+	}
+	time.Sleep(2 * time.Millisecond)
+	if enqueueUDPReversePacket(session, writer, addr, []byte("full")) {
+		t.Fatal("reverse queue accepted a packet beyond capacity")
+	}
+	if got := session.lastActivity.Load(); got != acceptedActivity {
+		t.Fatalf("dropped reverse packet updated activity to %d, want %d", got, acceptedActivity)
+	}
+
+	for len(writer.out) > 0 {
+		packet := <-writer.out
+		pool.put(packet.packet)
+	}
 }
 
 func TestRecordUDPChurnDropExcludesGlobalShutdown(t *testing.T) {
@@ -1374,10 +1413,20 @@ func TestUDPSessionCountHeldUntilReverseReaderExits(t *testing.T) {
 	pool := newUDPBufferPool(512)
 	reverseWriter := newUDPReverseWriter(ctx, dst, time.Second, pool, 512, nil)
 	var wg sync.WaitGroup
-	startUDPSessionWorker(ctx, UDPLoopConfigObj{
-		ListenConn: dst,
-		Dial:       func(context.Context, net.Addr) (net.Conn, error) { return upstream, nil },
-	}, sessions, key, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234}, session, pool, reverseWriter, 512, &wg, noopLogObj{})
+	loop := &udpLoopObj{
+		cfg: UDPLoopConfigObj{
+			ListenConn: dst,
+			Dial:       func(context.Context, net.Addr) (net.Conn, error) { return upstream, nil },
+		},
+		ctx:           ctx,
+		wg:            &wg,
+		log:           noopLogObj{},
+		sessions:      sessions,
+		packetPool:    pool,
+		reverseWriter: reverseWriter,
+		maxPacketSize: 512,
+	}
+	loop.startSessionWorker(key, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 1234}, session)
 
 	select {
 	case <-upstream.readStarted:

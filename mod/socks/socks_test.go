@@ -566,6 +566,33 @@ func TestNew_addressAlreadyInUse(t *testing.T) {
 	}
 }
 
+func TestStartListenFailureDoesNotLeakAssociateWorkers(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = occupied.Close() }()
+
+	cfg := tcpCfg()
+	cfg.Addr = occupied.Addr().String()
+	s := NewDisabled()
+	baseline := runtime.NumGoroutine()
+	for attempt := range 4 {
+		if err = s.Start(cfg); err == nil {
+			t.Fatalf("attempt %d unexpectedly started on an occupied address", attempt)
+		}
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for runtime.NumGoroutine() > baseline+16 && time.Now().Before(deadline) {
+		runtime.Gosched()
+		time.Sleep(time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > baseline+16 {
+		t.Fatalf("failed Start leaked goroutines: before=%d after=%d", baseline, got)
+	}
+}
+
 func TestClose_whenNotEnabled(t *testing.T) {
 	s := &Obj{}
 	if err := s.Close(); err != nil {

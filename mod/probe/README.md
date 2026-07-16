@@ -83,14 +83,13 @@ allows querying remote nodes without a real admin socket.
 contract: accepted work is not abandoned. If the caller needs a bounded wait, use `CloseContext(ctx)`. Its context
 bounds only the caller's wait; shutdown continues and a later `Close` or `CloseContext` can still observe completion.
 
-A same-node flight is published before it waits for the global 256-call semaphore, so saturation cannot queue many
-identical upstream calls. The module accepts at most 256 distinct flights at once; an additional distinct key returns
-`ErrProbeBusy`, while callers for an already accepted key still join its flight. An accepted flight belongs to the
-module lifecycle: cancellation of the caller that created it only detaches that caller and cannot poison other
-waiters. Once the handler starts, the module owns its slot until the upstream call actually returns. `RemoteTimeout`
-releases callers with `ErrRemoteCallTimedOut`, but deliberately does not release the slot or forget the flight early:
-the upstream handler has no cancellation API, and pretending it ended would exceed the real concurrency cap. `Close`
-waits for it.
+The flight map is also the admission gate: the module publishes at most 256 distinct flights before launching their
+upstream calls. An additional distinct key returns `ErrProbeBusy`, while callers for an already accepted key still join
+its flight. There is no second semaphore or queued-call layer. An accepted flight belongs to the module lifecycle:
+cancellation of the caller that created it only detaches that caller and cannot poison other waiters. Once the handler
+starts, the module owns its admission slot until the upstream call actually returns. `RemoteTimeout` releases callers
+with `ErrRemoteCallTimedOut`, but deliberately does not free admission or forget the flight early: the upstream handler
+has no cancellation API, and pretending it ended would exceed the real concurrency cap. `Close` waits for it.
 
 Each `Tree` call reads a fresh topology snapshot. There is intentionally no cross-call result cache: mesh peer sets can
 change between calls, while the remote call itself is cheap compared with traversal and network latency. A traversal

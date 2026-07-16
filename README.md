@@ -223,6 +223,8 @@ func main() {
 
 Passing `nil` as `ConfigObj.Config` creates new random keys and disables the admin listener. It does not add peers;
 use `ConfigObj.Peers`, a Yggdrasil configuration with static peers, or multicast discovery to join a network.
+A non-nil Yggdrasil configuration and its nested values are immutable for the node lifetime; prepare the complete
+configuration before calling `New` and do not mutate it concurrently or afterwards.
 
 ## Root-package recipes
 
@@ -502,9 +504,9 @@ profile evidence, stability warnings, attribution limits, reproduction command, 
 
 ## Platforms
 
-The module targets Go 1.25 or newer. CI tests release source on Linux, macOS, and Windows and verifies compilation for
-25 combinations across Linux, Windows, macOS, FreeBSD, OpenBSD, and NetBSD. Some optional behavior is platform-specific,
-including Unix sockets and Yggdrasil transport support; use the module README for those constraints.
+The module targets Go 1.25 or newer. CI uses Go 1.26.5, tests release source on Linux, macOS, and Windows, and verifies
+compilation for 25 combinations across Linux, Windows, macOS, FreeBSD, OpenBSD, and NetBSD. Some optional behavior is
+platform-specific, including Unix sockets and Yggdrasil transport support; use the module README for those constraints.
 
 ## Project documentation
 

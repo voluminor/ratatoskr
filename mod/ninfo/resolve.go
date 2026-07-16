@@ -105,33 +105,53 @@ func (obj *Obj) resolveIPv6(ctx context.Context, addr string) (ed25519.PublicKey
 	}
 	canonical = lookupAddr
 
-	obj.askMu.Lock()
-	if obj.closedLocked() {
+	for {
+		obj.askMu.Lock()
+		if obj.closedLocked() {
+			obj.askMu.Unlock()
+			return nil, ErrClosed
+		}
+		if obj.resolveFlights == nil {
+			obj.resolveFlights = make(map[netip.Addr]*resolveFlightObj)
+		}
+		if flight := obj.resolveFlights[canonical]; flight != nil {
+			if flight.waiters == 0 {
+				done := flight.done
+				obj.askMu.Unlock()
+				select {
+				case <-callerCtx.Done():
+					return nil, callerCtx.Err()
+				case <-done:
+				}
+				continue
+			}
+			flight.waiters++
+			obj.askMu.Unlock()
+			return obj.waitResolveFlight(callerCtx, canonical, flight)
+		}
+		if len(obj.resolveFlights) >= maxConcurrentResolves {
+			obj.askMu.Unlock()
+			return nil, ErrResolveBusy
+		}
+		flightCtx, flightCancel := context.WithCancel(obj.tasks.Context())
+		flight := &resolveFlightObj{
+			ctx:     flightCtx,
+			cancel:  flightCancel,
+			done:    make(chan struct{}),
+			waiters: 1,
+		}
+		obj.resolveFlights[canonical] = flight
+		tasks := obj.tasks
 		obj.askMu.Unlock()
-		return nil, ErrClosed
+		if !tasks.Go(func(context.Context) { obj.runResolveFlight(canonical, partial, flight) }) {
+			obj.finishResolveFlight(canonical, flight, ErrClosed)
+		}
+		return obj.waitResolveFlight(callerCtx, canonical, flight)
 	}
-	if obj.resolveFlights == nil {
-		obj.resolveFlights = make(map[netip.Addr]*resolveFlightObj)
-	}
-	if flight := obj.resolveFlights[canonical]; flight != nil {
-		obj.askMu.Unlock()
-		return waitResolveFlight(callerCtx, flight)
-	}
-	if len(obj.resolveFlights) >= maxConcurrentResolves {
-		obj.askMu.Unlock()
-		return nil, ErrResolveBusy
-	}
-	flight := &resolveFlightObj{done: make(chan struct{})}
-	obj.resolveFlights[canonical] = flight
-	tasks := obj.tasks
-	obj.askMu.Unlock()
-	if !tasks.Go(func(context.Context) { obj.runResolveFlight(canonical, partial, flight) }) {
-		obj.finishResolveFlight(canonical, flight, ErrClosed)
-	}
-	return waitResolveFlight(callerCtx, flight)
 }
 
-func waitResolveFlight(ctx context.Context, flight *resolveFlightObj) (ed25519.PublicKey, error) {
+func (obj *Obj) waitResolveFlight(ctx context.Context, addr netip.Addr, flight *resolveFlightObj) (ed25519.PublicKey, error) {
+	defer obj.releaseResolveWaiter(addr, flight)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -140,6 +160,16 @@ func waitResolveFlight(ctx context.Context, flight *resolveFlightObj) (ed25519.P
 			return nil, flight.err
 		}
 		return append(ed25519.PublicKey(nil), flight.key...), nil
+	}
+}
+
+func (obj *Obj) releaseResolveWaiter(addr netip.Addr, flight *resolveFlightObj) {
+	obj.askMu.Lock()
+	flight.waiters--
+	cancel := flight.waiters == 0 && obj.resolveFlights[addr] == flight
+	obj.askMu.Unlock()
+	if cancel && flight.cancel != nil {
+		flight.cancel()
 	}
 }
 
@@ -152,13 +182,16 @@ func (obj *Obj) finishResolveFlight(addr netip.Addr, flight *resolveFlightObj, e
 		delete(obj.resolveFlights, addr)
 	}
 	obj.askMu.Unlock()
+	if flight.cancel != nil {
+		flight.cancel()
+	}
 	close(flight.done)
 }
 
 func (obj *Obj) runResolveFlight(addr netip.Addr, partial ed25519.PublicKey, flight *resolveFlightObj) {
 	defer obj.finishResolveFlight(addr, flight, nil)
 
-	workCtx := obj.tasks.Context()
+	workCtx := flight.ctx
 	cancel := func() {}
 	if obj.maxLookupTime > 0 {
 		workCtx, cancel = context.WithTimeout(workCtx, obj.maxLookupTime)

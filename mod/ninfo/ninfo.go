@@ -35,16 +35,22 @@ type Obj struct {
 }
 
 type askFlightObj struct {
-	done chan struct{}
-	raw  json.RawMessage
-	rtt  time.Duration
-	err  error
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+	waiters int
+	raw     json.RawMessage
+	rtt     time.Duration
+	err     error
 }
 
 type resolveFlightObj struct {
-	done chan struct{}
-	key  ed25519.PublicKey
-	err  error
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+	waiters int
+	key     ed25519.PublicKey
+	err     error
 }
 
 // ConfigObj contains NodeInfo query and parser settings.
@@ -225,33 +231,53 @@ func (obj *Obj) Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, 
 	var ka [ed25519.PublicKeySize]byte
 	copy(ka[:], key)
 
-	obj.askMu.Lock()
-	if obj.closedLocked() {
+	for {
+		obj.askMu.Lock()
+		if obj.closedLocked() {
+			obj.askMu.Unlock()
+			return nil, ErrClosed
+		}
+		if obj.askFlights == nil {
+			obj.askFlights = make(map[[ed25519.PublicKeySize]byte]*askFlightObj)
+		}
+		if flight := obj.askFlights[ka]; flight != nil {
+			if flight.waiters == 0 {
+				done := flight.done
+				obj.askMu.Unlock()
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-done:
+				}
+				continue
+			}
+			flight.waiters++
+			obj.askMu.Unlock()
+			return obj.waitAskFlight(ctx, ka, flight)
+		}
+		if len(obj.askFlights) >= maxConcurrentAsks {
+			obj.askMu.Unlock()
+			return nil, ErrAskBusy
+		}
+		flightCtx, flightCancel := context.WithCancel(obj.tasks.Context())
+		flight := &askFlightObj{
+			ctx:     flightCtx,
+			cancel:  flightCancel,
+			done:    make(chan struct{}),
+			waiters: 1,
+		}
+		obj.askFlights[ka] = flight
+		tasks := obj.tasks
 		obj.askMu.Unlock()
-		return nil, ErrClosed
+		if !tasks.Go(func(context.Context) { obj.runAskFlight(ka, flight) }) {
+			obj.finishAskFlight(ka, flight, ErrClosed)
+		}
+		return obj.waitAskFlight(ctx, ka, flight)
 	}
-	if obj.askFlights == nil {
-		obj.askFlights = make(map[[ed25519.PublicKeySize]byte]*askFlightObj)
-	}
-	if flight := obj.askFlights[ka]; flight != nil {
-		obj.askMu.Unlock()
-		return obj.waitAskFlight(ctx, flight)
-	}
-	if len(obj.askFlights) >= maxConcurrentAsks {
-		obj.askMu.Unlock()
-		return nil, ErrAskBusy
-	}
-	flight := &askFlightObj{done: make(chan struct{})}
-	obj.askFlights[ka] = flight
-	tasks := obj.tasks
-	obj.askMu.Unlock()
-	if !tasks.Go(func(context.Context) { obj.runAskFlight(ka, flight) }) {
-		obj.finishAskFlight(ka, flight, ErrClosed)
-	}
-	return obj.waitAskFlight(ctx, flight)
 }
 
-func (obj *Obj) waitAskFlight(ctx context.Context, flight *askFlightObj) (*AskResultObj, error) {
+func (obj *Obj) waitAskFlight(ctx context.Context, key [ed25519.PublicKeySize]byte, flight *askFlightObj) (*AskResultObj, error) {
+	defer obj.releaseAskWaiter(key, flight)
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -260,6 +286,16 @@ func (obj *Obj) waitAskFlight(ctx context.Context, flight *askFlightObj) (*AskRe
 			return nil, flight.err
 		}
 		return obj.parseAskResponse(flight.raw, flight.rtt)
+	}
+}
+
+func (obj *Obj) releaseAskWaiter(key [ed25519.PublicKeySize]byte, flight *askFlightObj) {
+	obj.askMu.Lock()
+	flight.waiters--
+	cancel := flight.waiters == 0 && obj.askFlights[key] == flight
+	obj.askMu.Unlock()
+	if cancel && flight.cancel != nil {
+		flight.cancel()
 	}
 }
 
@@ -272,13 +308,16 @@ func (obj *Obj) finishAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlig
 		delete(obj.askFlights, key)
 	}
 	obj.askMu.Unlock()
+	if flight.cancel != nil {
+		flight.cancel()
+	}
 	close(flight.done)
 }
 
 func (obj *Obj) runAskFlight(key [ed25519.PublicKeySize]byte, flight *askFlightObj) {
 	defer obj.finishAskFlight(key, flight, nil)
 
-	workCtx := obj.tasks.Context()
+	workCtx := flight.ctx
 	cancel := func() {}
 	if obj.maxAskTime > 0 {
 		workCtx, cancel = context.WithTimeout(workCtx, obj.maxAskTime)

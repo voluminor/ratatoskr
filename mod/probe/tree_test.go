@@ -67,7 +67,6 @@ func newTreeTestObj() *Obj {
 	return &Obj{
 		logger:        noopLoggerObj{},
 		tasks:         common.NewTaskGroup(context.Background()),
-		remoteSem:     make(chan struct{}, DefaultMaxConcurrency),
 		remoteFlights: make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
 	}
 }
@@ -129,8 +128,7 @@ func TestTreeReturnsPartialResultOnProbeOverload(t *testing.T) {
 	obj.remotePeers = func(json.RawMessage) (interface{}, error) {
 		return yggcore.DebugGetPeersResponse{}, nil
 	}
-	obj.remoteSem = make(chan struct{}, 1)
-	obj.remoteFlights[toKeyArray(cacheTestKey(999))] = &remoteFlightObj{done: make(chan struct{})}
+	fillRemoteFlights(obj, 10000, DefaultMaxConcurrency)
 
 	result, err := obj.Tree(context.Background(), 2, 1)
 	if !errors.Is(err, ErrProbeBusy) {
@@ -157,8 +155,7 @@ func TestTreeChanSignalsDoneWithPartialOverloadResult(t *testing.T) {
 	obj.remotePeers = func(json.RawMessage) (interface{}, error) {
 		return yggcore.DebugGetPeersResponse{}, nil
 	}
-	obj.remoteSem = make(chan struct{}, 1)
-	obj.remoteFlights[toKeyArray(cacheTestKey(1999))] = &remoteFlightObj{done: make(chan struct{})}
+	fillRemoteFlights(obj, 20000, DefaultMaxConcurrency)
 	progress := make(chan TreeProgressObj, 4)
 
 	result, err := obj.TreeChan(context.Background(), 2, 1, progress)
@@ -185,7 +182,6 @@ func TestEnrichPath_boundsLocalFanout(t *testing.T) {
 	var maxActive atomic.Int64
 	obj := newTreeTestObj()
 	obj.source = &treeSourceObj{}
-	obj.remoteSem = make(chan struct{}, len(path))
 	obj.remotePeers = func(json.RawMessage) (interface{}, error) {
 		current := active.Add(1)
 		for {
@@ -241,8 +237,7 @@ func TestTraceReturnsPartialResultOnRTTOverload(t *testing.T) {
 	obj.remotePeers = func(json.RawMessage) (interface{}, error) {
 		return yggcore.DebugGetPeersResponse{}, nil
 	}
-	obj.remoteSem = make(chan struct{}, 1)
-	obj.remoteFlights[toKeyArray(cacheTestKey(2999))] = &remoteFlightObj{done: make(chan struct{})}
+	fillRemoteFlights(obj, 30000, DefaultMaxConcurrency)
 
 	result, err := obj.Trace(context.Background(), target)
 	if !errors.Is(err, ErrProbeBusy) {

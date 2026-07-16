@@ -7,8 +7,8 @@ address resolution, bounded shared queries, and sigil parsing. Publishing local
 NodeInfo is handled by [`sigil_core`](../sigils/sigil_core/README.md).
 
 Key limits are 64 distinct NodeInfo queries, 64 distinct address lookups, and
-16 KiB per NodeInfo response. Same-key callers share work without sharing caller
-cancellation.
+16 KiB per NodeInfo response. Same-key callers share work while at least one
+caller is waiting.
 
 ## Table of contents
 
@@ -90,11 +90,13 @@ Ask(ctx context.Context, key ed25519.PublicKey) (*AskResultObj, error)
 Sends a `getNodeInfo` request to the node identified by `key`. Returns parsed metadata with measured RTT. Custom
 metadata is parsed with the prototypes supplied through `ConfigObj.Sigils`.
 
-Concurrent calls for the same public key share one flight. The handler runs in that flight, detached from individual
-caller cancellation, and retries after `AskRetryPause` until it succeeds, reaches `MaxAskTime`, or the module closes.
-An upstream call already in progress at `MaxAskTime` is allowed to finish because upstream exposes no cancellation hook.
-Canceling a caller only stops that caller's wait. At most 64 distinct key flights run at once; another distinct key
-returns `ErrAskBusy`, while callers joining an existing flight remain accepted.
+Concurrent calls for the same public key share one flight. Canceling one caller detaches only that waiter while others
+remain. When the last waiter leaves, the flight is canceled and does not retry. An upstream handler call already in
+progress is allowed to finish because upstream exposes no cancellation hook; until it returns, the abandoned flight
+continues to count toward the 64-flight limit. A new caller for the same key waits for that flight to retire, then
+starts
+fresh work instead of joining canceled work. Otherwise the handler retries after `AskRetryPause` until it succeeds,
+reaches `MaxAskTime`, or the module closes. Another distinct key beyond the limit returns `ErrAskBusy`.
 
 ### AskAddr
 
@@ -118,7 +120,9 @@ IPv6 may be a node address or any host inside a routable Yggdrasil `/64`. Subnet
 calls `SendLookup`. Peers and sessions are scanned once; subsequent polls scan only paths, where lookup results arrive.
 There is no result cache.
 At most 64 distinct address flights run at once, and excess distinct addresses return `ErrResolveBusy`. Caller
-cancellation detaches only that waiter. The flight itself is bounded by `MaxLookupTime` (default 30s) or `Close`.
+cancellation detaches only that waiter while others remain. The last departing waiter cancels polling immediately; a
+new caller for the same address waits for that flight to retire before starting a replacement. Active flights are also
+bounded by `MaxLookupTime` (default 30s) or `Close`.
 
 ```mermaid
 flowchart TD

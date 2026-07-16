@@ -250,15 +250,26 @@ type blockingResolveSourceObj struct {
 }
 
 type countingResolveSourceObj struct {
-	lookups  atomic.Int64
-	peers    atomic.Int64
-	sessions atomic.Int64
-	paths    atomic.Int64
-	pathKey  ed25519.PublicKey
+	lookupStarted chan struct{}
+	lookupRelease chan struct{}
+	lookupOnce    sync.Once
+	lookups       atomic.Int64
+	peers         atomic.Int64
+	sessions      atomic.Int64
+	paths         atomic.Int64
+	pathKey       ed25519.PublicKey
 }
 
 func (s *countingResolveSourceObj) SetAdmin(yggcore.AddHandler) error { return nil }
-func (s *countingResolveSourceObj) SendLookup(ed25519.PublicKey)      { s.lookups.Add(1) }
+func (s *countingResolveSourceObj) SendLookup(ed25519.PublicKey) {
+	s.lookups.Add(1)
+	if s.lookupStarted != nil {
+		s.lookupOnce.Do(func() {
+			close(s.lookupStarted)
+			<-s.lookupRelease
+		})
+	}
+}
 func (s *countingResolveSourceObj) GetPeers() []yggcore.PeerInfo {
 	s.peers.Add(1)
 	return nil
@@ -359,6 +370,53 @@ func TestResolveIPv6RejectsDistinctFlightBeyondCap(t *testing.T) {
 	}
 	if _, err := obj.resolveIPv6(context.Background(), testYggIPv6(t)); !errors.Is(err, ErrResolveBusy) {
 		t.Fatalf("resolve error = %v, want ErrResolveBusy", err)
+	}
+}
+
+func TestResolveIPv6LastWaiterCancellationStopsLookup(t *testing.T) {
+	obj := newTestObj()
+	source := &countingResolveSourceObj{
+		lookupStarted: make(chan struct{}),
+		lookupRelease: make(chan struct{}),
+	}
+	obj.source = source
+	obj.lookupInterval = time.Millisecond
+	obj.maxLookupTime = time.Second
+	addr := testYggIPv6(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := obj.resolveIPv6(ctx, addr)
+		done <- err
+	}()
+	select {
+	case <-source.lookupStarted:
+	case <-time.After(time.Second):
+		t.Fatal("SendLookup was not called")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("resolve error = %v, want context.Canceled", err)
+	}
+	close(source.lookupRelease)
+	deadline := time.Now().Add(time.Second)
+	for {
+		obj.askMu.Lock()
+		flights := len(obj.resolveFlights)
+		obj.askMu.Unlock()
+		if flights == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("abandoned resolve flight did not stop")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := source.lookups.Load(); got != 1 {
+		t.Fatalf("SendLookup calls after cancellation = %d, want 1", got)
+	}
+	if err := obj.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

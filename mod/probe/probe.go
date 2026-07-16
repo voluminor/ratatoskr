@@ -23,7 +23,6 @@ type Obj struct {
 	source           SourceInterface
 	logger           yggcore.Logger
 	remotePeers      yggcore.AddHandlerFunc
-	remoteSem        chan struct{}
 	remoteMu         sync.RWMutex
 	tasks            *common.TaskGroupObj
 	closed           bool
@@ -89,7 +88,9 @@ func clonePeerKeys(keys []ed25519.PublicKey) []ed25519.PublicKey {
 		return nil
 	}
 	out := make([]ed25519.PublicKey, len(keys))
-	copy(out, keys)
+	for i, key := range keys {
+		out[i] = slices.Clone(key)
+	}
 	return out
 }
 
@@ -190,7 +191,6 @@ func New(cfg ConfigObj) (*Obj, error) {
 		source:           cfg.Source,
 		logger:           logger,
 		remotePeers:      remotePeers,
-		remoteSem:        make(chan struct{}, DefaultMaxConcurrency),
 		remoteFlights:    make(map[[ed25519.PublicKeySize]byte]*remoteFlightObj),
 		tasks:            common.NewTaskGroup(context.Background()),
 		maxTotalNodes:    orDefaultInt(cfg.MaxTotalNodes, DefaultMaxTotalNodes),
