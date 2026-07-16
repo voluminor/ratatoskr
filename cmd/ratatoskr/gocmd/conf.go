@@ -7,6 +7,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/hjson/hjson-go/v4"
+	"gopkg.in/yaml.v3"
+
 	cmdsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/gsettings"
 	rsettings "github.com/voluminor/ratatoskr/cmd/ratatoskr/target/settings"
 	yggconfig "github.com/yggdrasil-network/yggdrasil-go/src/config"

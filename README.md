@@ -476,8 +476,8 @@ Each module README contains construction, lifecycle, concurrency, limits, errors
 Set both fields when mappings are reachable by untrusted nodes, because every accepted TCP connection or UDP source can
 consume state and goroutines. See [admission limits and security](mod/forward/README.md#admission-limits-and-security).
 
-The packages under [`cmd`](cmd/README.md) are development applications and examples, not the embeddable API. Their
-README files state which targets currently build and which ones still depend on incomplete generated CLI integration.
+The packages under [`cmd`](cmd/README.md) are development applications and examples, not the embeddable API. All of
+their Go modules compile and pass unit tests; their README files describe target-specific build and runtime validation.
 
 ## Performance
 

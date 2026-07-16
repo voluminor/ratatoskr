@@ -5,17 +5,8 @@ tracing, and topology scans.
 
 ## Current status
 
-The program does not build against the current probe API. [main.go](main.go) calls the previous two-argument
-`probe.New(node.Core(), cfg)` constructor; the current constructor accepts one `probe.ConfigObj` containing the
-dependency.
-
-The observed build failure is:
-
-```text
-main.go:81: too many arguments in call to probe.New
-```
-
-No runtime behavior described below has been revalidated after that API change.
+The program compiles against the current probe API. Its public listeners, route tracing, and topology handlers have not
+been revalidated as a complete deployed application.
 
 ## Contents
 
@@ -49,8 +40,6 @@ flowchart TD
 ```
 
 ## Build
-
-After the probe constructor is repaired:
 
 ```bash
 cd cmd/embedded/http
@@ -100,5 +89,5 @@ the embedded transport.
   limits.
 - Static files come from a caller-selected directory.
 
-Run this program only on a trusted interface until authentication, origin policy, request budgets, and current API
-compatibility are implemented and tested.
+Run this program only on a trusted interface until authentication, origin policy, and request budgets are implemented
+and tested.

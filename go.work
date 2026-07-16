@@ -3,4 +3,9 @@ go 1.25.0
 use (
 	.
 	./_generate/sigils
+	./cmd/embedded/http
+	./cmd/embedded/mobile
+	./cmd/embedded/tiny-chat
+	./cmd/embedded/tiny-http
+	./cmd/ratatoskr
 )

@@ -26,7 +26,11 @@ if [ "${RTS_REBUILD:-1}" = "1" ] || [ ! -x "${BIN}" ]; then
     -cf - . | tar -C "${WORK}" -xf -
   cd "${WORK}"
   mkdir -p target tmp
-  go generate .
+  root_work="${DATA}/root-work"
+  mkdir -p "${root_work}"
+  rm -f "${root_work}/go.work" "${root_work}/go.work.sum"
+  GOWORK=off go -C "${root_work}" work init "${WORK}" "${WORK}/_generate/sigils"
+  GOWORK="${root_work}/go.work" go generate .
   GOWORK=off go build -mod=mod -trimpath -o "${BIN}" ./tests/diag
 else
   echo "[node-entrypoint] reusing ${BIN}"

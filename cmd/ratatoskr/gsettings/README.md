@@ -30,7 +30,7 @@ Defaults:
 | Import format                    | `yml`   |
 | Export format                    | `json`  |
 
-Run its independent tests even while the parent executable is broken:
+Run its independent tests with:
 
 ```bash
 cd cmd/ratatoskr

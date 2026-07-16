@@ -1,12 +1,13 @@
-name: 'Set up the GIT user'
-description: 'Set up the GIT user'
+name: 'Set up Git user'
+description: 'Configure the GitHub Actions bot identity'
 
 runs:
   using: 'composite'
   steps:
-    - name: 👤 Set up the GIT user
+    - name: 👤 Set up Git user
       shell: bash
       run: |
-        git config --global user.name  "github-actions[bot]"
+        set -Eeuo pipefail
+        git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git config --global --add safe.directory "$GITHUB_WORKSPACE"

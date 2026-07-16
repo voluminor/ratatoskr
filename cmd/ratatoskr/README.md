@@ -4,15 +4,8 @@ This module contains a generated-settings CLI plus key, configuration, NodeInfo,
 
 ## Current status
 
-The CLI does not build against the current module APIs:
-
-```text
-gocmd/forward.go: assignment mismatch: 1 variable but forward.New returns 2 values
-gocmd/trace.go: too many arguments in call to probe.New
-```
-
-`gsettings` and generated `target/settings` compile independently, but the executable and `gocmd` package do not. The
-commands below describe the intended interface and must be revalidated after those integrations are repaired.
+The CLI and its subpackages compile and pass their unit tests. Network-facing commands still need live end-to-end
+validation before the binary should be treated as a supported operational tool.
 
 ## Contents
 
@@ -44,8 +37,6 @@ Runtime configuration flags and `-go.*` utility flags are separate modes and can
 
 The configuration schema lives in `yml/config`. `go generate` recreates `target/settings` through `goconfgen`; generated
 files must not be edited manually.
-
-After repairing the two API mismatches:
 
 ```bash
 cd cmd/ratatoskr
@@ -115,7 +106,7 @@ Inspect peers:
   -go.peer_info.format json
 ```
 
-Forward local TCP after the forward integration is repaired:
+Forward local TCP:
 
 ```bash
 ../../tmp/ratatoskr-cli \
@@ -125,7 +116,7 @@ Forward local TCP after the forward integration is repaired:
   -go.forward.peer 'tls://peer.example:443'
 ```
 
-Trace after the probe integration is repaired:
+Trace a route:
 
 ```bash
 ../../tmp/ratatoskr-cli \
@@ -144,6 +135,6 @@ Trace after the probe integration is repaired:
 ## Subpackages
 
 - [gsettings](gsettings/README.md): utility flag parsing and typed command values.
-- [gocmd](gocmd/README.md): utility execution and current API blockers.
+- [gocmd](gocmd/README.md): utility command execution.
 - `target/settings`: third-party generated runtime settings. It is recreated by `go generate` and intentionally has no
   hand-written files.

@@ -32,7 +32,7 @@ type RatatoskrObj struct {
 	logBridge  *logBridgeObj
 	peerBridge *peerBridgeObj
 
-	fwdMgr      *forward.ManagerObj
+	fwdMgr      *forward.Obj
 	runCancel   context.CancelFunc
 	peerMonDone chan struct{}
 	stopRun     *mobileStopObj
@@ -309,29 +309,17 @@ func (y *RatatoskrObj) Start(socksAddr, nameserver string) error {
 		}
 	}
 
-	fwdMgr := forward.New(forward.ConfigObj{
+	runCtx, runCancel := context.WithCancel(context.Background())
+	fwdMgr, err := forward.New(forward.ConfigObj{
 		Logger:     y.logBridge,
 		Node:       node.Core(),
 		UDPTimeout: y.udpTimeout,
+		LocalTCP:   y.localTCPs,
+		RemoteTCP:  y.remoteTCPs,
+		LocalUDP:   y.localUDPs,
+		RemoteUDP:  y.remoteUDPs,
 	})
-	if err = fwdMgr.AddLocalTCP(y.localTCPs...); err != nil {
-		_ = node.Close()
-		return fmt.Errorf("configure local TCP forwarding: %w", err)
-	}
-	if err = fwdMgr.AddRemoteTCP(y.remoteTCPs...); err != nil {
-		_ = node.Close()
-		return fmt.Errorf("configure remote TCP forwarding: %w", err)
-	}
-	if err = fwdMgr.AddLocalUDP(y.localUDPs...); err != nil {
-		_ = node.Close()
-		return fmt.Errorf("configure local UDP forwarding: %w", err)
-	}
-	if err = fwdMgr.AddRemoteUDP(y.remoteUDPs...); err != nil {
-		_ = node.Close()
-		return fmt.Errorf("configure remote UDP forwarding: %w", err)
-	}
-	runCtx, runCancel := context.WithCancel(context.Background())
-	if err = fwdMgr.Start(runCtx); err != nil {
+	if err != nil {
 		runCancel()
 		_ = node.Close()
 		return fmt.Errorf("start forwarding: %w", err)

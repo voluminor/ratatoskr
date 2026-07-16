@@ -1,173 +1,282 @@
-name: "Tests & Benchmarks"
+name: "Tests"
 
-permissions: { }
+permissions:
+  contents: read
 
 concurrency:
-  group: tests-${{ github.ref_name }}
+  group: tests-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 on:
   pull_request:
+    types: [ opened, synchronize, reopened ]
     paths-ignore:
-      - '**.txt'
       - '**.md'
-
-env:
-  GO_VERSION: "1.26.5"
+      - '**.txt'
 
 jobs:
-  prepare:
-    name: "🔧 Prepare"
+  changes:
+    name: "🔎 Detect changed areas"
+    runs-on: ubuntu-latest
+    outputs:
+      root: ${{ steps.diff.outputs.root }}
+      cmd: ${{ steps.diff.outputs.cmd }}
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+
+      - name: 🔎 Classify changed files
+        id: diff
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -Eeuo pipefail
+          root=false
+          cmd=false
+          while IFS= read -r path; do
+            case "$path" in
+              *.md|*.txt)
+                ;;
+              cmd/*)
+                cmd=true
+                ;;
+              .github/actions/init-go/*|.github/actions/prepare-cmd/*|.github/actions/run-cmd-tests/*|.github/workflows/release.yml|.github/workflows/tests.yml)
+                root=true
+                cmd=true
+                ;;
+              *)
+                root=true
+                ;;
+            esac
+          done < <(git diff --name-only "$BASE_SHA" "$HEAD_SHA")
+          echo "root=${root}" >> "$GITHUB_OUTPUT"
+          echo "cmd=${cmd}" >> "$GITHUB_OUTPUT"
+          echo "root=${root}, cmd=${cmd}"
+
+  root-prepare:
+    name: "🔧 Prepare root"
+    needs: [ changes ]
+    if: needs.changes.outputs.root == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
       - uses: ./.github/actions/tidy-all-and-generate
+        with:
+          check-clean: 'true'
 
-      - name: 📦 Upload source
+      - name: 📦 Upload prepared root
         uses: actions/upload-artifact@v7
         with:
-          name: src-gen
-          path: .
+          name: root-src
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .
+            !.git
+            !.git/**
 
-  test:
-    name: "🧪 Test [${{ matrix.os }}]"
-    needs: [ prepare ]
+  root-test:
+    name: "🧪 Root [${{ matrix.os }}]"
+    needs: [ changes, root-prepare ]
+    if: needs.root-prepare.result == 'success'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, macos-15, windows-latest ]
-
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
     steps:
       - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
-      - name: 📥 Download source
+      - name: 📥 Download prepared root
         uses: actions/download-artifact@v8
         with:
-          name: src-gen
+          name: root-src
           path: .
 
-
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
       - uses: ./.github/actions/run-tests
+        with:
+          run-benchmarks: 'false'
 
-  cross-build:
-    name: "🛠️ Build [${{ matrix.goos }}/${{ matrix.goarch }}${{ matrix.goarm && format('/v{0}', matrix.goarm) || '' }}${{ matrix.gomips && format('/{0}', matrix.gomips) || '' }}]"
-    needs: [ prepare ]
+  root-quality:
+    name: "🔍 Root quality"
+    needs: [ changes, root-prepare ]
+    if: needs.root-prepare.result == 'success'
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux
-          - { goos: linux, goarch: amd64 }
-          - { goos: linux, goarch: arm64 }
-          - { goos: linux, goarch: arm, goarm: "7" }
-          - { goos: linux, goarch: arm, goarm: "6" }
-          - { goos: linux, goarch: "386" }
-          - { goos: linux, goarch: riscv64 }
-          - { goos: linux, goarch: mips64 }
-          - { goos: linux, goarch: mips64le }
-          - { goos: linux, goarch: mips, gomips: softfloat }
-          - { goos: linux, goarch: mipsle, gomips: softfloat }
-          - { goos: linux, goarch: ppc64 }
-          - { goos: linux, goarch: ppc64le }
-          - { goos: linux, goarch: s390x }
-          # Windows
-          - { goos: windows, goarch: amd64 }
-          - { goos: windows, goarch: arm64 }
-          - { goos: windows, goarch: "386" }
-          # macOS
-          - { goos: darwin, goarch: amd64 }
-          - { goos: darwin, goarch: arm64 }
-          # FreeBSD
-          - { goos: freebsd, goarch: amd64 }
-          - { goos: freebsd, goarch: arm64 }
-          - { goos: freebsd, goarch: "386" }
-          # OpenBSD
-          - { goos: openbsd, goarch: amd64 }
-          - { goos: openbsd, goarch: arm64 }
-          # NetBSD
-          - { goos: netbsd, goarch: amd64 }
-          - { goos: netbsd, goarch: arm64 }
-
     steps:
       - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
-          ref: ${{ github.head_ref }}
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 1
 
-      - name: 📥 Download source
+      - name: 📥 Download prepared root
         uses: actions/download-artifact@v8
         with:
-          name: src-gen
+          name: root-src
           path: .
 
-
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
-      - uses: ./.github/actions/cross-build-check
-        with:
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          goarm: ${{ matrix.goarm || '' }}
-          gomips: ${{ matrix.gomips || '' }}
-
-  quality:
-    name: "🔍 Static analysis & vulnerabilities"
-    needs: [ prepare ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v8
-        with:
-          name: src-gen
-          path: .
-      - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
-      - name: 🔍 Analyze
+      - name: 🔍 Analyze root module
         shell: bash
         run: |
           set -Eeuo pipefail
-          go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
-            [ -n "$dir" ] || continue
-            echo "Analyzing ${dir}"
-            go -C "$dir" vet ./...
-            go -C "$dir" run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
-            go -C "$dir" run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
-            go -C "$dir" run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
-          done
+          GOWORK=off go vet ./...
+          GOWORK=off go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...
+          GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run ./...
+          GOWORK=off go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 ./...
+          GOWORK=off go run github.com/rhysd/actionlint/cmd/actionlint@latest -color
 
-  smoke:
-    name: "🔥 Integration smoke"
-    needs: [ prepare ]
+  root-smoke:
+    name: "🔥 Root integration smoke"
+    needs: [ changes, root-prepare ]
+    if: needs.root-prepare.result == 'success'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/download-artifact@v8
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v7
         with:
-          name: src-gen
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 📥 Download prepared root
+        uses: actions/download-artifact@v8
+        with:
+          name: root-src
           path: .
+
       - name: 🔥 Run smoke scenario
         shell: bash
-        run: tests/scripts/up.sh --verify
+        run: bash tests/scripts/up.sh --verify
+
+  cmd-prepare:
+    name: "🔧 Prepare cmd"
+    needs: [ changes ]
+    if: needs.changes.outputs.cmd == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - uses: ./.github/actions/init-go
+        with:
+          cache-scope: cmd
+
+      - name: 🔧 Prepare root dependency
+        uses: ./.github/actions/tidy-all-and-generate
+        with:
+          check-clean: 'true'
+
+      - uses: ./.github/actions/prepare-cmd
+        with:
+          scope: all
+          check-clean: 'true'
+
+      - name: 📦 Upload prepared cmd tree
+        uses: actions/upload-artifact@v7
+        with:
+          name: cmd-src
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .
+            !.git
+            !.git/**
+
+  cmd-test:
+    name: "🧪 Cmd [${{ matrix.os }}]"
+    needs: [ changes, cmd-prepare ]
+    if: needs.cmd-prepare.result == 'success'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
+    steps:
+      - name: 🛎️ Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+
+      - name: 📥 Download prepared cmd tree
+        uses: actions/download-artifact@v8
+        with:
+          name: cmd-src
+          path: .
+
+      - uses: ./.github/actions/init-go
+        with:
+          cache-scope: cmd
+
+      - uses: ./.github/actions/run-cmd-tests
+
+  gate:
+    name: "✅ Verification gate"
+    if: always()
+    needs:
+      - changes
+      - root-prepare
+      - root-test
+      - root-quality
+      - root-smoke
+      - cmd-prepare
+      - cmd-test
+    runs-on: ubuntu-latest
+    env:
+      ROOT_CHANGED: ${{ needs.changes.outputs.root }}
+      CMD_CHANGED: ${{ needs.changes.outputs.cmd }}
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      ROOT_PREPARE_RESULT: ${{ needs.root-prepare.result }}
+      ROOT_TEST_RESULT: ${{ needs.root-test.result }}
+      ROOT_QUALITY_RESULT: ${{ needs.root-quality.result }}
+      ROOT_SMOKE_RESULT: ${{ needs.root-smoke.result }}
+      CMD_PREPARE_RESULT: ${{ needs.cmd-prepare.result }}
+      CMD_TEST_RESULT: ${{ needs.cmd-test.result }}
+    steps:
+      - name: 🚦 Check isolated results
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "change detection failed" >&2
+            exit 1
+          fi
+          if [ "$ROOT_CHANGED" = "true" ]; then
+            for result in "$ROOT_PREPARE_RESULT" "$ROOT_TEST_RESULT" "$ROOT_QUALITY_RESULT" "$ROOT_SMOKE_RESULT"; do
+              if [ "$result" != "success" ]; then
+                echo "root verification failed: ${result}" >&2
+                exit 1
+              fi
+            done
+          fi
+          if [ "$CMD_CHANGED" = "true" ]; then
+            for result in "$CMD_PREPARE_RESULT" "$CMD_TEST_RESULT"; do
+              if [ "$result" != "success" ]; then
+                echo "cmd verification failed: ${result}" >&2
+                exit 1
+              fi
+            done
+          fi
+          echo "verification succeeded"

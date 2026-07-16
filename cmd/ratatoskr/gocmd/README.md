@@ -5,12 +5,8 @@ command is selected.
 
 ## Current status
 
-The package does not build because forwarding and probing still use previous constructor contracts:
-
-- `forward.New` now returns `(*forward.Obj, error)`;
-- `probe.New` now accepts one `probe.ConfigObj` containing its source dependency.
-
-Key and configuration helpers are covered by tests, but the package cannot run until both compile failures are repaired.
+The package compiles against the current forwarding and probe constructors. Key, configuration, and settings behavior
+has unit coverage; network commands still require live peers and end-to-end validation.
 
 ## Command groups
 

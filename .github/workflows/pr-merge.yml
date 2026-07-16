@@ -1,70 +1,72 @@
-name: "PR Merge → Patch"
+name: "Root merge patch bump"
 
 permissions:
   contents: write
 
 concurrency:
-  group: pr-merge-${{ github.ref_name }}
-  cancel-in-progress: true
+  group: root-merge-patch-main
+  cancel-in-progress: false
 
 on:
   pull_request:
     types: [ closed ]
     branches: [ main ]
-
-env:
-  GO_VERSION: "1.26.5"
+    paths-ignore:
+      - 'cmd/**'
+      - '**.md'
+      - '**.txt'
 
 jobs:
   prepare:
-    name: "🔧 Prepare"
+    name: "🔧 Prepare root"
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout main
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 1
 
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
       - uses: ./.github/actions/tidy-all-and-generate
+        with:
+          check-clean: 'true'
 
-      - name: 📦 Upload source
+      - name: 📦 Upload prepared root
         uses: actions/upload-artifact@v7
         with:
-          name: src-gen
-          path: .
+          name: merge-root-src
+          include-hidden-files: true
+          if-no-files-found: error
+          path: |
+            .
+            !.git
+            !.git/**
 
   test:
-    name: "🧪 Test [${{ matrix.os }}]"
+    name: "🧪 Root [${{ matrix.os }}]"
     needs: [ prepare ]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest ]
-
+        os: [ ubuntu-latest, macos-latest, windows-latest ]
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout main
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 1
 
-      - name: 📥 Download source
+      - name: 📥 Download prepared root
         uses: actions/download-artifact@v8
         with:
-          name: src-gen
+          name: merge-root-src
           path: .
 
-
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
       - uses: ./.github/actions/run-tests
         with:
@@ -75,8 +77,8 @@ jobs:
     needs: [ test ]
     runs-on: ubuntu-latest
     steps:
-      - name: 🛎️ Checkout
-        uses: actions/checkout@v6
+      - name: 🛎️ Checkout main
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -84,24 +86,22 @@ jobs:
       - uses: ./.github/actions/github-setup-user
 
       - uses: ./.github/actions/init-go
-        with:
-          go-version: ${{ env.GO_VERSION }}
 
       - name: 📦 Increment patch version
         shell: bash
         run: |
           set -Eeuo pipefail
           gometagen="github.com/amazing-generators/gometagen/cmd/gometagen@latest"
-          new_ver=$(go run "${gometagen}" version patch -source _run/values.yml)
-          echo "New version: $new_ver"
+          new_version=$(GOWORK=off go run "$gometagen" version patch -source _run/values.yml)
+          echo "New version ${new_version}"
 
           git add _run/values.yml
-          git commit -m "patch(${new_ver}): auto-bump on PR merge"
+          git diff --cached --quiet || git commit -m "patch(${new_version}): auto-bump root module [skip ci]"
           git push origin HEAD:main
 
-      - name: 🧹 Cleanup artifacts
+      - name: 🧹 Cleanup artifact
         if: always()
         uses: geekyeggo/delete-artifact@v6
         with:
-          name: src-gen
+          name: merge-root-src
           failOnError: false

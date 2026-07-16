@@ -1,31 +1,38 @@
-name: 'Run tests and benchmarks'
-description: 'Run go test with race detector and benchmarks'
+name: 'Run root tests and benchmarks'
+description: 'Test the root module with race detection where supported'
 inputs:
   run-benchmarks:
     description: 'Run benchmarks after tests (true/false)'
     required: false
-    default: 'true'
+    default: 'false'
 
 runs:
   using: 'composite'
   steps:
-    - name: 🧪 Run tests
+    - name: 🧪 Run race tests
+      if: runner.os != 'Windows'
       shell: bash
       run: |
         set -Eeuo pipefail
-        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
-          [ -n "$dir" ] || continue
-          echo "Testing ${dir}"
-          go -C "$dir" test -race -v ./...
-        done
+        GOWORK=off CGO_ENABLED=1 go test -race -v ./...
+
+    - name: 🧪 Run Windows tests
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        GOWORK=off CGO_ENABLED=0 go test -v ./...
 
     - name: 📊 Run benchmarks
-      if: inputs.run-benchmarks == 'true'
+      if: inputs.run-benchmarks == 'true' && runner.os != 'Windows'
       shell: bash
       run: |
         set -Eeuo pipefail
-        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
-          [ -n "$dir" ] || continue
-          echo "Benchmarking ${dir}"
-          go -C "$dir" test -bench=. -run=NONE -benchmem -v ./...
-        done
+        GOWORK=off CGO_ENABLED=1 go test -bench=. -run=NONE -benchmem -v ./...
+
+    - name: 📊 Run Windows benchmarks
+      if: inputs.run-benchmarks == 'true' && runner.os == 'Windows'
+      shell: bash
+      run: |
+        set -Eeuo pipefail
+        GOWORK=off CGO_ENABLED=0 go test -bench=. -run=NONE -benchmem -v ./...

@@ -78,7 +78,7 @@ func main() {
 		logger.Warnf("private_key: %s", hex.EncodeToString(nodeCfg.PrivateKey))
 	}
 
-	tr, err := probe.New(node.Core(), probe.ConfigObj{Logger: logger})
+	tr, err := probe.New(probe.ConfigObj{Source: node.Core(), Logger: logger})
 	if err != nil {
 		fmt.Println("Error: probe:", err)
 		os.Exit(1)

@@ -5,18 +5,18 @@ library API.
 
 ## Current status
 
-Several programs are not synchronized with the current module APIs:
+All modules compile against the current APIs. Build success does not make the example applications production-ready:
 
-| Component                                    | Build status | Blocking issue                                                               |
-|----------------------------------------------|--------------|------------------------------------------------------------------------------|
-| [ratatoskr CLI](ratatoskr/README.md)         | Broken       | Uses the previous `forward.New` and `probe.New` signatures                   |
-| [embedded HTTP UI](embedded/http/README.md)  | Broken       | Uses the previous `probe.New` signature                                      |
-| [mobile bindings](embedded/mobile/README.md) | Broken       | Refers to removed `forward.ManagerObj` and the previous `forward.New` result |
-| [tiny HTTP](embedded/tiny-http/README.md)    | Builds       | Example only; hard-coded peer and ports                                      |
-| [tiny chat](embedded/tiny-chat/README.md)    | Builds       | Example only; interactive and unauthenticated                                |
+| Component                                    | Build status | Remaining validation boundary                        |
+|----------------------------------------------|--------------|------------------------------------------------------|
+| [ratatoskr CLI](ratatoskr/README.md)         | Builds       | Network commands need end-to-end validation          |
+| [embedded HTTP UI](embedded/http/README.md)  | Builds       | Public HTTP and topology surfaces are not hardened   |
+| [mobile bindings](embedded/mobile/README.md) | Builds       | Android and iOS artifacts need target-SDK validation |
+| [tiny HTTP](embedded/tiny-http/README.md)    | Builds       | Example only; uses fixed peers and ports             |
+| [tiny chat](embedded/tiny-chat/README.md)    | Builds       | Example only; interactive and unauthenticated        |
 
-Do not use this tree as evidence that a release artifact is ready. The library packages under `mod` and the root
-integration have their own tests and documentation; these programs require separate repair and end-to-end validation.
+Do not use a successful workspace build as evidence that an application is hardened or its release artifact is
+validated. Each component README lists its runtime and security boundaries.
 
 ## Layout
 

@@ -1,18 +1,18 @@
-name: 'Cross-platform build check'
-description: 'Verify compilation for a specific GOOS/GOARCH target'
+name: 'Cross-build root module'
+description: 'Compile all root-module packages for one GOOS/GOARCH target'
 inputs:
   goos:
-    description: 'Target OS (linux, windows, darwin, ...)'
+    description: 'Target operating system'
     required: true
   goarch:
-    description: 'Target architecture (amd64, arm64, arm, ...)'
+    description: 'Target architecture'
     required: true
   goarm:
-    description: 'ARM version (6, 7); empty for non-ARM'
+    description: 'ARM version; empty for non-ARM targets'
     required: false
     default: ''
   gomips:
-    description: 'MIPS float mode (softfloat); empty for non-MIPS'
+    description: 'MIPS float mode; empty for non-MIPS targets'
     required: false
     default: ''
 
@@ -29,14 +29,12 @@ runs:
         CGO_ENABLED: '0'
       run: |
         set -Eeuo pipefail
-        tag="${GOOS}/${GOARCH}"
-        [[ -n "$GOARM" ]]  && tag="${tag}v${GOARM}"
-        [[ -n "$GOMIPS" ]] && tag="${tag}/${GOMIPS}"
-        echo "→ ${tag}"
-        out_dir="$(mktemp -d)"
-        trap 'rm -rf "$out_dir"' EXIT
-        go list -m -f '{{if .Main}}{{.Dir}}{{end}}' all | while read -r dir; do
-          [ -n "$dir" ] || continue
-          echo "Building ${dir}"
-          go -C "$dir" build -o "$out_dir/" ./...
-        done
+        target="${GOOS}/${GOARCH}"
+        if [ -n "$GOARM" ]; then
+          target="${target}/v${GOARM}"
+        fi
+        if [ -n "$GOMIPS" ]; then
+          target="${target}/${GOMIPS}"
+        fi
+        echo "Building root module for ${target}"
+        GOWORK=off go build -trimpath ./...

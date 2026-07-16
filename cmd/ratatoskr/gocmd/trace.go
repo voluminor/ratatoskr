@@ -138,7 +138,7 @@ func bootNode(ctx context.Context, peerURIs []string) (*ratatoskr.Obj, *probe.Ob
 		return nil, nil, fmt.Errorf("start node: %w", err)
 	}
 
-	tr, err := probe.New(node.Core(), probe.ConfigObj{Logger: logger})
+	tr, err := probe.New(probe.ConfigObj{Source: node.Core(), Logger: logger})
 	if err != nil {
 		_ = node.Close()
 		return nil, nil, fmt.Errorf("init probe: %w", err)

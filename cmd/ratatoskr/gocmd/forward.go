@@ -77,7 +77,11 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 	}
 	defer func() { _ = node.Close() }()
 
-	mgr := forward.New(forward.ConfigObj{Logger: logger, Node: node.Core(), UDPTimeout: defaultUDPSessionTimeout})
+	forwardCfg := forward.ConfigObj{
+		Logger:     logger,
+		Node:       node.Core(),
+		UDPTimeout: defaultUDPSessionTimeout,
+	}
 
 	useTCP := cfg.Proto == gsettings.GoForwardProtoTcp || cfg.Proto == ""
 	if useTCP {
@@ -89,9 +93,7 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 		if err != nil {
 			return fmt.Errorf("invalid remote address: %w", err)
 		}
-		if err = mgr.AddLocalTCP(forward.TCPMappingObj{Listen: listenAddr, Mapped: mappedAddr}); err != nil {
-			return fmt.Errorf("configure TCP forwarding: %w", err)
-		}
+		forwardCfg.LocalTCP = []forward.TCPMappingObj{{Listen: listenAddr, Mapped: mappedAddr}}
 		fmt.Fprintf(os.Stderr, "forwarding tcp %s → %s\n", cfg.From, cfg.To)
 	} else {
 		listenAddr, err := net.ResolveUDPAddr("udp", cfg.From)
@@ -102,20 +104,17 @@ func forwardRun(cfg *gsettings.GoForwardObj) error {
 		if err != nil {
 			return fmt.Errorf("invalid remote address: %w", err)
 		}
-		if err = mgr.AddLocalUDP(forward.UDPMappingObj{Listen: listenAddr, Mapped: mappedAddr}); err != nil {
-			return fmt.Errorf("configure UDP forwarding: %w", err)
-		}
+		forwardCfg.LocalUDP = []forward.UDPMappingObj{{Listen: listenAddr, Mapped: mappedAddr}}
 		fmt.Fprintf(os.Stderr, "forwarding udp %s → %s\n", cfg.From, cfg.To)
 	}
 
-	if err := mgr.Start(ctx); err != nil {
+	mgr, err := forward.New(forwardCfg)
+	if err != nil {
 		return fmt.Errorf("start forwarding: %w", err)
 	}
 
 	fmt.Fprintln(os.Stderr, "running (Ctrl+C to stop)")
 	<-ctx.Done()
 	fmt.Fprintln(os.Stderr, "shutting down...")
-	mgr.Wait()
-
-	return nil
+	return mgr.Close()
 }

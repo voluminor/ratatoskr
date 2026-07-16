@@ -5,15 +5,8 @@ gomobile.
 
 ## Current status
 
-The module does not build against the current forward API:
-
-```text
-mobile.go:35: undefined: forward.ManagerObj
-mobile.go:312: assignment mismatch: 1 variable but forward.New returns 2 values
-```
-
-The binding artifacts are therefore not valid until forwarding ownership is updated and Android/iOS builds are tested on
-their target SDKs.
+The Go module compiles and its unit tests pass against the current immutable forwarding API. Android and iOS binding
+artifacts still need builds and runtime checks with their target SDKs.
 
 ## Contents
 
@@ -35,7 +28,7 @@ stateDiagram-v2
 ```
 
 Mapping changes are accepted only while stopped. Concurrent `Stop` callers share one shutdown result. A stopped object
-may be started again, but that behavior has not been revalidated since the forward API changed.
+may be started again.
 
 ## Build
 
@@ -46,7 +39,7 @@ go install golang.org/x/mobile/cmd/gomobile@latest
 gomobile init
 ```
 
-After repairing the forward integration, build Android, iOS, or both:
+Build Android, iOS, or both:
 
 ```bash
 cd cmd/embedded/mobile

@@ -11,7 +11,7 @@ import (
 
 // // // // // // // // // //
 
-var globalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, error){
+var GlobalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, error){
 {{- range .Sigils }}
     {{ .Alias }}.Name(): func(m map[string]any) (sigils.Interface, error) { return {{ .Alias }}.Parse(m) },
 {{- end }}
@@ -21,6 +21,6 @@ var globalSigilParseMap = map[string]func(map[string]any) (sigils.Interface, err
 
 // Parse returns the parser for a built-in sigil; ok reports its presence.
 func Parse(name string) (func(map[string]any) (sigils.Interface, error), bool) {
-fn, ok := globalSigilParseMap[name]
+fn, ok := GlobalSigilParseMap[name]
 return fn, ok
 }
