@@ -126,6 +126,9 @@ optional and unlimited by default; set `MaxAssociateTargetsPerPrincipal` to isol
 A negative `MaxAssociateTargetsPerSession` disables only the per-session cap. Each server also owns its bounded worker
 pool, so load or credentials on one embedded proxy cannot consume another proxy's quota or queue.
 
+The ASSOCIATE relay idle deadline refreshes after a valid, unfragmented datagram from the accepted client or a reverse
+response. Malformed and fragmented datagrams do not keep the relay alive.
+
 Each established target has its own writer goroutine. A blocked target therefore cannot stop packets for other targets
 in the same ASSOCIATE session. Its queue is bounded by both packet count (64 by default) and actual payload bytes
 (64 KiB by default). A packet that would exceed either limit is dropped only for that target and increments

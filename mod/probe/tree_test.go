@@ -145,6 +145,71 @@ func TestTreeReturnsPartialResultOnProbeOverload(t *testing.T) {
 	}
 }
 
+func TestTreeCloseReturnsPartialResultWithoutUnreachable(t *testing.T) {
+	self := cacheTestKey(1100)
+	peer := cacheTestKey(1101)
+	obj := newTreeTestObj()
+	obj.source = &treeSourceObj{self: self, peers: []yggcore.PeerInfo{{Key: peer, Up: true}}}
+	obj.maxTotalNodes = 4
+	obj.maxDuration = -1
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+	obj.remotePeers = func(json.RawMessage) (interface{}, error) {
+		close(started)
+		<-release
+		return yggcore.DebugGetPeersResponse{}, nil
+	}
+
+	type resultObj struct {
+		result *TreeResultObj
+		err    error
+	}
+	treeDone := make(chan resultObj, 1)
+	go func() {
+		result, err := obj.Tree(context.Background(), 2, 1)
+		treeDone <- resultObj{result: result, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("remote call did not start")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- obj.Close() }()
+	select {
+	case got := <-treeDone:
+		if !errors.Is(got.err, ErrClosed) {
+			t.Fatalf("Tree error = %v, want ErrClosed", got.err)
+		}
+		if got.result == nil || got.result.Total != 1 || len(got.result.Root.Children) != 1 {
+			t.Fatalf("partial result = %+v, want direct peer", got.result)
+		}
+		if got.result.Root.Children[0].Unreachable {
+			t.Fatal("peer was marked unreachable during probe shutdown")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Tree did not return after probe shutdown")
+	}
+
+	close(release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not finish after remote call returned")
+	}
+}
+
 func TestTreeChanSignalsDoneWithPartialOverloadResult(t *testing.T) {
 	self := cacheTestKey(2000)
 	peer := cacheTestKey(2001)

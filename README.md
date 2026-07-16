@@ -337,8 +337,8 @@ import (
 )
 ```
 
-Explicit keys already present in `Config.NodeInfo` take precedence. Conflicting sigil fragments or invalid custom
-parsers make `New` return an error matching `ErrInvalidSigils`.
+Top-level key conflicts with `Config.NodeInfo` or between sigil fragments make `New` return an error matching
+`ErrInvalidSigils`. Invalid custom parsers return the same error.
 
 ### Query remote NodeInfo
 

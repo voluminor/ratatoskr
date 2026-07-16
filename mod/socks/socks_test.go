@@ -1690,6 +1690,58 @@ func TestAssociate_pinsFirstUDPClientWhenRequestUnspecified(t *testing.T) {
 	}
 }
 
+func TestAssociate_malformedDatagramsDoNotRefreshIdleDeadline(t *testing.T) {
+	relay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP relay: %v", err)
+	}
+	defer func() { _ = relay.Close() }()
+	client, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatalf("ListenUDP client: %v", err)
+	}
+	defer func() { _ = client.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	const idleTimeout = 200 * time.Millisecond
+	session := &associateSessionObj{
+		ctx:         ctx,
+		cancel:      cancel,
+		relay:       relay,
+		idleTimeout: idleTimeout,
+		targets:     make(map[associateTargetKeyObj]*associateTargetObj),
+		pending:     make(map[associateTargetKeyObj]struct{}),
+	}
+	runDone := make(chan error, 1)
+	go func() { runDone <- session.run() }()
+
+	stopSender := make(chan struct{})
+	defer close(stopSender)
+	go func() {
+		ticker := time.NewTicker(20 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopSender:
+				return
+			case <-ticker.C:
+				_, _ = client.WriteToUDP([]byte{0}, relay.LocalAddr().(*net.UDPAddr))
+			}
+		}
+	}()
+
+	select {
+	case err = <-runDone:
+		if err != nil {
+			t.Fatalf("associate run: %v", err)
+		}
+	case <-time.After(4 * idleTimeout):
+		session.close()
+		t.Fatal("malformed datagrams kept the associate session alive")
+	}
+}
+
 func TestAssociate_controlCloseCancelsPendingUDPDial(t *testing.T) {
 	dialer := &blockingDialerObj{started: make(chan struct{})}
 	cfg := tcpCfgOnFreePort(t)

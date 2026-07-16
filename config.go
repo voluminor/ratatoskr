@@ -44,9 +44,8 @@ type ConfigObj struct {
 	// with this node's core. Nil uses ninfo defaults.
 	NodeInfo *ninfo.ConfigObj
 
-	// Sigils assemble local NodeInfo and configure custom remote parsers. Existing
-	// top-level Config.NodeInfo keys take precedence over sigil output. Invalid
-	// sigils cause New to fail.
+	// Sigils assemble local NodeInfo and configure custom remote parsers. New
+	// fails on invalid sigils and conflicts with Config.NodeInfo or another sigil.
 	Sigils []sigils.Interface
 }
 

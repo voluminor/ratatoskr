@@ -127,6 +127,8 @@ flowchart TD
   condition
 - If distinct-flight admission is saturated, `Tree` returns the successfully built partial result together with
   `ErrProbeBusy`. Busy parents are not marked `Unreachable`, and `Truncated` remains reserved for `MaxTotalNodes`
+- If the probe closes during traversal, `Tree` and `TreeChan` return the successfully built partial result with
+  `ErrClosed`. Parents interrupted by shutdown are not marked `Unreachable`
 - Duplicates are filtered by public key
 
 ### TreeChan
@@ -289,22 +291,22 @@ type TraceResultObj struct {
 
 ## Errors
 
-| Variable                     | Description                                            |
-|------------------------------|--------------------------------------------------------|
-| `ErrSourceRequired`          | Source not provided in `ConfigObj`                     |
-| `ErrRemotePeersNotCaptured`  | `debug_remoteGetPeers` handler not intercepted         |
-| `ErrMaxDepthRequired`        | `maxDepth` must be > 0                                 |
-| `ErrInvalidKeyLength`        | Public key is not 32 bytes                             |
-| `ErrKeyNotInTree`            | Key not found in spanning tree                         |
-| `ErrNoActivePath`            | No active route in pathfinder                          |
-| `ErrRemotePeersDisabled`     | `debug_remoteGetPeers` is unavailable                  |
-| `ErrRemoteResponseTooLarge`  | Remote peer message exceeds the size cap               |
-| `ErrRemoteCallTimedOut`      | A remote peer query exceeded `RemoteTimeout`           |
-| `ErrTreeEmpty`               | Spanning tree entries are empty                        |
-| `ErrNoRoot`                  | No self-rooted node in tree                            |
-| `ErrLookupTimedOut`          | Route lookup timed out                                 |
-| `ErrClosed`                  | Probe closed; remote calls are rejected                |
-| `ErrInvalidMaxTotalNodes`    | `MaxTotalNodes` is negative                            |
-| `ErrInvalidPollInterval`     | `PollInterval` is negative                             |
-| `ErrInvalidLookupRetryEvery` | `LookupRetryEvery` is negative                         |
-| `ErrProbeBusy`               | 256 distinct remote query flights are already accepted |
+| Variable                     | Description                                              |
+|------------------------------|----------------------------------------------------------|
+| `ErrSourceRequired`          | Source not provided in `ConfigObj`                       |
+| `ErrRemotePeersNotCaptured`  | `debug_remoteGetPeers` handler not intercepted           |
+| `ErrMaxDepthRequired`        | `maxDepth` must be > 0                                   |
+| `ErrInvalidKeyLength`        | Public key is not 32 bytes                               |
+| `ErrKeyNotInTree`            | Key not found in spanning tree                           |
+| `ErrNoActivePath`            | No active route in pathfinder                            |
+| `ErrRemotePeersDisabled`     | `debug_remoteGetPeers` is unavailable                    |
+| `ErrRemoteResponseTooLarge`  | Remote peer message exceeds the size cap                 |
+| `ErrRemoteCallTimedOut`      | A remote peer query exceeded `RemoteTimeout`             |
+| `ErrTreeEmpty`               | Spanning tree entries are empty                          |
+| `ErrNoRoot`                  | No self-rooted node in tree                              |
+| `ErrLookupTimedOut`          | Route lookup timed out                                   |
+| `ErrClosed`                  | Probe closed; new calls are rejected and traversals stop |
+| `ErrInvalidMaxTotalNodes`    | `MaxTotalNodes` is negative                              |
+| `ErrInvalidPollInterval`     | `PollInterval` is negative                               |
+| `ErrInvalidLookupRetryEvery` | `LookupRetryEvery` is negative                           |
+| `ErrProbeBusy`               | 256 distinct remote query flights are already accepted   |

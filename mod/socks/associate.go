@@ -519,11 +519,11 @@ func (s *associateSessionObj) run() error {
 		if !s.acceptClient(src) {
 			continue
 		}
-		s.refreshIdleDeadline()
 		packet, err := statute.ParseDatagram(buf[:n])
 		if err != nil || packet.Frag != 0 {
 			continue
 		}
+		s.refreshIdleDeadline()
 		target, err := s.route(packet)
 		if err != nil {
 			continue

@@ -404,11 +404,17 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 
 	var nextLevel []*NodeObj
 	truncated := false
-	busy := false
+	var controlErr error
 	for range nodes {
 		r := <-results
-		if errors.Is(r.err, ErrProbeBusy) {
-			busy = true
+		switch {
+		case errors.Is(r.err, ErrClosed):
+			controlErr = ErrClosed
+			continue
+		case errors.Is(r.err, ErrProbeBusy):
+			if controlErr == nil {
+				controlErr = ErrProbeBusy
+			}
 			continue
 		}
 		children, childTruncated := o.applyPeerResult(r, nodeByKey, visited, nextDepth, remaining-len(nextLevel))
@@ -426,8 +432,8 @@ func (o *Obj) scanLevel(ctx context.Context, call remoteCallFunc, nodes []*NodeO
 	if err := ctx.Err(); err != nil {
 		return nextLevel, truncated, err
 	}
-	if busy {
-		return nextLevel, truncated, ErrProbeBusy
+	if controlErr != nil {
+		return nextLevel, truncated, controlErr
 	}
 	return nextLevel, truncated, nil
 }
