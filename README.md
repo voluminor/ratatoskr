@@ -7,7 +7,7 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/voluminor/ratatoskr.svg)](https://pkg.go.dev/github.com/voluminor/ratatoskr)
 [![License: LGPL-2.1](https://img.shields.io/badge/license-LGPL--2.1-blue.svg)](LICENSE)
 
-Ratatoskr embeds a Yggdrasil node in a Go process and exposes its userspace TCP and UDP stack through standard Go
+Ratatoskr embeds a [Yggdrasil](https://github.com/yggdrasil-network/yggdrasil-go) node in a Go process and exposes its userspace TCP and UDP stack through standard Go
 networking interfaces. Applications can use the complete root package or import only the peer manager, forwarding,
 SOCKS5, resolver, NodeInfo, topology, or sigil components they need.
 
