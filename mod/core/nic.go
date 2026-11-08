@@ -11,6 +11,7 @@ import (
 	"gvisor.dev/gvisor/pkg/buffer"
 	"gvisor.dev/gvisor/pkg/tcpip"
 	"gvisor.dev/gvisor/pkg/tcpip/header"
+	"gvisor.dev/gvisor/pkg/tcpip/link/qdisc/fifo"
 	"gvisor.dev/gvisor/pkg/tcpip/network/ipv6"
 	"gvisor.dev/gvisor/pkg/tcpip/stack"
 )
@@ -47,7 +48,10 @@ func (s *netstackObj) newNIC(ygg *yggcore.Core, ifMTU uint64) (*nicObj, tcpip.Er
 		logger:   s.logger,
 	}
 	nic.mtu.Store(uint32(mtu))
-	if err := s.stack.CreateNIC(1, nic); err != nil {
+	// Replies may run on the core reader; queue writes to avoid backpressure deadlocks.
+	qdisc := fifo.New(nic, 1, 64)
+	if err := s.stack.CreateNICWithOptions(1, nic, stack.NICOptions{QDisc: qdisc}); err != nil {
+		qdisc.Close()
 		return nil, err
 	}
 
