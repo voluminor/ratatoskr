@@ -29,6 +29,11 @@ func closeWithin(t *testing.T, node *Obj) {
 	}
 }
 
+// closeEchoConn ignores teardown errors from deliberately closed TCP exchanges.
+func closeEchoConn(conn net.Conn) {
+	_ = conn.Close()
+}
+
 func echoRoundTrip(node *Obj, address string, earlyClose bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -36,7 +41,7 @@ func echoRoundTrip(node *Obj, address string, earlyClose bool) error {
 	if err != nil {
 		return fmt.Errorf("dial echo: %w", err)
 	}
-	defer conn.Close()
+	defer closeEchoConn(conn)
 	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		return err
 	}
@@ -106,7 +111,7 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer closeEchoConn(conn)
 				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 				_, _ = io.Copy(conn, conn)
 			}()
