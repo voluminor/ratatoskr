@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	gvisorsync "gvisor.dev/gvisor/pkg/sync"
 )
 
 // // // // // // // // // //
@@ -56,6 +58,18 @@ func echoRoundTrip(node *Obj, address string, earlyClose bool) error {
 }
 
 // //
+
+func TestNetstackAtomicCompareAndSwap(t *testing.T) {
+	// Netstack park callbacks use an assembly CAS under -race. A broken ARM64
+	// implementation prevents parking and can starve TCP exchanges on macOS.
+	var state uintptr
+	if !gvisorsync.RaceUncheckedAtomicCompareAndSwapUintptr(&state, 0, 42) || state != 42 {
+		t.Fatalf("CAS did not replace the expected value: state = %d", state)
+	}
+	if gvisorsync.RaceUncheckedAtomicCompareAndSwapUintptr(&state, 0, 1) || state != 42 {
+		t.Fatalf("CAS changed a value that did not match: state = %d", state)
+	}
+}
 
 func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 	server, err := New(ConfigObj{})

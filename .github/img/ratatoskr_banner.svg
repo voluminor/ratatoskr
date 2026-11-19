@@ -185,7 +185,8 @@
   <text x="98" y="454" fill="#6DAED4">go get</text>
   <text x="158" y="454" fill="#E0CDB0">github.com/voluminor/ratatoskr</text>
  </g>
- <text x="58" y="504" fill="#243040" font-family="'Courier New', monospace" font-size="12px">Go 1.25+ · Linux · macOS ·
+    <text x="58" y="504" fill="#243040" font-family="'Courier New', monospace" font-size="12px">Go 1.27.3+ · Linux ·
+        macOS ·
   Windows · FreeBSD · OpenBSD · NetBSD · 25 targets
  </text>
  <rect x="700" width="580" height="640" fill="url(#r)"/>

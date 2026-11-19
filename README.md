@@ -49,7 +49,7 @@ do not need the project generators, the development workspace, or `go generate`.
 A checkout of the development branch is different: generated files are intentionally not tracked there. Contributors
 must run the bootstrap described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Ratatoskr requires Go 1.25 or newer.
+Ratatoskr requires Go 1.27.3 or newer.
 
 ### Canonical module
 
@@ -504,7 +504,8 @@ profile evidence, stability warnings, attribution limits, reproduction command, 
 
 ## Platforms
 
-The module targets Go 1.25 or newer. CI uses Go 1.26.5, tests release source on Linux, macOS, and Windows, and verifies
+The module targets Go 1.27.3 or newer. CI uses Go 1.27.4, tests release source on Linux, macOS, and Windows, and
+verifies
 compilation for 25 combinations across Linux, Windows, macOS, FreeBSD, OpenBSD, and NetBSD. Some optional behavior is
 platform-specific, including Unix sockets and Yggdrasil transport support; use the module README for those constraints.
 
