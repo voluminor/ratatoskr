@@ -4,7 +4,7 @@ inputs:
   go-version:
     description: 'Go toolchain version used by CI'
     required: false
-    default: '1.26.5'
+    default: '1.27.4'
   cache-suffix:
     description: 'Optional cache discriminator for parallel target builds'
     required: false

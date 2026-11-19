@@ -27,7 +27,7 @@ Base contributions on the default branch, not on a stripped release tag.
 
 ## Requirements
 
-- Go 1.25 or newer.
+- Go 1.27.3 or newer.
 - Bash for the root generator directives and repository scripts.
 - Docker only for the live multi-node tests and throughput benchmark.
 - `/home/su/go/bin/staticcheck` and `/home/su/go/bin/golangci-lint` when using the repository's configured development

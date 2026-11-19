@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	gvisorsync "gvisor.dev/gvisor/pkg/sync"
 )
 
 // // // // // // // // // //
@@ -27,6 +29,11 @@ func closeWithin(t *testing.T, node *Obj) {
 	}
 }
 
+// closeEchoConn ignores teardown errors from deliberately closed TCP exchanges.
+func closeEchoConn(conn net.Conn) {
+	_ = conn.Close()
+}
+
 func echoRoundTrip(node *Obj, address string, earlyClose bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -34,7 +41,7 @@ func echoRoundTrip(node *Obj, address string, earlyClose bool) error {
 	if err != nil {
 		return fmt.Errorf("dial echo: %w", err)
 	}
-	defer conn.Close()
+	defer closeEchoConn(conn)
 	if err := conn.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		return err
 	}
@@ -57,6 +64,18 @@ func echoRoundTrip(node *Obj, address string, earlyClose bool) error {
 
 // //
 
+func TestNetstackAtomicCompareAndSwap(t *testing.T) {
+	// Netstack park callbacks use an assembly CAS under -race. A broken ARM64
+	// implementation prevents parking and can starve TCP exchanges on macOS.
+	var state uintptr
+	if !gvisorsync.RaceUncheckedAtomicCompareAndSwapUintptr(&state, 0, 42) || state != 42 {
+		t.Fatalf("CAS did not replace the expected value: state = %d", state)
+	}
+	if gvisorsync.RaceUncheckedAtomicCompareAndSwapUintptr(&state, 0, 1) || state != 42 {
+		t.Fatalf("CAS changed a value that did not match: state = %d", state)
+	}
+}
+
 func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 	server, err := New(ConfigObj{})
 	if err != nil {
@@ -76,8 +95,8 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 		_ = right.Close()
 	})
 	serverCore, clientCore := server.corePtr.Load(), client.corePtr.Load()
-	go func() { _ = serverCore.PacketConn.HandleConn(clientCore.PublicKey(), left, 0) }()
-	go func() { _ = clientCore.PacketConn.HandleConn(serverCore.PublicKey(), right, 0) }()
+	go func() { _ = serverCore.HandleConn(clientCore.PublicKey(), left, 0) }()
+	go func() { _ = clientCore.HandleConn(serverCore.PublicKey(), right, 0) }()
 
 	address := net.JoinHostPort(server.Address().String(), "18080")
 	listener, err := server.Listen("tcp", address)
@@ -92,7 +111,7 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 				return
 			}
 			go func() {
-				defer conn.Close()
+				defer closeEchoConn(conn)
 				_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 				_, _ = io.Copy(conn, conn)
 			}()
