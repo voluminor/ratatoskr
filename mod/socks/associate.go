@@ -834,14 +834,14 @@ func (s *Obj) handleAssociate(ctx context.Context, writer io.Writer, request *so
 	select {
 	case err = <-controlDone:
 		session.close()
-		<-udpDone
+		<-udpDone //nolint:errcheck // Join UDP shutdown and preserve the control-side error.
 		session.pendingWG.Wait()
 		session.targetWG.Wait()
 		return err
 	case err = <-udpDone:
 		session.close()
 		if associateControlClose(writer) {
-			<-controlDone
+			<-controlDone //nolint:errcheck // Join control shutdown and preserve the UDP-side error.
 		}
 		session.pendingWG.Wait()
 		session.targetWG.Wait()

@@ -90,8 +90,8 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 		_ = right.Close()
 	})
 	serverCore, clientCore := server.corePtr.Load(), client.corePtr.Load()
-	go func() { _ = serverCore.PacketConn.HandleConn(clientCore.PublicKey(), left, 0) }()
-	go func() { _ = clientCore.PacketConn.HandleConn(serverCore.PublicKey(), right, 0) }()
+	go func() { _ = serverCore.HandleConn(clientCore.PublicKey(), left, 0) }()
+	go func() { _ = clientCore.HandleConn(serverCore.PublicKey(), right, 0) }()
 
 	address := net.JoinHostPort(server.Address().String(), "18080")
 	listener, err := server.Listen("tcp", address)

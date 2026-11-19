@@ -937,7 +937,9 @@ func TestClose_unblocksHalfClosedConnectWithSilentTarget(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		_ = target.Close()
-		<-closed
+		if closeErr := <-closed; closeErr != nil {
+			t.Errorf("Close after unblocking target: %v", closeErr)
+		}
 		t.Fatal("Close stayed blocked on the silent outbound CONNECT target")
 	}
 }
@@ -1987,9 +1989,14 @@ func TestLimitedListener_closeUnblocksSemaphoreWait(t *testing.T) {
 	}
 
 	select {
-	case <-done:
+	case acceptErr := <-done:
+		if !errors.Is(acceptErr, net.ErrClosed) {
+			t.Fatalf("Accept after Close: got %v, want net.ErrClosed", acceptErr)
+		}
 	case <-time.After(250 * time.Millisecond):
-		<-done
+		if acceptErr := <-done; !errors.Is(acceptErr, net.ErrClosed) {
+			t.Errorf("Accept after Close: got %v, want net.ErrClosed", acceptErr)
+		}
 		t.Fatal("Accept stayed blocked after Close")
 	}
 }
