@@ -114,6 +114,7 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 	// those replies must not block the core reader delivering incoming packets.
 	var workers sync.WaitGroup
 	errors := make(chan error, 8)
+	progress := make(chan struct{}, 1)
 	stop := make(chan struct{})
 	defer close(stop)
 	for worker := 0; worker < cap(errors); worker++ {
@@ -130,6 +131,10 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 					errors <- err
 					return
 				}
+				select {
+				case progress <- struct{}{}:
+				default:
+				}
 			}
 		}()
 	}
@@ -138,10 +143,21 @@ func TestNICHandlesEarlyTCPCloses(t *testing.T) {
 		workers.Wait()
 		close(done)
 	}()
-	select {
-	case <-done:
-	case <-time.After(15 * time.Second):
-		t.Fatal("TCP exchanges blocked despite operation deadlines")
+	// Detect stalled exchanges without imposing a throughput requirement on
+	// slower race-enabled CI runners. Every successful exchange resets the timer.
+	const idleTimeout = 15 * time.Second
+	idle := time.NewTimer(idleTimeout)
+	defer idle.Stop()
+wait:
+	for {
+		select {
+		case <-done:
+			break wait
+		case <-progress:
+			idle.Reset(idleTimeout)
+		case <-idle.C:
+			t.Fatal("TCP exchanges made no progress for 15s despite operation deadlines")
+		}
 	}
 	close(errors)
 	for err := range errors {
